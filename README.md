@@ -74,9 +74,15 @@ olmalıdır. Diğer bilgisayarlara aynı kurulum dosyası kurulur, ayarlarda
 
 ## Otomatik güncelleme
 
-Program her açılışta ve 4 saatte bir GitHub Releases üzerindeki yeni sürümü
-kontrol eder, arka planda indirir ve "şimdi kur" diye sorar. Kullanıcı bir şey
-yapmazsa güncelleme program kapanırken kurulur.
+Program her açılışta ve 4 saatte bir yeni sürümü kontrol eder, arka planda
+indirir ve "şimdi kur" diye sorar. Kullanıcı bir şey yapmazsa güncelleme
+program kapanırken kurulur.
+
+Kaynak kod bu **özel** depoda durur; kurulum dosyaları ise
+[galya-panel-releases](https://github.com/saidbayraqtars/galya-panel-releases)
+adlı **açık** depoda yayınlanır. Kurulu programın GitHub token'ı olmadığı için
+güncelleme kaynağının herkese açık olması gerekiyor. Bu depoda yalnızca
+kurulum dosyası bulunur; şifre veya müşteri verisi içermez.
 
 Yeni sürüm yayınlamak için:
 

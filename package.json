@@ -48,7 +48,8 @@
       {
         "provider": "github",
         "owner": "saidbayraqtars",
-        "repo": "galya-panel"
+        "repo": "galya-panel-releases",
+        "releaseType": "release"
       }
     ],
     "win": {
