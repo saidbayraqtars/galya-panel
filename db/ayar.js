@@ -67,7 +67,10 @@ function ayarOku() {
   if (onbellek) return onbellek;
   let dosya = {};
   try {
-    dosya = JSON.parse(fs.readFileSync(ayarYolu(), 'utf8'));
+    // Not Defteri ile kaydedilen dosyalar başta BOM taşır; JSON.parse onu
+    // kabul etmediği için temizliyoruz.
+    const ham = fs.readFileSync(ayarYolu(), 'utf8').replace(/^﻿/, '');
+    dosya = JSON.parse(ham);
   } catch (e) {
     dosya = {};
   }

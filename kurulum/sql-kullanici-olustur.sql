@@ -17,11 +17,12 @@
    İleride Vega'ya yazma açılacaksa bu dosyanın en altındaki bölüm
    yorumdan çıkarılır.
 
-   ÖNEMLİ: Aşağıdaki şifreyi değiştirin ve programın ayarlar.json
-   dosyasına aynı şifreyi yazın.
+   ÖNEMLİ: Aşağıdaki satırdaki yer tutucuyu kendi belirlediğiniz güçlü bir
+   şifreyle değiştirin ve aynı şifreyi programın Ayarlar ekranına girin.
+   Gerçek şifreyi bu dosyaya yazıp depoya göndermeyin.
    ============================================================ */
 
-DECLARE @sifre NVARCHAR(100) = N'Galya!Panel2026';   -- <<< BURAYI DEĞİŞTİRİN
+DECLARE @sifre NVARCHAR(100) = N'BURAYA-GUCLU-BIR-SIFRE-YAZIN';
 
 /* --- 1. Giriş (login) --- */
 IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'galya_panel')
