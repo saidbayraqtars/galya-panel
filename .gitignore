@@ -5,6 +5,9 @@ out/
 # Bu bilgisayara özel ayarlar — SQL şifresi içerir, depoya girmez.
 ayarlar.json
 
+# İzleyicinin yakaladığı SQL kayıtları — müşteri verisi içerebilir.
+kurulum/yakalanan/
+
 # Günlük ve geçici dosyalar
 *.log
 npm-debug.log*

@@ -15,15 +15,42 @@ try {
 let havuz = null;
 let havuzAnahtari = '';
 
+// Sunucu adını sürücünün anlayacağı hale getirir.
+//
+// Microsoft'un kendi araçları (SSMS, Vega, sqlcmd) "(local)", "." ve
+// "(local)\SQLEXPRESS" gibi takma adları kabul eder; bizim kullandığımız
+// tedious sürücüsü etmez, gerçek makine adı ister. Kullanıcı ayar ekranına
+// bunlardan birini yazdığında bağlantı "sunucuya ulaşılamadı" diye
+// başarısız oluyordu.
+//
+// Ayrıca "MAKINE\SQLEXPRESS" biçimindeki adlandırılmış örnekler ayrı bir
+// alanla (instanceName) verilmek zorunda; port yerine SQL Browser üzerinden
+// bulunuyor.
+function sunucuCoz(ham) {
+  const metin = String(ham || '').trim();
+  const parcalar = metin.split('\\');
+  let makine = (parcalar[0] || '').trim();
+  const ornek = parcalar.length > 1 ? parcalar.slice(1).join('\\').trim() : '';
+
+  const yerelTakmaAdlar = ['', '.', '(local)', 'local', '(localhost)'];
+  if (yerelTakmaAdlar.includes(makine.toLowerCase())) makine = 'localhost';
+
+  return { makine, ornek };
+}
+
 function anahtarUret(a) {
   return [a.sunucu, a.port, a.windowsGirisi ? 'win' : a.kullanici, a.vegaVeritabani].join('|');
 }
 
 function baglantiAyari(a) {
+  const { makine, ornek } = sunucuCoz(a.sunucu);
+
   if (a.windowsGirisi && mssqlWindows) {
     return {
       surucu: mssqlWindows,
       config: {
+        // msnodesqlv8 takma adları zaten anlıyor; kullanıcının yazdığını
+        // olduğu gibi veriyoruz.
         server: a.sunucu,
         database: a.vegaVeritabani,
         driver: 'msnodesqlv8',
@@ -36,23 +63,28 @@ function baglantiAyari(a) {
       }
     };
   }
-  return {
-    surucu: mssql,
-    config: {
-      server: a.sunucu,
-      port: Number(a.port) || 1433,
-      user: a.kullanici,
-      password: a.sifre,
-      database: a.vegaVeritabani,
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        enableArithAbort: true
-      },
-      pool: { max: 8, min: 0, idleTimeoutMillis: 30000 },
-      requestTimeout: 120000
-    }
+  const config = {
+    server: makine,
+    user: a.kullanici,
+    password: a.sifre,
+    database: a.vegaVeritabani,
+    options: {
+      encrypt: false,
+      trustServerCertificate: true,
+      enableArithAbort: true
+    },
+    pool: { max: 8, min: 0, idleTimeoutMillis: 30000 },
+    requestTimeout: 120000
   };
+
+  if (ornek) {
+    // Adlandırılmış örnekte portu SQL Browser bulur; ikisi birden verilemez.
+    config.options.instanceName = ornek;
+  } else {
+    config.port = Number(a.port) || 1433;
+  }
+
+  return { surucu: mssql, config };
 }
 
 async function havuzAl() {
