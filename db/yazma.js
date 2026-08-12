@@ -104,6 +104,110 @@ async function kod11GeriAl(kayit) {
   return { tamam: true };
 }
 
+// --- Gider / hizmet stoğunu sıfırlama -------------------------------------
+//
+// Elektrik, su, nakliye gibi gider-hizmet kartlarının (STOKTIPI = 3) stok
+// miktarı olmaması gerekir; Vega bunlarda miktarı elle sıfırlatmadığı için
+// faturalardan birikmiş bakiye kalıyor.
+//
+// Yöntem: miktar TBLDEPOENVANTER satırlarının toplamından geliyor. Kalanı
+// kapatan tek bir denge satırı ekliyoruz — sayım fişinin yaptığının aynısı,
+// ama belge oluşturmadan. Belge tablolarında Vega'nın "GK" adında bir
+// doğrulama alanı var ve nasıl üretildiği bilinmiyor; elle belge yazmak yerine
+// dokunmadığımız bu yolu seçtik.
+//
+// Etkilenmeyenler: stok hareketleri, maliyet, cari, muhasebe. Sadece depo
+// envanteri değişir.
+async function giderStokSifirla(kayit) {
+  kilitKontrol();
+  const { firma, donem } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+  const depo = Number(kayit.depo != null ? kayit.depo : ayarOku().varsayilanDepo) || 0;
+  if (!depo) {
+    throw new Error('Sıfırlama için tek bir depo seçilmelidir. Üst çubuktan depo seçin.');
+  }
+
+  const stokNo = Number(kayit.stokNo);
+  const kartlar = await sorgu(
+    `SELECT IND, MALINCINSI AS ad, STOKTIPI AS stokTipi
+     FROM ${kart(v, firma, 'TBLSTOKLAR')} WHERE IND = @stokNo`,
+    { stokNo }
+  );
+  if (!kartlar.length) throw new Error('Stok kartı bulunamadı.');
+  if (Number(kartlar[0].stokTipi) !== 3) {
+    throw new Error(
+      `"${kartlar[0].ad}" gider/hizmet kartı değil (stok tipi ${kartlar[0].stokTipi}). ` +
+      'Bu işlem yalnızca gider ve hizmet kartlarında yapılabilir.'
+    );
+  }
+
+  const mevcut = await sorgu(
+    `SELECT ISNULL(SUM(ENVANTER), 0) AS kalan
+     FROM ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
+     WHERE STOKNO = @stokNo AND DEPO = @depo AND BELGETIPI <> 67`,
+    { stokNo, depo }
+  );
+  const kalan = Number(mevcut[0] ? mevcut[0].kalan : 0);
+  if (kalan === 0) return { tamam: true, degisiklik: false, kalan: 0 };
+
+  // Kalan artıysa çıkış (94), eksiyse giriş (93) yönünde denge satırı.
+  const belgeTipi = kalan > 0 ? 94 : 93;
+  const eklenen = await sorgu(
+    `
+    INSERT INTO ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
+      (TARIH, STOKNO, DEPO, ENVANTER, BELGETIPI, BELGEIND, HAREKETIND,
+       SIRALAMATARIHI, SIRALAMATARIHIEX, ACIKLAMA)
+    OUTPUT INSERTED.IND AS ind
+    VALUES
+      (CAST(GETDATE() AS date), @stokNo, @depo, @envanter, @belgeTipi, 0, 0,
+       GETDATE(), CONVERT(DECIMAL(28,10), GETDATE()), @aciklama)
+  `,
+    {
+      stokNo,
+      depo,
+      envanter: -kalan,
+      belgeTipi,
+      aciklama: 'Galya Panel - gider/hizmet stok sifirlama'
+    }
+  );
+
+  const envanterInd = eklenen[0] ? eklenen[0].ind : null;
+
+  await panel.kayit(
+    'Gider Stok',
+    'Gider/hizmet stoğu sıfırlandı',
+    {
+      stokNo,
+      ad: kartlar[0].ad,
+      depo,
+      oncekiKalan: kalan,
+      eklenenMiktar: -kalan,
+      envanterInd
+    },
+    kayit.kullanici
+  );
+
+  return { tamam: true, degisiklik: true, oncekiKalan: kalan, envanterInd };
+}
+
+// Sıfırlamayı geri alır: eklenen denge satırını siler.
+async function giderStokSifirlamaGeriAl(kayit) {
+  kilitKontrol();
+  const { firma, donem } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+  const ind = Number(kayit.envanterInd);
+  if (!ind) throw new Error('Geri alınacak kayıt numarası eksik.');
+
+  const etkilenen = await calistir(
+    `DELETE FROM ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
+     WHERE IND = @ind AND ACIKLAMA = @aciklama`,
+    { ind, aciklama: 'Galya Panel - gider/hizmet stok sifirlama' }
+  );
+
+  await panel.kayit('Gider Stok', 'Sıfırlama geri alındı', kayit, kayit.kullanici);
+  return { tamam: true, silinen: etkilenen[0] || 0 };
+}
+
 // --- Sayım fişi yazma -----------------------------------------------------
 // TASLAK: Aşağıdaki alan eşlemesi Hakan görüşmesinde teyit edilmeden
 // kullanılmamalıdır. Sayım farkı pozitifse sayım girişi (IZAHAT 93),
@@ -133,6 +237,8 @@ module.exports = {
   siradakiNumara,
   kod11Yaz,
   kod11GeriAl,
+  giderStokSifirla,
+  giderStokSifirlamaGeriAl,
   sayimFisiYaz,
   tutanakFisiYaz
 };

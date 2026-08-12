@@ -91,6 +91,103 @@ async function stokDurumu(secim) {
   );
 }
 
+// Stok kontrol listesi: teorik stok + kritik seviye + değer.
+// Fiziki sayım karşılıkları panel veritabanından geldiği için burada değil,
+// db/sayim.js içindeki fizikiSayimlar() ile birleştiriliyor.
+//
+// suzgec: 'tumu' | 'eksi' | 'sifir' | 'azalan' | 'sorunlu'
+async function stokKontrolListesi(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const a = ayarOku();
+  const v = vt();
+  const depo = Number(secim.depo != null ? secim.depo : a.varsayilanDepo) || 0;
+  const ust = Number(secim.kritikUst != null ? secim.kritikUst : a.kritikStokUst);
+  const aktifGun = Number(secim.aktifGun != null ? secim.aktifGun : a.aktifGun) || 90;
+  const suzgec = secim.suzgec || 'sorunlu';
+  const tumKartlar = secim.tumKartlar ? 1 : 0;
+
+  // Eşik: karta özel kritik seviye varsa o, yoksa ayarlardaki genel üst sınır.
+  const esik = `CASE WHEN ISNULL(S.KRITIKSEVIYE,0) > 0 THEN S.KRITIKSEVIYE ELSE @ust END`;
+  const kalan = `ISNULL(K.KALAN, 0)`;
+
+  const suzgecler = {
+    tumu: '1 = 1',
+    eksi: `${kalan} < 0`,
+    sifir: `${kalan} = 0`,
+    azalan: `${kalan} > 0 AND ${kalan} <= ${esik}`,
+    sorunlu: `${kalan} <= ${esik}`
+  };
+
+  return sorgu(
+    `
+    WITH K AS (${kalanAltSorgu(v, firma, donem)}),
+         A AS (${aktifAltSorgu(v, firma, donem)})
+    SELECT
+      S.IND                     AS stokNo,
+      S.MALINCINSI              AS ad,
+      ISNULL(S.STOKKODU, '')    AS kod,
+      ISNULL(S.KOD1, '')        AS grup,
+      S.STOKTIPI                AS stokTipi,
+      ISNULL(B.BIRIMADI, '')    AS birim,
+      ${kalan}                  AS teorik,
+      ISNULL(S.KRITIKSEVIYE, 0) AS kritikSeviye,
+      ISNULL(S.MALIYET, 0)      AS birimMaliyet,
+      ${kalan} * ISNULL(S.MALIYET, 0) AS deger,
+      CASE
+        WHEN ${kalan} < 0 THEN 'eksi'
+        WHEN ${kalan} = 0 THEN 'sifir'
+        WHEN ${kalan} <= ${esik} THEN 'azalan'
+        ELSE 'normal'
+      END AS durum
+    FROM ${kart(v, firma, 'TBLSTOKLAR')} S
+    ${tumKartlar ? 'LEFT JOIN' : 'JOIN'} A ON A.STOKNO = S.IND
+    LEFT JOIN K ON K.STOKNO = S.IND
+    LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+           ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+    WHERE ISNULL(S.DELETED, 0) = 0
+      AND S.IND >= 100
+      AND S.STOKTIPI NOT IN (3, 7, 9)
+      AND (${suzgecler[suzgec] || suzgecler.sorunlu})
+    ORDER BY ${kalan} ASC, S.MALINCINSI ASC
+  `,
+    { depo, ust, aktifGun }
+  );
+}
+
+// Gider ve hizmet kartları (STOKTIPI = 3): elektrik, su, nakliye, reklam gibi.
+// Bunların stok miktarı olmaması gerekir; Vega bu kartlarda miktarı elle
+// sıfırlatmadığı için birikmiş bakiye kalıyor.
+async function giderHizmetStoklari(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
+
+  return sorgu(
+    `
+    WITH K AS (${kalanAltSorgu(v, firma, donem)})
+    SELECT
+      S.IND                  AS stokNo,
+      S.MALINCINSI           AS ad,
+      ISNULL(S.STOKKODU, '') AS kod,
+      S.STOKTIPI             AS stokTipi,
+      ISNULL(B.BIRIMADI, '') AS birim,
+      ISNULL(K.KALAN, 0)     AS kalan,
+      ISNULL(S.MALIYET, 0)   AS birimMaliyet,
+      ISNULL(K.KALAN, 0) * ISNULL(S.MALIYET, 0) AS deger
+    FROM ${kart(v, firma, 'TBLSTOKLAR')} S
+    LEFT JOIN K ON K.STOKNO = S.IND
+    LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+           ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+    WHERE ISNULL(S.DELETED, 0) = 0
+      AND S.IND >= 100
+      AND S.STOKTIPI = 3
+      AND (@sadeceDolu = 0 OR ISNULL(K.KALAN, 0) <> 0)
+    ORDER BY ABS(ISNULL(K.KALAN, 0)) DESC, S.MALINCINSI
+  `,
+    { depo, sadeceDolu: secim.sadeceDolu === false ? 0 : 1 }
+  );
+}
+
 async function stokAra(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const v = vt();
@@ -435,6 +532,8 @@ async function sonHareketTarihi(secim) {
 
 module.exports = {
   stokDurumu,
+  stokKontrolListesi,
+  giderHizmetStoklari,
   stokAra,
   stokHareketleri,
   receteliMamuller,

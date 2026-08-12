@@ -57,6 +57,12 @@ async function dene(ad, isFn) {
     await dene('Ana ekran özeti', () => ozet.anaEkran(s));
     await dene('Stok durumu (sorunlu)', () =>
       vega.stokDurumu(Object.assign({ sadeceSorunlu: true }, s)));
+    for (const suzgec of ['sorunlu', 'eksi', 'sifir', 'azalan', 'tumu']) {
+      await dene('Stok kontrol: ' + suzgec, () =>
+        vega.stokKontrolListesi(Object.assign({ suzgec }, s)));
+    }
+    await dene('Fiziki sayımlar', () => sayim.fizikiSayimlar(s));
+    await dene('Gider / hizmet stokları', () => vega.giderHizmetStoklari(s));
     await dene('Reçeteli mamuller', () => vega.receteliMamuller(s));
     await dene('THIRD adayları', () => vega.thirdAdaylari(s));
     await dene('Maliyeti eskimişler', () => vega.maliyetiEskimisler(s));
@@ -80,6 +86,39 @@ async function dene(ad, isFn) {
   console.log('\n== Şefim ==');
   await dene('Aktarım durumu', () => sefim.aktarimDurumu());
   await dene('Günlük satış özeti', () => sefim.satisOzeti({ gun: 7 }));
+
+  console.log('\n== Dışa aktarma ==');
+  const disaAktar = require(path.join(kok, 'db', 'disaaktar'));
+  await dene('Excel üretimi', async () => {
+    const veri = disaAktar.excelUret({
+      baslik: 'Sınama raporu',
+      altBaslik: 'test',
+      sayfaAdi: 'Test',
+      sutunlar: [
+        { ad: 'Ürün', alan: 'ad', tur: 'metin' },
+        { ad: 'Miktar', alan: 'miktar', tur: 'sayi' },
+        { ad: 'Tutar', alan: 'tutar', tur: 'para' }
+      ],
+      satirlar: [
+        { ad: 'ÇAY & YAĞ <ışİĞ>', miktar: 12.5, tutar: -3.25 },
+        { ad: 'Boş değerli satır', miktar: null, tutar: null }
+      ]
+    });
+    // ZIP imzası ve makul boyut: dosyanın Excel'e gidebilecek halde olduğunu gösterir.
+    if (veri.readUInt32LE(0) !== 0x04034b50) throw new Error('ZIP başlığı bozuk');
+    if (veri.length < 800) throw new Error('Dosya beklenenden küçük: ' + veri.length);
+    return 'tamam';
+  });
+  await dene('PDF sayfası üretimi', async () => {
+    const html = disaAktar.pdfHtml({
+      baslik: 'Sınama',
+      altBaslik: 'test',
+      sutunlar: [{ ad: 'Ürün', alan: 'ad', tur: 'metin' }],
+      satirlar: [{ ad: '<script>x</script>' }]
+    });
+    if (html.includes('<script>x')) throw new Error('HTML kaçırma çalışmıyor');
+    return 'tamam';
+  });
 
   console.log(`\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı\n`);
   await sql.havuzKapat();

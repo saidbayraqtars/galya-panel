@@ -133,26 +133,35 @@ async function depolariGetir() {
 
 // Bazı firmalarda üretim, e-fatura gibi modüller hiç kullanılmadığı için
 // ilgili tablolar oluşmamış olabilir. Sorgudan önce varlığını kontrol ediyoruz.
-let tabloOnbellek = null;
-
-async function tabloListesi(yenile) {
-  if (tabloOnbellek && !yenile) return tabloOnbellek;
-  const a = ayarOku();
-  const satirlar = await sorgu(`
-    SELECT name FROM [${a.vegaVeritabani}].sys.tables
-  `);
-  tabloOnbellek = new Set(satirlar.map((s) => s.name.toUpperCase()));
-  return tabloOnbellek;
-}
+//
+// Önceden bütün tablo adları tek seferde çekiliyordu; müşteri veritabanında
+// 15 binden fazla tablo olduğu için bu ilk çağrıda 16 saniye sürüyordu.
+// Artık yalnızca sorulan tablo soruluyor ve cevap akılda tutuluyor.
+const tabloOnbellek = new Map();
 
 async function tabloVarMi(firmaKodu, donemKodu, ad) {
-  const liste = await tabloListesi();
-  return liste.has((firmaKodu + (donemKodu || '') + ad).toUpperCase());
+  const tamAd = firmaKodu + (donemKodu || '') + ad;
+  if (tabloOnbellek.has(tamAd)) return tabloOnbellek.get(tamAd);
+
+  // Aynı tablo aynı anda birden çok yerden sorulursa tek sorgu yapılsın.
+  const bekleyen = (async () => {
+    const a = ayarOku();
+    const r = await sorgu(
+      `SELECT CASE WHEN OBJECT_ID(@tam, 'U') IS NULL THEN 0 ELSE 1 END AS varMi`,
+      { tam: `[${a.vegaVeritabani}].dbo.[${tamAd}]` }
+    );
+    const sonuc = !!(r[0] && Number(r[0].varMi) === 1);
+    tabloOnbellek.set(tamAd, sonuc);
+    return sonuc;
+  })();
+
+  tabloOnbellek.set(tamAd, bekleyen);
+  return bekleyen;
 }
 
 function onbellekTemizle() {
   onbellek = null;
-  tabloOnbellek = null;
+  tabloOnbellek.clear();
 }
 
 module.exports = {

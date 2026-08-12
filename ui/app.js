@@ -96,6 +96,9 @@ function bildir(mesaj, tur) {
   const b = document.getElementById('bildirim');
   b.textContent = mesaj;
   b.className = 'bildirim ' + (tur || 'bilgi');
+  // Önceki bildirime bağlanmış tıklama işi yenisine sarkmasın.
+  b.onclick = null;
+  b.style.cursor = 'default';
   clearTimeout(bildirimZaman);
   bildirimZaman = setTimeout(() => b.classList.add('hidden'), tur === 'kotu' ? 9000 : 4500);
 }
@@ -126,15 +129,34 @@ function ekranBasligi(baslik, sagDugmeler, geriVar) {
   return kap;
 }
 
-function tabloYap(basliklar, satirlar, satirCiz) {
+// Ekranda gösterilecek en fazla satır. Müşteri veritabanında cari listesi
+// 16 bin satıra çıkabiliyor; hepsini çizmek pencereyi saniyelerce kilitliyor.
+// Ekranda ilk parça gösteriliyor, dışa aktarmada hepsi gidiyor.
+const EKRAN_SATIR_SINIRI = 400;
+
+function tabloYap(basliklar, satirlar, satirCiz, sinir) {
   if (!satirlar.length) {
     return el('div', { sinif: 'bos-mesaj', metin: 'Kayıt yok.' });
   }
+  const enFazla = sinir || EKRAN_SATIR_SINIRI;
+  const gosterilen = satirlar.length > enFazla ? satirlar.slice(0, enFazla) : satirlar;
+
   const thead = el('thead', null, [
     el('tr', null, basliklar.map((b) => el('th', { metin: b })))
   ]);
-  const tbody = el('tbody', null, satirlar.map(satirCiz));
-  return el('div', { sinif: 'tablo-sarmal' }, [el('table', null, [thead, tbody])]);
+  const tbody = el('tbody', null, gosterilen.map(satirCiz));
+  const kap = el('div', { sinif: 'tablo-sarmal' }, [el('table', null, [thead, tbody])]);
+
+  if (satirlar.length > enFazla) {
+    const sarmal = el('div');
+    sarmal.appendChild(kap);
+    sarmal.appendChild(el('div', { sinif: 'liste-notu' }, [
+      `${sayiYaz(satirlar.length)} satırın ilk ${sayiYaz(enFazla)} tanesi gösteriliyor. ` +
+      "Excel'e veya PDF'e aktardığınızda listenin tamamı gelir."
+    ]));
+    return sarmal;
+  }
+  return kap;
 }
 
 function hucre(metin, sinif) {
@@ -151,6 +173,74 @@ function katmanAc(baslik, icerikDugumu) {
 
 function katmanKapat() {
   document.getElementById('kutuKatman').classList.add('hidden');
+}
+
+// ---------- Dışa aktarma ----------
+//
+// Her liste ekranı aynı üç düğmeyi alır: Excel, PDF, Yazdır. raporUret()
+// çağrıldığı anda ekrandaki güncel (filtrelenmiş) satırları döndürmeli;
+// böylece kullanıcı ne görüyorsa onu aktarır.
+
+function firmaEtiketi() {
+  const f = durum.firmalar.find((x) => x.kod === durum.firma);
+  const depo = durum.depo ? 'Depo ' + durum.depo : 'Tüm depolar';
+  return [
+    f ? f.kisaAd : durum.firma,
+    `${durum.firma}/${durum.donem}`,
+    depo,
+    new Date().toLocaleString('tr-TR', {
+      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    })
+  ].join(' · ');
+}
+
+async function raporAktar(kanal, raporUret, dugme) {
+  const eskiMetin = dugme.textContent;
+  try {
+    const rapor = raporUret();
+    if (!rapor.satirlar.length) {
+      bildir('Aktarılacak satır yok.', 'kotu');
+      return;
+    }
+    rapor.altBaslik = rapor.altBaslik || firmaEtiketi();
+    dugme.disabled = true;
+    dugme.textContent = 'Hazırlanıyor…';
+
+    const sonuc = await cagir(kanal, rapor);
+    if (sonuc.iptal) return;
+
+    bildir(sonuc.tur + ' dosyası kaydedildi. Açmak için buraya tıklayın.', 'iyi');
+    const b = document.getElementById('bildirim');
+    b.style.cursor = 'pointer';
+    b.onclick = () => {
+      window.galya.cagir('rapor:ac', { yol: sonuc.yol });
+      b.classList.add('hidden');
+    };
+    // Dosyayı açma fırsatı kaçmasın diye bu bildirim daha uzun kalıyor.
+    clearTimeout(bildirimZaman);
+    bildirimZaman = setTimeout(() => b.classList.add('hidden'), 15000);
+  } catch (e) {
+    hataGoster(e);
+  } finally {
+    dugme.disabled = false;
+    dugme.textContent = eskiMetin;
+  }
+}
+
+function disaAktarDugmeleri(raporUret) {
+  const excel = el('button', { sinif: 'dugme-sade', metin: "Excel'e aktar" });
+  excel.addEventListener('click', () => raporAktar('rapor:excel', raporUret, excel));
+
+  const pdf = el('button', { sinif: 'dugme-sade', metin: 'PDF kaydet' });
+  pdf.addEventListener('click', () => raporAktar('rapor:pdf', raporUret, pdf));
+
+  const yazdir = el('button', {
+    sinif: 'dugme-sade',
+    metin: 'Yazdır',
+    tikla: () => window.galya.cagir('sistem:yazdir')
+  });
+
+  return [excel, pdf, yazdir];
 }
 
 // ---------- Ekran yönlendirme ----------
@@ -182,7 +272,7 @@ ekranlar.ana = async function () {
     const hataliMi = k.hata != null;
     const dugme = el('button', {
       sinif: 'kutu ' + (hataliMi ? 'hatali' : (k.deger ? k.renk : 'yesil')),
-      tikla: () => ekranAc(k.ekran)
+      tikla: () => ekranAc(k.ekran, k.parametre)
     }, [
       el('span', { sinif: 'baslik', metin: k.baslik }),
       el('span', { sinif: 'deger', metin: hataliMi ? 'Okunamadı' : sayiYaz(k.deger) }),
@@ -198,8 +288,10 @@ ekranlar.ana = async function () {
     islemDugmesi('Reçete ağacı', 'Mamulün altındaki her şeyi gör', 'recete'),
     islemDugmesi('THIRD listesi', 'Üretim gerektiren stokları işaretle', 'third'),
     islemDugmesi('Ürün değişim tutanağı', 'Bir stoktan düş, diğerine ekle', 'tutanak'),
+    islemDugmesi('Gider / hizmet stokları', 'Elektrik, su, nakliye kartlarını sıfırla', 'gider'),
     islemDugmesi('Cari bakiye', 'Kime ne kadar borç var', 'cari'),
-    islemDugmesi('Günlük satış', 'Bugün ne satıldı, ne tüketildi', 'satis')
+    islemDugmesi('Günlük satış', 'Bugün ne satıldı, ne tüketildi', 'satis'),
+    islemDugmesi('Vega Sayım programı', "VegaWinA5'in sayım aracını aç", null, () => vegaProgramAc('sayim'))
   ]);
   icerik.appendChild(islemler);
 
@@ -213,40 +305,118 @@ ekranlar.ana = async function () {
   ]));
 };
 
-function islemDugmesi(ad, not, ekran) {
-  return el('button', { sinif: 'islem-dugme', tikla: () => ekranAc(ekran) }, [
+function islemDugmesi(ad, not, ekran, elleIs) {
+  return el('button', {
+    sinif: 'islem-dugme',
+    tikla: elleIs || (() => ekranAc(ekran))
+  }, [
     el('span', { sinif: 'ad', metin: ad }),
     el('span', { sinif: 'not', metin: not })
   ]);
 }
 
-// ---------- STOK ----------
+// ---------- STOK KONTROL ----------
+//
+// Tek ekran, dört süzgeç. Teorik (Vega'daki) miktarın karşısında en son
+// fiziki sayım ve fark duruyor; hepsi Excel ve PDF olarak dışarı aktarılabiliyor.
 
-ekranlar.stok = async function () {
-  const satirlar = await cagir('stok:durum', { sadeceSorunlu: true });
+const STOK_SUZGECLERI = [
+  { anahtar: 'sorunlu', ad: 'Dikkat isteyenler', not: 'Eksi, biten ve azalan' },
+  { anahtar: 'eksi', ad: 'Eksi stok', not: 'Miktarı sıfırın altında' },
+  { anahtar: 'sifir', ad: 'Stoğu bitenler', not: 'Miktarı tam sıfır' },
+  { anahtar: 'azalan', ad: 'Azalanlar', not: 'Kritik seviyenin altı' },
+  { anahtar: 'tumu', ad: 'Tüm ürünler', not: 'Hareket görmüş bütün kartlar' }
+];
+
+const STOK_DURUM_ETIKETI = {
+  eksi: { sinif: 'kirmizi', metin: 'Eksi stok' },
+  sifir: { sinif: 'kirmizi', metin: 'Bitti' },
+  azalan: { sinif: 'turuncu', metin: 'Azaldı' },
+  normal: { sinif: 'yesil', metin: 'Normal' }
+};
+
+ekranlar.stok = async function (parametre) {
+  const suzgec = parametre.suzgec || 'sorunlu';
+  const satirlar = await cagir('stok:kontrol', { suzgec });
+  const secili = STOK_SUZGECLERI.find((s) => s.anahtar === suzgec) || STOK_SUZGECLERI[0];
+
+  const sayilanAdet = satirlar.filter((s) => s.sayilan != null).length;
+  const toplamDeger = satirlar.reduce((t, s) => t + Number(s.deger || 0), 0);
+
+  function raporUret() {
+    return {
+      baslik: 'Stok kontrol — ' + secili.ad,
+      sayfaAdi: 'Stok kontrol',
+      sutunlar: [
+        { ad: 'Durum', alan: 'durumAdi', tur: 'metin', genislik: 14 },
+        { ad: 'Ürün', alan: 'ad', tur: 'metin', genislik: 42 },
+        { ad: 'Stok kodu', alan: 'kod', tur: 'metin', genislik: 16 },
+        { ad: 'Birim', alan: 'birim', tur: 'metin', genislik: 10 },
+        { ad: 'Teorik (Vega)', alan: 'teorik', tur: 'sayi', genislik: 15 },
+        { ad: 'Fiziki sayım', alan: 'sayilan', tur: 'sayi', genislik: 15 },
+        { ad: 'Fark', alan: 'fark', tur: 'sayi', genislik: 12 },
+        { ad: 'Fark tutarı', alan: 'farkTutari', tur: 'para', genislik: 16 },
+        { ad: 'Kritik seviye', alan: 'kritikSeviye', tur: 'sayi', genislik: 14 },
+        { ad: 'Birim maliyet', alan: 'birimMaliyet', tur: 'para', genislik: 16 },
+        { ad: 'Stok değeri', alan: 'deger', tur: 'para', genislik: 16 }
+      ],
+      satirlar: satirlar.map((s) =>
+        Object.assign({}, s, {
+          durumAdi: (STOK_DURUM_ETIKETI[s.durum] || {}).metin || s.durum
+        })
+      )
+    };
+  }
+
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Stok durumu', [
-    el('button', { sinif: 'dugme-sade', metin: 'Yazdır', tikla: () => window.galya.cagir('sistem:yazdir') })
+  icerik.appendChild(ekranBasligi('Stok kontrol', disaAktarDugmeleri(raporUret)));
+
+  // Süzgeç şeridi
+  const seritler = el('div', { sinif: 'suzgec-serit' });
+  for (const s of STOK_SUZGECLERI) {
+    seritler.appendChild(el('button', {
+      sinif: 'suzgec' + (s.anahtar === suzgec ? ' etkin' : ''),
+      title: s.not,
+      tikla: () => ekranAc('stok', { suzgec: s.anahtar })
+    }, [
+      el('span', { sinif: 'suzgec-ad', metin: s.ad })
+    ]));
+  }
+  icerik.appendChild(seritler);
+
+  icerik.appendChild(el('div', { sinif: 'ozet-serit' }, [
+    ozetKarti('Listedeki ürün', sayiYaz(satirlar.length)),
+    ozetKarti('Fiziki sayımı olan', sayiYaz(sayilanAdet)),
+    ozetKarti('Toplam stok değeri', paraYaz(toplamDeger) + ' TL')
   ]));
 
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-    'Sadece dikkat isteyen ürünler listeleniyor: stoğu biten, eksiye düşen ve kritik seviyenin altına inenler.'
+    secili.not + '. "Fiziki sayım" sütunu panelden yapılan en son ara sayımdan gelir; ' +
+    'hiç sayılmamış ürünlerde boş kalır.'
   ]));
 
   icerik.appendChild(tabloYap(
-    ['Durum', 'Ürün', 'Kalan', 'Birim', 'Kritik seviye', 'Maliyet', ''],
+    ['Durum', 'Ürün', 'Birim', 'Teorik', 'Fiziki sayım', 'Fark', 'Kritik', 'Değer', ''],
     satirlar,
     (s) => {
-      const etiketSinif = s.durum === 'eksi' || s.durum === 'sifir' ? 'kirmizi' : 'turuncu';
-      const etiketMetin = s.durum === 'eksi' ? 'Eksi stok'
-        : s.durum === 'sifir' ? 'Bitti' : 'Azaldı';
+      const e = STOK_DURUM_ETIKETI[s.durum] || STOK_DURUM_ETIKETI.normal;
       return el('tr', null, [
-        el('td', null, [el('span', { sinif: 'etiket ' + etiketSinif, metin: etiketMetin })]),
-        hucre(s.ad),
-        hucre(sayiYaz(s.kalan, 2), 'sayi ' + (s.kalan < 0 ? 'eksi' : '')),
+        el('td', null, [el('span', { sinif: 'etiket ' + e.sinif, metin: e.metin })]),
+        el('td', null, [
+          el('div', { sinif: 'ad-satir', metin: s.ad }),
+          s.sayimTarihi
+            ? el('div', { sinif: 'alt-not', metin: 'Sayım: ' + tarihYaz(s.sayimTarihi) + (s.sayan ? ' · ' + s.sayan : '') })
+            : null
+        ]),
         hucre(s.birim || '—'),
+        hucre(sayiYaz(s.teorik, 2), 'sayi ' + (s.teorik < 0 ? 'eksi' : '')),
+        hucre(s.sayilan == null ? '—' : sayiYaz(s.sayilan, 2), 'sayi'),
+        hucre(
+          s.fark == null ? '—' : sayiYaz(s.fark, 2),
+          'sayi ' + (s.fark < 0 ? 'eksi' : s.fark > 0 ? 'arti' : '')
+        ),
         hucre(s.kritikSeviye ? sayiYaz(s.kritikSeviye) : '—', 'sayi'),
-        hucre(paraYaz(s.maliyet), 'sayi'),
+        hucre(paraYaz(s.deger), 'sayi'),
         el('td', null, [el('button', {
           sinif: 'dugme-kucuk',
           metin: 'Hareketler',
@@ -256,6 +426,107 @@ ekranlar.stok = async function () {
     }
   ));
 };
+
+function ozetKarti(baslik, deger) {
+  return el('div', { sinif: 'ozet-kart' }, [
+    el('span', { sinif: 'ozet-baslik', metin: baslik }),
+    el('span', { sinif: 'ozet-deger', metin: deger })
+  ]);
+}
+
+// ---------- GİDER / HİZMET STOKLARI ----------
+
+ekranlar.gider = async function () {
+  const liste = await cagir('gider:liste', { sadeceDolu: true });
+
+  function raporUret() {
+    return {
+      baslik: 'Gider ve hizmet kartlarında kalan stok',
+      sayfaAdi: 'Gider stok',
+      sutunlar: [
+        { ad: 'Kart', alan: 'ad', tur: 'metin', genislik: 44 },
+        { ad: 'Stok kodu', alan: 'kod', tur: 'metin', genislik: 16 },
+        { ad: 'Birim', alan: 'birim', tur: 'metin', genislik: 10 },
+        { ad: 'Kalan miktar', alan: 'kalan', tur: 'sayi', genislik: 15 },
+        { ad: 'Birim maliyet', alan: 'birimMaliyet', tur: 'para', genislik: 16 },
+        { ad: 'Değer', alan: 'deger', tur: 'para', genislik: 16 }
+      ],
+      satirlar: liste
+    };
+  }
+
+  bosalt(icerik);
+  icerik.appendChild(ekranBasligi('Gider / hizmet stokları', disaAktarDugmeleri(raporUret)));
+
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Elektrik, su, nakliye, reklam gibi gider ve hizmet kartları (Vega stok tipi 3). ' +
+    'Bu kartlarda stok miktarı olmaması gerekir; faturalardan birikmiş miktar burada görünür.'
+  ]));
+
+  if (!durum.yazmaAcik) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      "Vega'ya yazma kapalı olduğu için sıfırlama düğmeleri çalışmaz. " +
+      'Ayarlar ekranından açabilirsiniz; açmadan önce VEGADB yedeğini alın.'
+    ]));
+  } else {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu kritik' }, [
+      'Sıfırlama, depo envanterine kalanı kapatan bir denge satırı ekler. ' +
+      'Stok hareketleri, maliyet ve cari etkilenmez. İşlem geri alınabilir ve ' +
+      'kim yaptığı kayıt altına alınır. Bu yöntem henüz gerçek Vega kurulumunda ' +
+      'doğrulanmadı — önce tek bir kartta deneyin.'
+    ]));
+  }
+
+  if (!durum.depo) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      'Sıfırlama için üst çubuktan tek bir depo seçmelisiniz. "Tüm depolar" seçiliyken yapılamaz.'
+    ]));
+  }
+
+  icerik.appendChild(tabloYap(
+    ['Kart', 'Birim', 'Kalan miktar', 'Birim maliyet', 'Değer', ''],
+    liste,
+    (g) => el('tr', null, [
+      el('td', null, [
+        el('div', { sinif: 'ad-satir', metin: g.ad }),
+        g.kod ? el('div', { sinif: 'alt-not', metin: g.kod }) : null
+      ]),
+      hucre(g.birim || '—'),
+      hucre(sayiYaz(g.kalan, 2), 'sayi ' + (g.kalan < 0 ? 'eksi' : 'arti')),
+      hucre(paraYaz(g.birimMaliyet), 'sayi'),
+      hucre(paraYaz(g.deger), 'sayi'),
+      el('td', null, [el('button', {
+        sinif: 'dugme-kucuk' + (durum.yazmaAcik && durum.depo ? ' tehlike' : ''),
+        metin: 'Sıfırla',
+        disabled: !durum.yazmaAcik || !durum.depo,
+        tikla: () => giderStokSifirla(g)
+      })])
+    ])
+  ));
+};
+
+async function giderStokSifirla(kart) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: 'Gider stoğunu sıfırla',
+    mesaj: `"${kart.ad}" kartının kalan ${sayiYaz(kart.kalan, 2)} ${kart.birim || ''} miktarı sıfırlanacak.`,
+    detay:
+      'Depo envanterine kalanı kapatan bir satır eklenir. Stok hareketleri, ' +
+      'maliyet ve cari değişmez. İşlem kayıt altına alınır ve geri alınabilir.',
+    evet: 'Sıfırla',
+    hayir: 'Vazgeç'
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    const sonuc = await cagir('gider:sifirla', { stokNo: kart.stokNo });
+    bildir(
+      sonuc.degisiklik
+        ? `"${kart.ad}" sıfırlandı (önceki kalan ${sayiYaz(sonuc.oncekiKalan, 2)}).`
+        : 'Kart zaten sıfırdı, değişiklik yapılmadı.',
+      'iyi'
+    );
+    ekranAc('gider');
+  } catch (e) { hataGoster(e); }
+}
 
 async function stokHareketiGoster(stok) {
   try {
@@ -407,7 +678,20 @@ ekranlar.satis = async function () {
     cagir('satis:tuketim', { gun: 1 })
   ]);
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Bugünkü satış'));
+  icerik.appendChild(ekranBasligi('Bugünkü satış', disaAktarDugmeleri(() => ({
+    baslik: 'Reçetelere göre hammadde tüketimi',
+    sayfaAdi: 'Tüketim',
+    sutunlar: [
+      { ad: 'Hammadde', alan: 'hammadde', tur: 'metin', genislik: 44 },
+      { ad: 'Tüketim', alan: 'tuketim', tur: 'sayi', genislik: 14 },
+      { ad: 'Birim', alan: 'birim', tur: 'metin', genislik: 10 },
+      { ad: 'Birim maliyet', alan: 'birimMaliyet', tur: 'para', genislik: 16 },
+      { ad: 'Tahmini tutar', alan: 'tutar', tur: 'para', genislik: 16 }
+    ],
+    satirlar: tuketim.map((t) => Object.assign({}, t, {
+      tutar: Number(t.tuketim || 0) * Number(t.birimMaliyet || 0)
+    }))
+  }))));
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Satılan ürünler' }));
   icerik.appendChild(tabloYap(
@@ -559,7 +843,22 @@ async function vegaProgramAc(anahtar) {
 async function sayimDetayGoster(sayimId) {
   try {
     const satirlar = await cagir('sayim:detay', { sayimId });
-    katmanAc('Sayım farkları', tabloYap(
+    const kap = el('div');
+    kap.appendChild(el('div', { sinif: 'form-satir' }, disaAktarDugmeleri(() => ({
+      baslik: 'Sayım farkları',
+      sayfaAdi: 'Sayım',
+      sutunlar: [
+        { ad: 'Ürün', alan: 'stokAdi', tur: 'metin', genislik: 44 },
+        { ad: 'Birim', alan: 'birim', tur: 'metin', genislik: 10 },
+        { ad: 'Teorik (Vega)', alan: 'teorik', tur: 'sayi', genislik: 15 },
+        { ad: 'Sayılan', alan: 'sayilan', tur: 'sayi', genislik: 14 },
+        { ad: 'Fark', alan: 'fark', tur: 'sayi', genislik: 12 },
+        { ad: 'Birim maliyet', alan: 'birimMaliyet', tur: 'para', genislik: 16 },
+        { ad: 'Fark tutarı', alan: 'farkTutari', tur: 'para', genislik: 16 }
+      ],
+      satirlar
+    }))));
+    kap.appendChild(tabloYap(
       ['Ürün', 'Vega\'da', 'Sayılan', 'Fark', 'Fark tutarı'],
       satirlar,
       (s) => el('tr', null, [
@@ -570,6 +869,7 @@ async function sayimDetayGoster(sayimId) {
         hucre(paraYaz(s.farkTutari), 'sayi')
       ])
     ));
+    katmanAc('Sayım farkları', kap);
   } catch (e) { hataGoster(e); }
 }
 
@@ -739,7 +1039,20 @@ ekranlar.third = async function () {
   for (const i of isaretliler) isaretHaritasi[i.stokNo] = i;
 
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('THIRD listesi'));
+  icerik.appendChild(ekranBasligi('THIRD listesi', disaAktarDugmeleri(() => ({
+    baslik: 'THIRD adayları (üretim gerektiren stoklar)',
+    sayfaAdi: 'THIRD',
+    sutunlar: [
+      { ad: 'Ürün', alan: 'ad', tur: 'metin', genislik: 44 },
+      { ad: 'Kalan', alan: 'kalan', tur: 'sayi', genislik: 13 },
+      { ad: 'Reçete satırı', alan: 'receteSatiri', tur: 'sayi', genislik: 14 },
+      { ad: 'Vega KOD11', alan: 'kod11', tur: 'metin', genislik: 14 },
+      { ad: 'Panelde işaretli', alan: 'isaretDurumu', tur: 'metin', genislik: 16 }
+    ],
+    satirlar: adaylar.map((a) => Object.assign({}, a, {
+      isaretDurumu: isaretHaritasi[a.stokNo] && isaretHaritasi[a.stokNo].isaretli ? 'THIRD' : ''
+    }))
+  }))));
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
     'Kendi reçetesi olan, yani üretim gerektiren stoklar. İşaretlediğiniz ürünler ' +
     'panel veritabanında saklanır. Vega kartındaki Özel Kod 11 alanına yazma işlemi ' +
@@ -945,7 +1258,20 @@ ekranlar.fatura = async function () {
     cagir('fatura:eslesmeler')
   ]);
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Bekleyen e-faturalar'));
+  icerik.appendChild(ekranBasligi('Bekleyen e-faturalar', disaAktarDugmeleri(() => ({
+    baslik: 'Bekleyen e-faturalar',
+    sayfaAdi: 'E-Fatura',
+    sutunlar: [
+      { ad: 'Tarih', alan: 'tarihYazi', tur: 'metin', genislik: 13 },
+      { ad: 'Tedarikçi', alan: 'tedarikci', tur: 'metin', genislik: 40 },
+      { ad: 'VKN', alan: 'vkn', tur: 'metin', genislik: 14 },
+      { ad: 'Evrak no', alan: 'evrakNo', tur: 'metin', genislik: 20 },
+      { ad: 'Tutar', alan: 'tutar', tur: 'para', genislik: 16 },
+      { ad: 'Para birimi', alan: 'paraBirimi', tur: 'metin', genislik: 12 },
+      { ad: 'Senaryo', alan: 'senaryo', tur: 'metin', genislik: 20 }
+    ],
+    satirlar: bekleyen.map((f) => Object.assign({}, f, { tarihYazi: tarihYaz(f.tarih) }))
+  }))));
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
     'Gelen kutusunda olup Vega\'ya aktarılmamış faturalar. Faturanın kabulü Vega ' +
     'programından yapılır; burada hangi faturaların beklediği ve kurulu ürün ' +
@@ -967,7 +1293,7 @@ ekranlar.fatura = async function () {
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Kurulu ürün eşleşmeleri' }));
   icerik.appendChild(tabloYap(
     ['Tedarikçi', 'Tedarikçi ürün kodu', 'Vega stok kartı'],
-    eslesmeler.slice(0, 500),
+    eslesmeler,
     (m) => el('tr', null, [
       hucre(m.tedarikci || '—'),
       hucre(m.tedarikciKodu || '—'),
@@ -981,7 +1307,18 @@ ekranlar.fatura = async function () {
 ekranlar.maliyet = async function () {
   const liste = await cagir('maliyet:eskiyenler');
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Maliyeti eskimiş ürünler'));
+  icerik.appendChild(ekranBasligi('Maliyeti eskimiş ürünler', disaAktarDugmeleri(() => ({
+    baslik: 'Maliyeti eskimiş ürünler',
+    sayfaAdi: 'Maliyet',
+    sutunlar: [
+      { ad: 'Ürün', alan: 'ad', tur: 'metin', genislik: 44 },
+      { ad: 'Alış fiyatı', alan: 'alisFiyati', tur: 'para', genislik: 16 },
+      { ad: 'Eski alış fiyatı', alan: 'eskiAlisFiyati', tur: 'para', genislik: 17 },
+      { ad: 'Kart maliyeti', alan: 'maliyet', tur: 'para', genislik: 16 },
+      { ad: 'Sebep', alan: 'sebep', tur: 'metin', genislik: 46 }
+    ],
+    satirlar: liste
+  }))));
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
     'Alış fiyatı ile kart maliyeti arasında %10\'dan fazla fark olan veya maliyeti ' +
     'hiç hesaplanmamış ürünler. Bu listedeki ürünler için Vega\'da maliyetlendirme çalıştırın.'
@@ -1005,9 +1342,18 @@ ekranlar.maliyet = async function () {
 ekranlar.cari = async function () {
   const liste = await cagir('cari:bakiye');
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Cari bakiye', [
-    el('button', { sinif: 'dugme-sade', metin: 'Yazdır', tikla: () => window.galya.cagir('sistem:yazdir') })
-  ]));
+  icerik.appendChild(ekranBasligi('Cari bakiye', disaAktarDugmeleri(() => ({
+    baslik: 'Cari bakiye listesi',
+    sayfaAdi: 'Cari',
+    sutunlar: [
+      { ad: 'Cari kodu', alan: 'kod', tur: 'metin', genislik: 16 },
+      { ad: 'Cari', alan: 'ad', tur: 'metin', genislik: 46 },
+      { ad: 'Borç', alan: 'borc', tur: 'para', genislik: 16 },
+      { ad: 'Alacak', alan: 'alacak', tur: 'para', genislik: 16 },
+      { ad: 'Bakiye', alan: 'bakiye', tur: 'para', genislik: 16 }
+    ],
+    satirlar: liste
+  }))));
   const toplam = liste.reduce((t, c) => t + Number(c.bakiye || 0), 0);
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
     `${liste.length} carinin bakiyesi var. Toplam net bakiye: ${paraYaz(toplam)} TL ` +

@@ -16,6 +16,7 @@ const ozet = require('./db/ozet');
 const yazma = require('./db/yazma');
 const guncelleme = require('./db/guncelleme');
 const vegaprogram = require('./db/vegaprogram');
+const rapor = require('./db/rapor');
 
 let pencere = null;
 
@@ -147,6 +148,40 @@ kayitEt('ozet:anaEkran', async (g) => ozet.anaEkran(g));
 kayitEt('stok:durum', async (g) => vega.stokDurumu(g));
 kayitEt('stok:ara', async (g) => vega.stokAra(g));
 kayitEt('stok:hareket', async (g) => vega.stokHareketleri(g));
+
+// Stok kontrol: teorik miktarın karşısına en son fiziki sayım yazılıyor.
+kayitEt('stok:kontrol', async (g) => {
+  const [liste, sayimlar] = await Promise.all([
+    vega.stokKontrolListesi(g),
+    sayim.fizikiSayimlar(g).catch(() => [])
+  ]);
+  const harita = new Map();
+  for (const s of sayimlar) harita.set(Number(s.stokNo), s);
+
+  for (const satir of liste) {
+    const s = harita.get(Number(satir.stokNo));
+    satir.sayilan = s ? Number(s.sayilan) : null;
+    satir.sayimTarihi = s ? s.sayimTarihi : null;
+    satir.sayan = s ? s.sayan : null;
+    satir.fark = s ? Number(s.sayilan) - Number(satir.teorik) : null;
+    satir.farkTutari = satir.fark == null ? null : satir.fark * Number(satir.birimMaliyet || 0);
+  }
+  return liste;
+});
+
+// Gider / hizmet kartları
+kayitEt('gider:liste', async (g) => vega.giderHizmetStoklari(g));
+kayitEt('gider:sifirla', async (g, k) =>
+  yazma.giderStokSifirla(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('gider:geriAl', async (g, k) =>
+  yazma.giderStokSifirlamaGeriAl(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+
+// Rapor dışa aktarma
+kayitEt('rapor:excel', async (g, k) => rapor.excelKaydet(pencere, g, k));
+kayitEt('rapor:pdf', async (g, k) => rapor.pdfKaydet(pencere, g, k));
+kayitEt('rapor:ac', async (g) => rapor.dosyaAc(g.yol));
 
 // Reçete
 kayitEt('recete:mamuller', async (g) => vega.receteliMamuller(g));

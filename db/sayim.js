@@ -211,6 +211,34 @@ async function sonSayimFarki(secim) {
   return r[0] || { sayimId: null, tarih: null, farkliSatir: 0, farkTutari: 0 };
 }
 
+// Her stok için EN SON yapılan fiziki sayım. Stok kontrol ekranında teorik
+// miktarın karşısına bunu yazıyoruz. İptal edilmiş sayımlar hesaba katılmaz.
+async function fizikiSayimlar(secim) {
+  await panel.kur();
+  const { firma } = await dogrula(secim.firma, secim.donem);
+  const p = panel.p();
+  return sorgu(
+    `
+    SELECT
+      D.StokNo         AS stokNo,
+      D.SayilanMiktar  AS sayilan,
+      S.SayimTarihi    AS sayimTarihi,
+      S.Sayan          AS sayan
+    FROM [${p}].dbo.AraSayimSatir D
+    JOIN [${p}].dbo.AraSayim S ON S.Id = D.SayimId
+    JOIN (
+      SELECT D2.StokNo, MAX(S2.Id) AS SonId
+      FROM [${p}].dbo.AraSayimSatir D2
+      JOIN [${p}].dbo.AraSayim S2 ON S2.Id = D2.SayimId
+      WHERE S2.Firma = @firma AND S2.Iptal = 0
+      GROUP BY D2.StokNo
+    ) SON ON SON.StokNo = D.StokNo AND SON.SonId = S.Id
+    WHERE S.Firma = @firma AND S.Iptal = 0
+  `,
+    { firma }
+  );
+}
+
 async function sayimIptal(kayit) {
   await panel.kur();
   const p = panel.p();
@@ -230,5 +258,6 @@ module.exports = {
   sayimListesi,
   sayimDetayi,
   sonSayimFarki,
+  fizikiSayimlar,
   sayimIptal
 };

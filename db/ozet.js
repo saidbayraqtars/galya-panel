@@ -117,6 +117,7 @@ async function anaEkran(secim) {
         altBaslik: 'Eksi veya sıfır',
         renk: 'kirmizi',
         ekran: 'stok',
+        parametre: { suzgec: 'sifir' },
         hata: stok.hata
       },
       {
@@ -126,6 +127,7 @@ async function anaEkran(secim) {
         altBaslik: `1–${ust} arası kaldı`,
         renk: 'turuncu',
         ekran: 'stok',
+        parametre: { suzgec: 'azalan' },
         hata: stok.hata
       },
       {
