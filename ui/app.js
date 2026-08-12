@@ -447,7 +447,8 @@ ekranlar.sayim = async function () {
   ]);
   bosalt(icerik);
   icerik.appendChild(ekranBasligi('Ara sayım', [
-    el('button', { sinif: 'dugme-sade', metin: 'Sayılacak ürünleri düzenle', tikla: sayimListesiDuzenle })
+    el('button', { sinif: 'dugme-sade', metin: 'Sayılacak ürünleri düzenle', tikla: sayimListesiDuzenle }),
+    el('button', { sinif: 'dugme-sade', metin: "Vega Sayım programını aç", tikla: () => vegaProgramAc('sayim') })
   ]));
 
   if (!liste.length) {
@@ -547,6 +548,13 @@ ekranlar.sayim = async function () {
     ])
   ));
 };
+
+async function vegaProgramAc(anahtar) {
+  try {
+    const sonuc = await cagir('vegaprogram:ac', { program: anahtar });
+    bildir(sonuc.ad + ' açılıyor…', 'iyi');
+  } catch (e) { hataGoster(e); }
+}
 
 async function sayimDetayGoster(sayimId) {
   try {

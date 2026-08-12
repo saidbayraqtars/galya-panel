@@ -15,6 +15,7 @@ const tutanak = require('./db/tutanak');
 const ozet = require('./db/ozet');
 const yazma = require('./db/yazma');
 const guncelleme = require('./db/guncelleme');
+const vegaprogram = require('./db/vegaprogram');
 
 let pencere = null;
 
@@ -208,6 +209,10 @@ kayitEt('tutanak:iptal', async (g, k) =>
 
 // Yazma kilidi
 kayitEt('yazma:durum', async () => ({ acik: yazma.yazmaAcikMi() }));
+
+// VegaWinA5 yardımcı programları
+kayitEt('vegaprogram:durum', async () => vegaprogram.durum());
+kayitEt('vegaprogram:ac', async (g, k) => vegaprogram.ac(g.program, k));
 
 // Güncelleme
 kayitEt('guncelleme:kontrol', async () => guncelleme.simdiKontrolEt());

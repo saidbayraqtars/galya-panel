@@ -41,6 +41,8 @@ const kanallar = [
   'tutanak:liste',
   'tutanak:iptal',
   'yazma:durum',
+  'vegaprogram:durum',
+  'vegaprogram:ac',
   'guncelleme:kontrol',
   'guncelleme:durum',
   'sistem:kullanici',

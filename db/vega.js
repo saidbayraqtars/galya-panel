@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 // VEGADB üzerinden yapılan bütün okumalar burada. Bu dosyada tek bir
 // INSERT / UPDATE / DELETE yoktur — Vega'ya yazma işlemleri db/yazma.js içindedir.
@@ -9,6 +9,14 @@ const { dogrula, tablo, kart, tabloVarMi } = require('./firma');
 
 function vt() {
   return ayarOku().vegaVeritabani;
+}
+
+// Üretim modülü hiç kullanılmamış firmalarda reçete tabloları oluşmamış olabilir.
+async function receteVarMi(firma) {
+  return (
+    (await tabloVarMi(firma, null, 'TBLURERECETELIST')) &&
+    (await tabloVarMi(firma, null, 'TBLURERECETE'))
+  );
 }
 
 // Depo envanteri hareket başına delta tutuyor; güncel stok = deltaların toplamı.
@@ -139,28 +147,43 @@ async function stokHareketleri(secim) {
 }
 
 // --- Reçete ---------------------------------------------------------------
+//
+// Vega'da reçete iki tablodan oluşuyor:
+//   TBLURERECETELIST : reçete başlığı. IND = reçete numarası,
+//                      STOKNO = üretilen mamul, MIKTAR = reçetenin verdiği miktar
+//   TBLURERECETE     : reçete satırları. EVRAKNO = başlığın IND'i (stok no DEĞİL),
+//                      STOKNO = kullanılan hammadde/yarı mamul
+// Alt reçete bağı satırın STOKNO'su üzerinden kurulur: o stoğun kendi
+// başlığı varsa ağaç bir seviye daha derinleşir.
 
 async function receteliMamuller(secim) {
   const { firma } = await dogrula(secim.firma, secim.donem);
   const v = vt();
-  if (!(await tabloVarMi(firma, null, 'TBLURERECETE'))) return [];
+  if (!(await receteVarMi(firma))) return [];
   return sorgu(`
     SELECT
-      R.EVRAKNO            AS receteNo,
-      MIN(S.MALINCINSI)    AS mamulAdi,
-      MIN(R.STOKNO)        AS ornekStok,
-      COUNT(*)             AS satirSayisi
-    FROM ${kart(v, firma, 'TBLURERECETE')} R
-    LEFT JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = R.EVRAKNO
-    GROUP BY R.EVRAKNO
-    ORDER BY MIN(S.MALINCINSI)
+      L.IND                       AS receteNo,
+      L.STOKNO                    AS mamulStokNo,
+      ISNULL(S.MALINCINSI, L.MALINCINSI) AS mamulAdi,
+      ISNULL(L.MIKTAR, 1)         AS verim,
+      ISNULL(L.BIRIM, '')         AS birim,
+      ISNULL(L.ACIKLAMA, '')      AS aciklama,
+      ISNULL(R.satirSayisi, 0)    AS satirSayisi
+    FROM ${kart(v, firma, 'TBLURERECETELIST')} L
+    LEFT JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = L.STOKNO
+    LEFT JOIN (
+      SELECT EVRAKNO, COUNT(*) AS satirSayisi
+      FROM ${kart(v, firma, 'TBLURERECETE')}
+      GROUP BY EVRAKNO
+    ) R ON R.EVRAKNO = L.IND
+    ORDER BY ISNULL(S.MALINCINSI, L.MALINCINSI)
   `);
 }
 
 async function receteSatirlari(secim) {
   const { firma } = await dogrula(secim.firma, secim.donem);
   const v = vt();
-  if (!(await tabloVarMi(firma, null, 'TBLURERECETE'))) return [];
+  if (!(await receteVarMi(firma))) return [];
   return sorgu(
     `
     SELECT
@@ -173,11 +196,15 @@ async function receteSatirlari(secim) {
       ISNULL(R.RANDIMAN, 0)   AS randiman,
       ISNULL(S.MALIYET, 0)    AS maliyet,
       ISNULL(S.STOKTIPI, 0)   AS stokTipi,
-      CASE WHEN EXISTS (
-        SELECT 1 FROM ${kart(v, firma, 'TBLURERECETE')} A WHERE A.EVRAKNO = R.STOKNO
-      ) THEN 1 ELSE 0 END AS altRecetesiVar
+      AL.IND                  AS altReceteNo
     FROM ${kart(v, firma, 'TBLURERECETE')} R
     LEFT JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = R.STOKNO
+    OUTER APPLY (
+      SELECT TOP 1 L2.IND
+      FROM ${kart(v, firma, 'TBLURERECETELIST')} L2
+      WHERE L2.STOKNO = R.STOKNO
+      ORDER BY L2.IND
+    ) AL
     WHERE R.EVRAKNO = @receteNo
     ORDER BY R.DETAY
   `,
@@ -197,9 +224,10 @@ async function receteAgaci(secim, seviye, gorulen) {
   const satirlar = await receteSatirlari(secim);
   for (const s of satirlar) {
     s.seviye = seviye;
-    if (s.altRecetesiVar) {
+    s.altRecetesiVar = s.altReceteNo != null ? 1 : 0;
+    if (s.altReceteNo != null) {
       s.alt = await receteAgaci(
-        { firma: secim.firma, donem: secim.donem, receteNo: s.stokNo },
+        { firma: secim.firma, donem: secim.donem, receteNo: s.altReceteNo },
         seviye + 1,
         gorulen
       );
@@ -214,9 +242,10 @@ async function thirdAdaylari(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const v = vt();
   const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
-  if (!(await tabloVarMi(firma, null, 'TBLURERECETE'))) return [];
+  if (!(await receteVarMi(firma))) return [];
 
-  // Aday: kendi reçetesi olan (yani üretim gerektiren) ama KOD11 boş olan stoklar.
+  // Aday: kendi reçetesi olan (yani üretim gerektiren) stoklar.
+  // Reçete bağı TBLURERECETELIST.STOKNO üzerinden kurulur.
   return sorgu(
     `
     WITH K AS (${kalanAltSorgu(v, firma, donem)})
@@ -226,13 +255,22 @@ async function thirdAdaylari(secim) {
       ISNULL(S.KOD11, '')  AS kod11,
       ISNULL(K.KALAN, 0)   AS kalan,
       ISNULL(S.KRITIKSEVIYE, 0) AS kritikSeviye,
-      R.satirSayisi        AS receteSatiri
+      R.receteNo,
+      ISNULL(R.satirSayisi, 0) AS receteSatiri
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     JOIN (
-      SELECT EVRAKNO, COUNT(*) AS satirSayisi
-      FROM ${kart(v, firma, 'TBLURERECETE')}
-      GROUP BY EVRAKNO
-    ) R ON R.EVRAKNO = S.IND
+      SELECT
+        L.STOKNO,
+        MIN(L.IND) AS receteNo,
+        SUM(ISNULL(A.satirSayisi, 0)) AS satirSayisi
+      FROM ${kart(v, firma, 'TBLURERECETELIST')} L
+      LEFT JOIN (
+        SELECT EVRAKNO, COUNT(*) AS satirSayisi
+        FROM ${kart(v, firma, 'TBLURERECETE')}
+        GROUP BY EVRAKNO
+      ) A ON A.EVRAKNO = L.IND
+      GROUP BY L.STOKNO
+    ) R ON R.STOKNO = S.IND
     LEFT JOIN K ON K.STOKNO = S.IND
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
     ORDER BY ISNULL(K.KALAN, 0) ASC, S.MALINCINSI

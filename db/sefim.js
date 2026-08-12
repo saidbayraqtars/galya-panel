@@ -187,7 +187,12 @@ async function satistanTuketim(secim) {
   const v = vt();
   const p = panel.p();
   const gun = Number(secim.gun || 1);
-  if (!(await tabloVarMi(firma, null, 'TBLURERECETE'))) return [];
+  if (
+    !(await tabloVarMi(firma, null, 'TBLURERECETELIST')) ||
+    !(await tabloVarMi(firma, null, 'TBLURERECETE'))
+  ) {
+    return [];
+  }
 
   return sorgu(
     `
@@ -211,15 +216,20 @@ async function satistanTuketim(secim) {
     SELECT
       R.STOKNO                 AS hammaddeNo,
       ISNULL(HS.MALINCINSI, R.MALINCINSI) AS hammadde,
-      SUM(E.miktar * ISNULL(R.MIKTAR, 0) * (1 + ISNULL(R.FIREORANI, 0) / 100.0)) AS tuketim,
+      SUM(
+        E.miktar / NULLIF(L.MIKTAR, 0)
+        * ISNULL(R.MIKTAR, 0)
+        * (1 + ISNULL(R.FIREORANI, 0) / 100.0)
+      ) AS tuketim,
       ISNULL(MIN(R.BIRIM), '') AS birim,
       ISNULL(MIN(HS.MALIYET), 0) AS birimMaliyet
     FROM Eslesen E
-    JOIN ${kart(v, firma, 'TBLURERECETE')} R ON R.EVRAKNO = E.stokNo
+    JOIN ${kart(v, firma, 'TBLURERECETELIST')} L ON L.STOKNO = E.stokNo
+    JOIN ${kart(v, firma, 'TBLURERECETE')} R ON R.EVRAKNO = L.IND
     LEFT JOIN ${kart(v, firma, 'TBLSTOKLAR')} HS ON HS.IND = R.STOKNO
     WHERE E.stokNo IS NOT NULL
     GROUP BY R.STOKNO, ISNULL(HS.MALINCINSI, R.MALINCINSI)
-    ORDER BY SUM(E.miktar * ISNULL(R.MIKTAR, 0)) DESC
+    ORDER BY SUM(E.miktar / NULLIF(L.MIKTAR, 0) * ISNULL(R.MIKTAR, 0)) DESC
   `,
     { gun, firma }
   );

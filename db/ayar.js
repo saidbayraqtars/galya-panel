@@ -19,6 +19,7 @@ const VARSAYILAN = {
   kritikStokUst: 5,
   aktifGun: 90,
   maliyetEskimeGun: 30,
+  vegaKlasoru: 'C:\\VegaWinA5',
   vegayaYazmaAktif: false
 };
 
