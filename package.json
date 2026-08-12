@@ -1,0 +1,71 @@
+{
+  "name": "galya-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Galya Master Panel — VegaWin ve Vega Şefim verileri üzerinden günlük stok, sayım, reçete ve fatura takibi",
+  "author": "Bayraktar Yazılım",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test:db": "node kurulum/test-sorgular.js",
+    "dist": "electron-builder --win --x64 --publish never",
+    "dist:dir": "electron-builder --win --x64 --dir --publish never",
+    "release": "electron-builder --win --x64 --publish always"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.3",
+    "mssql": "^11.0.1"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.bayraktar.galyapanel",
+    "productName": "Galya Panel",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "db/**/*",
+      "ui/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "ayarlar.ornek.json",
+        "to": "ayarlar.ornek.json"
+      },
+      {
+        "from": "kurulum/sql-kullanici-olustur.sql",
+        "to": "kurulum/sql-kullanici-olustur.sql"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "saidbayraqtars",
+        "repo": "galya-panel"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Galya Panel"
+    }
+  }
+}

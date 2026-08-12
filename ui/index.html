@@ -1,0 +1,48 @@
+﻿<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>Galya Panel</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header id="ustBar">
+  <div class="ust-sol">
+    <span class="logo">GALYA PANEL</span>
+    <select id="firmaSecici" title="Firma"></select>
+    <select id="donemSecici" title="Dönem"></select>
+    <select id="depoSecici" title="Depo"></select>
+  </div>
+  <div class="ust-sag">
+    <span id="surumYazi" class="surum"></span>
+    <span id="guncellemeRozet" class="rozet rozet-mavi hidden"></span>
+    <span id="durumRozet" class="rozet rozet-bekle">Bağlanıyor…</span>
+    <button id="yenileDugme" class="dugme-sade" title="Yenile">Yenile</button>
+    <button id="ayarDugme" class="dugme-sade" title="Ayarlar">Ayarlar</button>
+  </div>
+</header>
+
+<div id="uyariSeridi" class="hidden"></div>
+
+<main id="icerik">
+  <div class="yukleniyor">Yükleniyor…</div>
+</main>
+
+<div id="kutuKatman" class="katman hidden">
+  <div class="katman-kutu">
+    <div class="katman-baslik">
+      <h3 id="katmanBaslik">Başlık</h3>
+      <button id="katmanKapat" class="dugme-sade">Kapat</button>
+    </div>
+    <div id="katmanIcerik" class="katman-icerik"></div>
+  </div>
+</div>
+
+<div id="bildirim" class="bildirim hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

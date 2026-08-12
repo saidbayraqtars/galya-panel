@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+
+# Bu bilgisayara özel ayarlar — SQL şifresi içerir, depoya girmez.
+ayarlar.json
+
+# Günlük ve geçici dosyalar
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

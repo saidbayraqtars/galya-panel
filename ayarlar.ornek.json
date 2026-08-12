@@ -1,0 +1,26 @@
+{
+  "_aciklama": "Örnek ayar dosyası. Program ilk açılışta bunu kopyalayıp kendi ayar dosyasını oluşturur. Sunucu adı ve şifreyi kurulumda doldurun.",
+
+  "sunucu": "SUNUCU-ADI",
+  "port": 1433,
+  "windowsGirisi": false,
+  "kullanici": "galya_panel",
+  "sifre": "",
+  "_sifreNotu": "kurulum/sql-kullanici-olustur.sql içinde belirlediğiniz şifreyi buraya yazın.",
+
+  "vegaVeritabani": "VEGADB",
+  "sefimVeritabani": "sefim",
+  "panelVeritabani": "GALYA_PANEL",
+
+  "varsayilanFirma": "F0102",
+  "varsayilanDonem": "D0002",
+  "varsayilanDepo": 1,
+
+  "kritikStokAlt": 1,
+  "kritikStokUst": 5,
+  "aktifGun": 90,
+  "maliyetEskimeGun": 30,
+
+  "vegayaYazmaAktif": false,
+  "_vegayaYazmaNotu": "true yapılana kadar program VEGADB'ye tek satır yazmaz."
+}
