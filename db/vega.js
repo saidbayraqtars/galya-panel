@@ -284,6 +284,7 @@ async function receteSatirlari(secim) {
   return sorgu(
     `
     SELECT
+      R.IND           AS ind,
       R.DETAY         AS sira,
       R.STOKNO        AS stokNo,
       ISNULL(S.MALINCINSI, R.MALINCINSI) AS ad,

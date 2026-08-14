@@ -961,10 +961,17 @@ async function sayimListesiDuzenle() {
 ekranlar.recete = async function () {
   const mamuller = await cagir('recete:mamuller');
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Reçete ağacı'));
+  icerik.appendChild(ekranBasligi('Reçete ağacı',
+    durum.yazmaAcik
+      ? [el('button', { sinif: 'dugme-sade', metin: 'Yeni reçete', tikla: yeniRecetePenceresi })]
+      : null
+  ));
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
     `${mamuller.length} mamulün reçetesi var. Bir mamule tıklayın, altındaki bütün ` +
-    'yarı mamul ve hammaddeler açılsın.'
+    'yarı mamul ve hammaddeler açılsın.' +
+    (durum.yazmaAcik
+      ? ' Reçeteyi buradan düzenleyebilirsiniz; değişiklik doğrudan Vega\'ya yazılır.'
+      : ' Vega\'ya yazma kapalı olduğu için reçeteler şimdilik yalnızca görüntüleniyor.')
   ]));
 
   const arama = el('input', { type: 'text', placeholder: 'Mamul ara…' });
@@ -977,11 +984,21 @@ ekranlar.recete = async function () {
       (m) => el('tr', null, [
         hucre(m.mamulAdi || ('Reçete ' + m.receteNo)),
         hucre(sayiYaz(m.satirSayisi), 'sayi'),
-        el('td', null, [el('button', {
-          sinif: 'dugme-kucuk',
-          metin: 'Ağacı aç',
-          tikla: () => receteAgaciGoster(m)
-        })])
+        el('td', null, [
+          el('button', {
+            sinif: 'dugme-kucuk',
+            metin: 'Ağacı aç',
+            tikla: () => receteAgaciGoster(m)
+          }),
+          durum.yazmaAcik
+            ? el('button', {
+                sinif: 'dugme-kucuk',
+                metin: 'Düzenle',
+                style: 'margin-left:6px',
+                tikla: () => receteDuzenle(m)
+              })
+            : null
+        ])
       ])
     ));
   }
@@ -997,6 +1014,133 @@ ekranlar.recete = async function () {
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [arama]));
   icerik.appendChild(listeKap);
 };
+
+// Reçete düzenleme: satır ekle / miktar değiştir / satır sil.
+// Her işlem doğrudan Vega'daki reçete tablosuna yazılır.
+async function receteDuzenle(mamul) {
+  try {
+    const kap = el('div');
+    const baslik = mamul.mamulAdi || ('Reçete ' + mamul.receteNo);
+    const satirKap = el('div');
+
+    async function tazele() {
+      const satirlar = await cagir('recete:satirlar', { receteNo: mamul.receteNo });
+      bosalt(satirKap);
+      if (!satirlar.length) {
+        satirKap.appendChild(el('div', { sinif: 'bos-mesaj', metin: 'Reçetede henüz bileşen yok.' }));
+        return;
+      }
+      satirKap.appendChild(tabloYap(
+        ['Bileşen', 'Miktar', 'Birim', 'Fire %', ''],
+        satirlar,
+        (s) => {
+          const miktarKutu = el('input', {
+            type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: String(s.miktar)
+          });
+          const fireKutu = el('input', {
+            type: 'number', sinif: 'miktar', step: '0.1', min: '0', value: String(s.fireOrani || 0)
+          });
+          return el('tr', null, [
+            hucre(s.ad),
+            el('td', null, [miktarKutu]),
+            hucre(s.birim || '—'),
+            el('td', null, [fireKutu]),
+            el('td', null, [
+              el('button', {
+                sinif: 'dugme-kucuk',
+                metin: 'Kaydet',
+                tikla: async () => {
+                  try {
+                    await cagir('recete:satirGuncelle', {
+                      ind: s.ind,
+                      miktar: Number(miktarKutu.value),
+                      birim: s.birim,
+                      fireOrani: Number(fireKutu.value)
+                    });
+                    bildir('Satır güncellendi.', 'iyi');
+                    await tazele();
+                  } catch (e) { hataGoster(e); }
+                }
+              }),
+              el('button', {
+                sinif: 'dugme-kucuk',
+                metin: 'Sil',
+                style: 'margin-left:6px',
+                tikla: async () => {
+                  const onay = await window.galya.cagir('sistem:onay', {
+                    baslik: 'Bileşeni sil',
+                    mesaj: `"${s.ad}" reçeteden çıkarılacak.`,
+                    detay: 'Değişiklik doğrudan Vega reçetesine yazılır.',
+                    evet: 'Sil', hayir: 'Vazgeç'
+                  });
+                  if (!onay.veri || !onay.veri.onay) return;
+                  try {
+                    await cagir('recete:satirSil', { ind: s.ind });
+                    bildir('Bileşen silindi.', 'iyi');
+                    await tazele();
+                  } catch (e) { hataGoster(e); }
+                }
+              })
+            ])
+          ]);
+        }
+      ));
+    }
+
+    kap.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      `"${baslik}" mamulünün reçetesi. Miktar veya fire oranını değiştirip Kaydet'e basın.`
+    ]));
+    kap.appendChild(satirKap);
+
+    kap.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Bileşen ekle' }));
+    const miktarKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: '1' });
+    const fireKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.1', min: '0', value: '0' });
+    let secilen = null;
+    kap.appendChild(urunSecici('Eklenecek bileşen', (b) => { secilen = b; }));
+    kap.appendChild(el('div', { sinif: 'form-satir' }, [
+      el('div', null, [el('label', { metin: 'Miktar' }), miktarKutu]),
+      el('div', null, [el('label', { metin: 'Fire %' }), fireKutu]),
+      el('button', {
+        sinif: 'dugme-ana',
+        metin: 'Reçeteye ekle',
+        tikla: async () => {
+          if (!secilen) { bildir('Önce bileşen seçin.', 'kotu'); return; }
+          try {
+            await cagir('recete:satirEkle', {
+              receteNo: mamul.receteNo,
+              stokNo: secilen.stokNo,
+              miktar: Number(miktarKutu.value),
+              fireOrani: Number(fireKutu.value)
+            });
+            bildir('Bileşen eklendi.', 'iyi');
+            await tazele();
+          } catch (e) { hataGoster(e); }
+        }
+      })
+    ]));
+
+    await tazele();
+    katmanAc(baslik + ' — reçete düzenle', kap);
+  } catch (e) { hataGoster(e); }
+}
+
+// Mamul seçilince reçete başlığı oluşturulur, sonra bileşen ekleme açılır.
+// Seçilen mamulün reçetesi zaten varsa mevcut reçete açılır.
+function yeniRecetePenceresi() {
+  const kap = el('div');
+  kap.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Üretilecek mamulü seçin. Reçete başlığı oluşturulup bileşen ekleme ekranı açılır.'
+  ]));
+  kap.appendChild(urunSecici('Mamul', async (b) => {
+    try {
+      const s = await cagir('recete:olustur', { mamulNo: b.stokNo });
+      katmanKapat();
+      bildir(s.yeni ? 'Reçete oluşturuldu.' : 'Bu mamulün reçetesi zaten vardı, açıldı.', 'iyi');
+      receteDuzenle({ receteNo: s.receteNo, mamulAdi: b.ad });
+    } catch (e) { hataGoster(e); }
+  }));
+  katmanAc('Yeni reçete', kap);
+}
 
 async function receteAgaciGoster(mamul) {
   try {

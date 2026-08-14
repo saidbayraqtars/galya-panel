@@ -173,6 +173,73 @@ async function say(tabloAdi, kosul, p) {
   kontrol('Giriş fişi başlığı silindi',
     (await say('F0103D0015TBLSTKGIRBASLIK', 'IND=@i', { i: giris.baslikInd })) === 0);
 
+  console.log('\n== Reçete yazma ==');
+  const vega = require(path.join(kok, 'db', 'vega'));
+  const mamulStok = stoklar[0].stokNo;
+  const bilesenStok = stoklar[1].stokNo;
+
+  const bas = await yazma.receteOlustur(
+    Object.assign({}, SECIM, { mamulNo: mamulStok, verim: 1, kullanici: 'test' })
+  );
+  kontrol('Reçete başlığı oluşturuldu', bas.yeni === true && bas.receteNo > 0, 'receteNo=' + bas.receteNo);
+  const receteNo = bas.receteNo;
+
+  const tekrar = await yazma.receteOlustur(
+    Object.assign({}, SECIM, { mamulNo: mamulStok, kullanici: 'test' })
+  );
+  kontrol('Aynı mamule ikinci başlık açılmıyor',
+    tekrar.yeni === false && tekrar.receteNo === receteNo);
+
+  const ek1 = await yazma.receteSatiriEkle(
+    Object.assign({}, SECIM, { receteNo, stokNo: bilesenStok, miktar: 2.5, fireOrani: 3, kullanici: 'test' })
+  );
+  kontrol('Reçeteye bileşen eklendi', ek1.tamam === true);
+
+  let satirlar = await vega.receteSatirlari(Object.assign({}, SECIM, { receteNo }));
+  kontrol('Reçete okunduğunda 1 satır var', satirlar.length === 1, 'satır=' + satirlar.length);
+  kontrol('Miktar doğru yazıldı', Number(satirlar[0].miktar) === 2.5, 'miktar=' + satirlar[0].miktar);
+  kontrol('Fire oranı doğru yazıldı', Number(satirlar[0].fireOrani) === 3, 'fire=' + satirlar[0].fireOrani);
+
+  const mamuller = await vega.receteliMamuller(SECIM);
+  kontrol('Reçeteli mamuller listesinde görünüyor',
+    mamuller.some((m) => m.receteNo === receteNo && m.satirSayisi === 1),
+    'liste=' + JSON.stringify(mamuller.map((m) => [m.receteNo, m.satirSayisi])));
+
+  let ikiliHata = null;
+  try {
+    await yazma.receteSatiriEkle(
+      Object.assign({}, SECIM, { receteNo, stokNo: bilesenStok, miktar: 1, kullanici: 'test' })
+    );
+  } catch (e) { ikiliHata = e.message; }
+  kontrol('Aynı bileşen ikinci kez eklenemiyor', ikiliHata !== null);
+
+  let kendiHata = null;
+  try {
+    await yazma.receteSatiriEkle(
+      Object.assign({}, SECIM, { receteNo, stokNo: mamulStok, miktar: 1, kullanici: 'test' })
+    );
+  } catch (e) { kendiHata = e.message; }
+  kontrol('Mamul kendi reçetesine eklenemiyor', kendiHata !== null);
+
+  // Döngü: bileşenin reçetesine mamulü eklemeye çalış
+  let dongu = null;
+  try {
+    await yazma.receteSatiriEkle(
+      Object.assign({}, SECIM, { mamulNo: bilesenStok, stokNo: mamulStok, miktar: 1, kullanici: 'test' })
+    );
+  } catch (e) { dongu = e.message; }
+  kontrol('Döngü oluşturan bileşen engelleniyor', dongu !== null, dongu);
+
+  await yazma.receteSatiriGuncelle(
+    Object.assign({}, SECIM, { ind: ek1.ind, miktar: 7, birim: satirlar[0].birim, fireOrani: 1.5, kullanici: 'test' })
+  );
+  satirlar = await vega.receteSatirlari(Object.assign({}, SECIM, { receteNo }));
+  kontrol('Güncelleme miktarı değiştirdi', Number(satirlar[0].miktar) === 7, 'miktar=' + satirlar[0].miktar);
+
+  await yazma.receteSatiriSil(Object.assign({}, SECIM, { ind: ek1.ind, kullanici: 'test' }));
+  satirlar = await vega.receteSatirlari(Object.assign({}, SECIM, { receteNo }));
+  kontrol('Silme sonrası reçete boş', satirlar.length === 0, 'satır=' + satirlar.length);
+
   console.log('\n== Belge numarası ==');
   const ikinci = await yazma.tutanakFisiYaz(
     Object.assign({}, SECIM, {

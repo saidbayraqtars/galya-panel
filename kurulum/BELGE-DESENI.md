@@ -102,6 +102,43 @@ tutarlı olacak şekilde doldurulur.
   döner.
 - `ayarlar.json` içindeki `vegayaYazmaAktif` kapalıyken hiçbiri çalışmaz.
 
+## Reçete
+
+Reçete iki dönemsiz kart tablosunda durur:
+
+```
+TBLURERECETELIST                 (reçete başlığı)
+   IND ──────────────────┐        reçete numarası, IDENTITY
+   STOKNO                │        üretilen mamulün stok kartı
+   MIKTAR                │        verim: kaç birim mamul çıkıyor
+                         │
+TBLURERECETE                     (bileşen satırları)
+   EVRAKNO ←─────────────┘        BAŞLIĞIN IND'i
+   STOKNO                         bileşenin stok kartı
+   DETAY                          satır sırası
+```
+
+**En kolay yapılan hata:** `TBLURERECETE.EVRAKNO` alanının mamulün stok
+IND'ini tuttuğunu sanmak. Tutmuyor — reçete **başlığının** IND'ini tutuyor.
+Mamule ulaşmak için başlıktan geçmek gerekir.
+
+Alt reçete ayrı bir kayıt değildir. Bir bileşenin stok kartı başka bir
+başlıkta `STOKNO` olarak geçiyorsa, ağaç oradan devam eder. Mamul → yarı
+mamul → yarı mamul zinciri böyle kurulur.
+
+Panel reçeteye yazarken:
+
+- Mamulün başlığı yoksa önce `TBLURERECETELIST` kaydı açar.
+- Aynı mamule ikinci başlık açmaz; varsa mevcut olanı kullanır.
+- Aynı bileşeni reçeteye iki kez eklemez.
+- Mamulün kendisini bileşen olarak eklemez.
+- Ağacı gezerek **döngü kontrolü** yapar: eklenecek bileşenin reçetesinde
+  mamulün kendisi geçiyorsa işlemi reddeder (yoksa ağaç sonsuza gider).
+
+Reçete tabloları yalnızca tanım tutar; stok hareketi, envanter, maliyet ve
+muhasebe zincirine dokunmaz. Bu yüzden yazma işlemleri arasında en düşük
+riskli olanıdır.
+
 ## Sınama
 
 `node kurulum/test-yazma.js`
@@ -111,8 +148,10 @@ Sınama müşteri veritabanına dokunmaz: yapısı VEGADB'den kopyalanmış boş
 
 ## Henüz çıkarılmamış desenler
 
-- **Üretim tetikleme** — bu veritabanında üretim/reçete verisi yok
-  (`TBLURERECETE` boş). Üretim kullanan bir Vega veritabanı gerekiyor.
+- **Üretim tetikleme** — üretimin hangi tablolara ne yazdığı çıkarılmadı.
+  Elde üretim yapılmış bir Vega veritabanı gerekiyor: `TBLUREURETIM`,
+  `TBLUREBELGE`, `TBLUREURETIMCIKTI` dolu olmalı ve stok hareketlerinde
+  `IZAHAT` 96/97 bulunmalı. İncelenen veritabanında bu tablolar boş.
 - **Maliyetlendirme** — tek belge değil, toplu yeniden hesaplama. Vega'nın
   ne yazdığı `kurulum/izleyici-kur.sql` ile yakalanmalı: izleyici
   çalışırken VegaWin'de Stok Yönetimi → Araçlar → Maliyetlendirme

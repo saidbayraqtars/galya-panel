@@ -186,6 +186,19 @@ kayitEt('rapor:ac', async (g) => rapor.dosyaAc(g.yol));
 // Reçete
 kayitEt('recete:mamuller', async (g) => vega.receteliMamuller(g));
 kayitEt('recete:agac', async (g) => vega.receteAgaci(g));
+kayitEt('recete:satirlar', async (g) => vega.receteSatirlari(g));
+kayitEt('recete:olustur', async (g, k) =>
+  yazma.receteOlustur(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('recete:satirEkle', async (g, k) =>
+  yazma.receteSatiriEkle(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('recete:satirGuncelle', async (g, k) =>
+  yazma.receteSatiriGuncelle(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('recete:satirSil', async (g, k) =>
+  yazma.receteSatiriSil(Object.assign({}, g, { kullanici: k.kullanici }))
+);
 
 // THIRD
 kayitEt('third:adaylar', async (g) => vega.thirdAdaylari(g));

@@ -208,6 +208,299 @@ async function giderStokSifirlamaGeriAl(kayit) {
   return { tamam: true, silinen: etkilenen[0] || 0 };
 }
 
+// --- Reçete yazma ---------------------------------------------------------
+//
+// Reçete iki dönemsiz kart tablosunda durur:
+//
+//   TBLURERECETELIST → reçete başlığı
+//        IND    = reçete numarası
+//        STOKNO = üretilen mamulün stok kartı
+//        MIKTAR = bu reçetenin verimi (kaç birim mamul çıkıyor)
+//
+//   TBLURERECETE     → reçete satırları (bileşenler)
+//        EVRAKNO = başlığın IND'i     ← mamulün stok IND'i DEĞİL
+//        STOKNO  = bileşenin stok kartı
+//        DETAY   = satır sırası
+//
+// Alt reçete ayrı kayıt değildir: bir bileşenin stok kartı başka bir
+// başlıkta mamul olarak geçiyorsa ağaç oradan devam eder. Mamul → yarı
+// mamul → yarı mamul zinciri böyle kurulur.
+//
+// Bu tablolar yalnızca tanım tutar; stok hareketi, envanter, maliyet ve
+// muhasebe zincirine dokunmaz. Yazma işlemleri arasında en düşük riskli
+// olanıdır. Yine de kilide tabidir.
+
+async function receteBilesenBilgisi(v, firma, stokNo) {
+  const r = await sorgu(
+    `
+    SELECT S.IND AS stokNo, S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
+           ISNULL(S.MALIYET, 0) AS maliyet, ISNULL(S.STOKTIPI, 0) AS stokTipi,
+           ISNULL(B.BIRIMADI, '') AS birim, ISNULL(B.CARPAN, 1) AS carpan
+    FROM ${kart(v, firma, 'TBLSTOKLAR')} S
+    LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+           ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+    WHERE S.IND = @stokNo
+  `,
+    { stokNo: Number(stokNo) }
+  );
+  if (!r.length) throw new Error('Bileşen stok kartı bulunamadı.');
+  return r[0];
+}
+
+// Yeni reçete başlığı. Bir mamulün reçetesi yoksa önce bu oluşturulur.
+async function receteOlustur(kayit) {
+  kilitKontrol();
+  const { firma } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+  const mamulNo = Number(kayit.mamulNo);
+  if (!mamulNo) throw new Error('Mamul seçilmeli.');
+
+  const m = await receteBilesenBilgisi(v, firma, mamulNo);
+
+  const mevcut = await sorgu(
+    `SELECT IND FROM ${kart(v, firma, 'TBLURERECETELIST')} WHERE STOKNO = @stokNo`,
+    { stokNo: mamulNo }
+  );
+  if (mevcut.length) {
+    return { tamam: true, receteNo: mevcut[0].IND, yeni: false };
+  }
+
+  const eklenen = await sorgu(
+    `
+    INSERT INTO ${kart(v, firma, 'TBLURERECETELIST')}
+      (STOKNO, STOKKODU, MALINCINSI, BIRIM, FIYAT, KDV, KULLANICI,
+       SONERISIMTARIHI, OLUSTURMATARIHI, TUTAR, ACIKLAMA, STOKTIPI,
+       SATISFIYATI, MIKTAR, STANDARTSURE)
+    OUTPUT INSERTED.IND AS ind
+    VALUES
+      (@stokNo, @kod, @ad, @birim, @fiyat, 0, @kullanici,
+       GETDATE(), GETDATE(), 0, @aciklama, @stokTipi,
+       0, @verim, 0)
+  `,
+    {
+      stokNo: mamulNo,
+      kod: m.kod,
+      ad: m.ad,
+      birim: m.birim,
+      fiyat: Number(m.maliyet),
+      kullanici: Number(kayit.userNo || 0),
+      aciklama: kayit.aciklama || null,
+      stokTipi: Number(m.stokTipi),
+      verim: Number(kayit.verim || 1)
+    }
+  );
+
+  await panel.kayit(
+    'Reçete',
+    'Yeni reçete başlığı oluşturuldu',
+    { firma, mamulNo, ad: m.ad, receteNo: eklenen[0].ind },
+    kayit.kullanici
+  );
+
+  return { tamam: true, receteNo: eklenen[0].ind, yeni: true };
+}
+
+async function receteSatiriEkle(kayit) {
+  kilitKontrol();
+  const { firma } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+  const bilesenNo = Number(kayit.stokNo);
+  if (!bilesenNo) throw new Error('Bileşen seçilmeli.');
+  if (!(Number(kayit.miktar) > 0)) throw new Error('Miktar sıfırdan büyük olmalı.');
+
+  // Reçete numarası verilmediyse mamulden başlık üret/bul.
+  let receteNo = Number(kayit.receteNo || 0);
+  if (!receteNo) {
+    if (!kayit.mamulNo) throw new Error('Reçete ya da mamul belirtilmeli.');
+    const bas = await receteOlustur(kayit);
+    receteNo = bas.receteNo;
+  }
+
+  const basliklar = await sorgu(
+    `SELECT IND, STOKNO, ISNULL(MALINCINSI,'') AS ad
+     FROM ${kart(v, firma, 'TBLURERECETELIST')} WHERE IND = @receteNo`,
+    { receteNo }
+  );
+  if (!basliklar.length) throw new Error('Reçete başlığı bulunamadı.');
+  const mamulStokNo = Number(basliklar[0].STOKNO);
+
+  if (mamulStokNo === bilesenNo) {
+    throw new Error('Bir mamul kendi reçetesine bileşen olarak eklenemez.');
+  }
+
+  // Döngü kontrolü: bileşenin ağacında mamulün kendisi geçiyorsa sonsuz döngü olur.
+  await dongruKontrol(v, firma, bilesenNo, mamulStokNo);
+
+  const mevcut = await sorgu(
+    `SELECT COUNT(*) AS adet FROM ${kart(v, firma, 'TBLURERECETE')}
+     WHERE EVRAKNO = @receteNo AND STOKNO = @bilesen`,
+    { receteNo, bilesen: bilesenNo }
+  );
+  if (mevcut[0].adet > 0) {
+    throw new Error('Bu bileşen reçetede zaten var. Miktarını değiştirmek için satırı düzenleyin.');
+  }
+
+  const b = await receteBilesenBilgisi(v, firma, bilesenNo);
+  const siraR = await sorgu(
+    `SELECT ISNULL(MAX(DETAY), -1) + 1 AS sira FROM ${kart(v, firma, 'TBLURERECETE')}
+     WHERE EVRAKNO = @receteNo`,
+    { receteNo }
+  );
+  const sira = siraR[0].sira;
+
+  const eklenen = await sorgu(
+    `
+    INSERT INTO ${kart(v, firma, 'TBLURERECETE')}
+      (DETAY, EVRAKNO, STOKNO, STOKKODU, MALINCINSI, MIKTAR, BIRIM, BIRIMMIKTAR,
+       KDV, FIYAT, ISLEMTARIHI, SONERISIMTARIHI, KULLANICI, ORAN, TUR, DEPONO,
+       ACIKLAMA, MALIYETTURU, MIKTARTURU, POZISYONNO, CIKISPOZISYONNO,
+       FIREORANI, ARACLINENO, VARSAYILANBIRIMADI, VARSAYILANBIRIMCARPAN,
+       DEPOCIKISMIKTARI, STOKTURU, RANDIMAN)
+    OUTPUT INSERTED.IND AS ind
+    VALUES
+      (@sira, @receteNo, @bilesen, @kod, @ad, @miktar, @birim, @carpan,
+       0, @fiyat, GETDATE(), GETDATE(), @kullanici, 0, 0, @depo,
+       @aciklama, 0, 0, 0, 0,
+       @fire, 0, @birim, @carpan,
+       @miktar, @stokTipi, @randiman)
+  `,
+    {
+      sira,
+      receteNo,
+      bilesen: bilesenNo,
+      kod: b.kod,
+      ad: b.ad,
+      miktar: Number(kayit.miktar),
+      birim: kayit.birim || b.birim,
+      carpan: Number(b.carpan) || 1,
+      fiyat: Number(b.maliyet),
+      kullanici: Number(kayit.userNo || 0),
+      depo: Number(kayit.depo != null ? kayit.depo : ayarOku().varsayilanDepo) || 0,
+      aciklama: (kayit.aciklama || '').substring(0, 100) || null,
+      fire: Number(kayit.fireOrani || 0),
+      stokTipi: Number(b.stokTipi),
+      randiman: Number(kayit.randiman || 0)
+    }
+  );
+
+  await panel.kayit(
+    'Reçete',
+    'Reçeteye bileşen eklendi',
+    { firma, receteNo, mamulStokNo, bilesenNo, ad: b.ad, miktar: kayit.miktar, ind: eklenen[0].ind },
+    kayit.kullanici
+  );
+
+  return { tamam: true, ind: eklenen[0].ind, receteNo, sira };
+}
+
+// Bileşenin reçete ağacında mamulün kendisi geçiyor mu? Geçiyorsa döngü olur.
+// Ağaç: stok → (o stoğu üreten başlık) → satırları → her satırın stoğu → …
+async function dongruKontrol(v, firma, bilesenStokNo, arananStokNo, seviye, gorulen) {
+  seviye = seviye || 0;
+  gorulen = gorulen || new Set();
+  const no = Number(bilesenStokNo);
+  if (seviye > 10 || gorulen.has(no)) return;
+  gorulen.add(no);
+
+  if (no === Number(arananStokNo)) {
+    throw new Error(
+      'Bu bileşen eklenirse reçete kendi kendini içerir (döngü oluşur). ' +
+      'Bileşenin reçetesinde bu mamul zaten kullanılıyor.'
+    );
+  }
+
+  const altlar = await sorgu(
+    `SELECT R.STOKNO
+     FROM ${kart(v, firma, 'TBLURERECETELIST')} L
+     JOIN ${kart(v, firma, 'TBLURERECETE')} R ON R.EVRAKNO = L.IND
+     WHERE L.STOKNO = @no`,
+    { no }
+  );
+  for (const a of altlar) {
+    await dongruKontrol(v, firma, a.STOKNO, arananStokNo, seviye + 1, gorulen);
+  }
+}
+
+async function receteSatiriGuncelle(kayit) {
+  kilitKontrol();
+  const { firma } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+  if (!(Number(kayit.miktar) > 0)) throw new Error('Miktar sıfırdan büyük olmalı.');
+
+  const oncesi = await sorgu(
+    `SELECT IND, EVRAKNO, STOKNO, MALINCINSI, MIKTAR, BIRIM, FIREORANI, RANDIMAN
+     FROM ${kart(v, firma, 'TBLURERECETE')} WHERE IND = @ind`,
+    { ind: Number(kayit.ind) }
+  );
+  if (!oncesi.length) throw new Error('Reçete satırı bulunamadı.');
+
+  await calistir(
+    `
+    UPDATE ${kart(v, firma, 'TBLURERECETE')}
+    SET MIKTAR = @miktar,
+        DEPOCIKISMIKTARI = @miktar,
+        BIRIM = @birim,
+        VARSAYILANBIRIMADI = @birim,
+        FIREORANI = @fire,
+        RANDIMAN = @randiman,
+        SONERISIMTARIHI = GETDATE(),
+        KULLANICI = @kullanici
+    WHERE IND = @ind
+  `,
+    {
+      ind: Number(kayit.ind),
+      miktar: Number(kayit.miktar),
+      birim: kayit.birim || oncesi[0].BIRIM || '',
+      fire: Number(kayit.fireOrani || 0),
+      randiman: Number(kayit.randiman || 0),
+      kullanici: Number(kayit.userNo || 0)
+    }
+  );
+
+  await panel.kayit(
+    'Reçete',
+    'Reçete satırı güncellendi',
+    {
+      firma,
+      ind: Number(kayit.ind),
+      mamulNo: oncesi[0].EVRAKNO,
+      ad: oncesi[0].MALINCINSI,
+      onceki: { miktar: oncesi[0].MIKTAR, birim: oncesi[0].BIRIM, fire: oncesi[0].FIREORANI },
+      yeni: { miktar: Number(kayit.miktar), birim: kayit.birim, fire: Number(kayit.fireOrani || 0) }
+    },
+    kayit.kullanici
+  );
+
+  return { tamam: true };
+}
+
+async function receteSatiriSil(kayit) {
+  kilitKontrol();
+  const { firma } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+
+  const oncesi = await sorgu(
+    `SELECT IND, EVRAKNO, STOKNO, MALINCINSI, MIKTAR, BIRIM, FIREORANI
+     FROM ${kart(v, firma, 'TBLURERECETE')} WHERE IND = @ind`,
+    { ind: Number(kayit.ind) }
+  );
+  if (!oncesi.length) throw new Error('Reçete satırı bulunamadı.');
+
+  await calistir(
+    `DELETE FROM ${kart(v, firma, 'TBLURERECETE')} WHERE IND = @ind`,
+    { ind: Number(kayit.ind) }
+  );
+
+  await panel.kayit(
+    'Reçete',
+    'Reçete satırı silindi',
+    { firma, silinen: oncesi[0] },
+    kayit.kullanici
+  );
+
+  return { tamam: true, silinen: oncesi[0] };
+}
+
 // --- Sayım fişi yazma -----------------------------------------------------
 // TASLAK: Aşağıdaki alan eşlemesi Hakan görüşmesinde teyit edilmeden
 // kullanılmamalıdır. Sayım farkı pozitifse sayım girişi (IZAHAT 93),
@@ -523,6 +816,10 @@ module.exports = {
   kod11GeriAl,
   giderStokSifirla,
   giderStokSifirlamaGeriAl,
+  receteOlustur,
+  receteSatiriEkle,
+  receteSatiriGuncelle,
+  receteSatiriSil,
   sayimFisiYaz,
   tutanakFisiYaz,
   tutanakFisiGeriAl,
