@@ -2,7 +2,16 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-const kanallar = ['ayar:oku', 'baglan', 'baslat', 'durum', 'durdur', 'kaydet', 'dosyaGoster'];
+const kanallar = [
+  'durum',
+  'baslat',
+  'durdur',
+  'kaldir',
+  'oku',
+  'kaydet',
+  'dosyaAc',
+  'onay'
+];
 
 contextBridge.exposeInMainWorld('izleyici', {
   cagir: (kanal, girdi) => {
@@ -10,6 +19,5 @@ contextBridge.exposeInMainWorld('izleyici', {
       return Promise.resolve({ tamam: false, mesaj: 'Bilinmeyen işlem: ' + kanal });
     }
     return ipcRenderer.invoke(kanal, girdi);
-  },
-  ilerleme: (isFn) => ipcRenderer.on('ilerleme', (olay, sayi) => isFn(sayi))
+  }
 });

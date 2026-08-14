@@ -2,7 +2,7 @@
   "name": "galya-izleyici",
   "version": "1.0.0",
   "private": true,
-  "description": "VegaWinA5'in veritabanına gönderdiği SQL komutlarını kaydeden taşınabilir araç",
+  "description": "VegaWinA5'in çalıştırdığı SQL'i yakalayan taşınabilir araç",
   "author": "Bayraktar Yazılım",
   "main": "main.js",
   "scripts": {
@@ -25,7 +25,6 @@
     "files": [
       "main.js",
       "preload.js",
-      "lib/**/*",
       "ui/**/*",
       "package.json"
     ],
@@ -38,7 +37,7 @@
       ]
     },
     "portable": {
-      "artifactName": "Galya-Izleyici.exe"
+      "artifactName": "GalyaIzleyici.exe"
     }
   }
 }

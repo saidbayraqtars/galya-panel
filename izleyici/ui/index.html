@@ -1,85 +1,24 @@
 <!doctype html>
 <html lang="tr">
-  <head>
-    <meta charset="utf-8" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
-    />
-    <title>Galya İzleyici</title>
-    <link rel="stylesheet" href="app.css" />
-  </head>
-  <body>
-    <header>
-      <h1>Galya İzleyici</h1>
-      <p>VegaWinA5'in veritabanına gönderdiği komutları kaydeder. Veriyi değiştirmez.</p>
-    </header>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>Galya İzleyici</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
 
-    <main>
-      <!-- 1. ADIM -->
-      <section class="kutu" id="adim1">
-        <h2><span class="rakam">1</span> Veritabanına bağlan</h2>
+<header>
+  <span class="logo">GALYA İZLEYİCİ</span>
+  <span class="alt">VegaWinA5'in çalıştırdığı SQL'i yakalar</span>
+  <span id="durumRozet" class="rozet rozet-bekle">Bağlanmadı</span>
+</header>
 
-        <div class="secim">
-          <label class="satir">
-            <input type="radio" name="giris" id="girisWindows" value="windows" />
-            <span>Windows girişi — kullanıcı adı/şifre sormaz</span>
-          </label>
-          <label class="satir">
-            <input type="radio" name="giris" id="girisSql" value="sql" checked />
-            <span>SQL kullanıcısı (sa)</span>
-          </label>
-          <p class="not" id="windowsNot"></p>
-        </div>
+<main id="icerik"></main>
 
-        <div class="alanlar">
-          <label>Sunucu <input id="sunucu" type="text" placeholder="localhost veya SUNUCU\SQLEXPRESS" /></label>
-          <label id="portAlan">Port <input id="port" type="number" value="1433" /></label>
-          <label id="kullaniciAlan">Kullanıcı <input id="kullanici" type="text" value="sa" /></label>
-          <label id="sifreAlan">Şifre <input id="sifre" type="password" placeholder="kayıtlıysa boş bırakın" /></label>
-          <label>Veritabanı <input id="veritabani" type="text" value="VEGADB" /></label>
-        </div>
-        <button id="btnBaglan" class="birincil">Bağlan</button>
-        <p class="sonuc" id="baglantiSonuc"></p>
-      </section>
+<div id="bildirim" class="bildirim hidden"></div>
 
-      <!-- 2. ADIM -->
-      <section class="kutu pasif" id="adim2">
-        <h2><span class="rakam">2</span> Kaydı başlat</h2>
-        <label class="etiketAlan">
-          Ne yapacaksınız?
-          <select id="etiket">
-            <option value="maliyetlendirme">Maliyetlendirme</option>
-            <option value="recete">Reçete kaydetme</option>
-            <option value="sayim">Sayım fişi</option>
-            <option value="stokfis">Stok giriş / çıkış fişi</option>
-            <option value="uretim">Üretim tetikleme</option>
-            <option value="giderstok">Gider / hizmet stok sıfırlama</option>
-            <option value="diger">Diğer</option>
-          </select>
-        </label>
-        <button id="btnBaslat" class="birincil">Kaydı Başlat</button>
-        <p class="sonuc" id="baslatSonuc"></p>
-      </section>
-
-      <!-- 3. ADIM -->
-      <section class="kutu pasif" id="adim3">
-        <h2><span class="rakam">3</span> Şimdi VegaWinA5'te işlemi yapın</h2>
-        <p class="aciklama">
-          Bu pencereyi kapatmayın. VegaWinA5'e geçin, seçtiğiniz işlemi normalde nasıl
-          yapıyorsanız öyle yapın. Bittiğinde buraya dönüp aşağıdaki düğmeye basın.
-        </p>
-        <p class="sayac" id="sayac">Kaydedilen komut: —</p>
-        <button id="btnBitir" class="birincil">Bitir ve Dosyaya Yaz</button>
-        <p class="sonuc" id="bitirSonuc"></p>
-        <button id="btnGoster" class="gizli">Dosyayı Göster</button>
-      </section>
-    </main>
-
-    <footer>
-      <p id="uyari"></p>
-    </footer>
-
-    <script src="app.js"></script>
-  </body>
+<script src="app.js"></script>
+</body>
 </html>
