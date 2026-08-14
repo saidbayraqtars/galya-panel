@@ -32,6 +32,13 @@ let yolOnbellek = null;
 function ayarYolu() {
   if (yolOnbellek) return yolOnbellek;
 
+  // Sınama ve destek için başka bir ayar dosyası gösterilebilir:
+  //   set GALYA_AYAR_DOSYASI=C:\yol\test-ayarlar.json
+  if (process.env.GALYA_AYAR_DOSYASI) {
+    yolOnbellek = process.env.GALYA_AYAR_DOSYASI;
+    return yolOnbellek;
+  }
+
   let elektron = null;
   try {
     elektron = require('electron');

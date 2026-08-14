@@ -1128,10 +1128,14 @@ ekranlar.tutanak = async function () {
     el('button', { sinif: 'dugme-sade', metin: 'Yeni tutanak', tikla: tutanakPenceresi })
   ]));
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-    'Bir stoktan miktar düşülüp başka bir stoğa eklenen işlemler burada kayıt altına alınır.'
+    durum.yazmaAcik
+      ? 'Bir stoktan miktar düşülüp başka bir stoğa eklenen işlemler burada kayıt altına alınır. ' +
+        '"Vega\'ya yaz" düğmesi çıkış ve giriş fişi çiftini Vega\'da oluşturur.'
+      : 'Bir stoktan miktar düşülüp başka bir stoğa eklenen işlemler burada kayıt altına alınır. ' +
+        'Vega\'ya yazma kapalı olduğu için kayıtlar şimdilik yalnızca panelde tutuluyor.'
   ]));
   icerik.appendChild(tabloYap(
-    ['Tarih', 'Düşülen', 'Miktar', 'Artan', 'Miktar', 'Sebep', 'Düzenleyen', ''],
+    ['Tarih', 'Düşülen', 'Miktar', 'Artan', 'Miktar', 'Sebep', 'Düzenleyen', 'Vega', ''],
     liste,
     (t) => el('tr', null, [
       hucre(saatliTarih(t.tarih)),
@@ -1141,26 +1145,87 @@ ekranlar.tutanak = async function () {
       hucre(sayiYaz(t.artanMiktar, 2), 'sayi arti'),
       hucre(t.sebep || '—'),
       hucre(t.duzenleyen || '—'),
-      el('td', null, [el('button', {
-        sinif: 'dugme-kucuk',
-        metin: 'Geri al',
-        tikla: async () => {
-          const onay = await window.galya.cagir('sistem:onay', {
-            baslik: 'Tutanağı geri al',
-            mesaj: 'Bu tutanak iptal edilecek.',
-            evet: 'Geri al', hayir: 'Vazgeç'
-          });
-          if (!onay.veri || !onay.veri.onay) return;
-          try {
-            await cagir('tutanak:iptal', { id: t.id });
-            bildir('Tutanak geri alındı.', 'iyi');
-            ekranAc('tutanak');
-          } catch (e) { hataGoster(e); }
-        }
-      })])
+      el('td', null, [
+        t.vegayaYazildi
+          ? el('span', { sinif: 'etiket yesil', metin: t.vegaBelgeNo || 'Yazıldı' })
+          : el('span', { sinif: 'etiket gri', metin: 'Yazılmadı' })
+      ]),
+      el('td', null, tutanakDugmeleri(t))
     ])
   ));
 };
+
+function tutanakDugmeleri(t) {
+  const dugmeler = [];
+
+  if (durum.yazmaAcik && !t.vegayaYazildi) {
+    dugmeler.push(el('button', {
+      sinif: 'dugme-kucuk',
+      metin: "Vega'ya yaz",
+      tikla: async () => {
+        const onay = await window.galya.cagir('sistem:onay', {
+          baslik: "Tutanağı Vega'ya yaz",
+          mesaj: `${t.dusenAd} → ${sayiYaz(t.dusenMiktar, 2)} düşülecek, ` +
+                 `${t.artanAd} → ${sayiYaz(t.artanMiktar, 2)} eklenecek.`,
+          detay: "Vega'da bir stok çıkış ve bir stok giriş fişi oluşur. " +
+                 'İşlem tek seferde yazılır ve buradan geri alınabilir.',
+          evet: 'Yaz', hayir: 'Vazgeç'
+        });
+        if (!onay.veri || !onay.veri.onay) return;
+        try {
+          const s = await cagir('tutanak:vegayaYaz', { id: t.id });
+          bildir(`Vega'ya yazıldı. Çıkış ${s.cikisBelgeNo}, giriş ${s.girisBelgeNo}.`, 'iyi');
+          ekranAc('tutanak');
+        } catch (e) { hataGoster(e); }
+      }
+    }));
+  }
+
+  if (durum.yazmaAcik && t.vegayaYazildi) {
+    dugmeler.push(el('button', {
+      sinif: 'dugme-kucuk',
+      metin: "Vega'dan sil",
+      tikla: async () => {
+        const onay = await window.galya.cagir('sistem:onay', {
+          baslik: "Vega'daki fişleri sil",
+          mesaj: 'Bu tutanak için Vega\'da oluşturulan fiş çifti silinecek.',
+          detay: 'Stok miktarları işlem öncesindeki hâline döner. Panel kaydı kalır.',
+          evet: 'Sil', hayir: 'Vazgeç'
+        });
+        if (!onay.veri || !onay.veri.onay) return;
+        try {
+          await cagir('tutanak:vegadanGeriAl', { id: t.id });
+          bildir("Vega'daki fişler silindi.", 'iyi');
+          ekranAc('tutanak');
+        } catch (e) { hataGoster(e); }
+      }
+    }));
+  }
+
+  dugmeler.push(el('button', {
+    sinif: 'dugme-kucuk',
+    metin: 'Kaydı sil',
+    tikla: async () => {
+      if (t.vegayaYazildi) {
+        bildir("Önce Vega'daki fişleri silin.", 'kotu');
+        return;
+      }
+      const onay = await window.galya.cagir('sistem:onay', {
+        baslik: 'Tutanağı geri al',
+        mesaj: 'Bu tutanak iptal edilecek.',
+        evet: 'Geri al', hayir: 'Vazgeç'
+      });
+      if (!onay.veri || !onay.veri.onay) return;
+      try {
+        await cagir('tutanak:iptal', { id: t.id });
+        bildir('Tutanak geri alındı.', 'iyi');
+        ekranAc('tutanak');
+      } catch (e) { hataGoster(e); }
+    }
+  }));
+
+  return dugmeler;
+}
 
 function urunSecici(etiket, secildi) {
   const kap = el('div');

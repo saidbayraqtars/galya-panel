@@ -64,13 +64,39 @@ async function tutanakListesi(secim) {
       DusenStokAdi AS dusenAd, DusenMiktar AS dusenMiktar,
       ArtanStokAdi AS artanAd, ArtanMiktar AS artanMiktar,
       Sebep AS sebep, Duzenleyen AS duzenleyen,
-      VegayaYazildi AS vegayaYazildi
+      VegayaYazildi AS vegayaYazildi,
+      VegaBelgeNo AS vegaBelgeNo,
+      DusenStokNo AS dusenStokNo, ArtanStokNo AS artanStokNo,
+      Depo AS depo
     FROM [${p}].dbo.Tutanak
     WHERE Firma = @firma AND Iptal = 0
     ORDER BY Tarih DESC
   `,
     { firma }
   );
+}
+
+// Tek bir tutanağın tam kaydı — Vega'ya yazma ve geri alma bunu kullanır.
+async function tutanakGetir(secim) {
+  await panel.kur();
+  const p = panel.p();
+  const r = await sorgu(
+    `SELECT Id AS id, Firma AS firma, Donem AS donem, Depo AS depo,
+            DusenStokNo AS dusenStokNo, DusenStokAdi AS dusenStokAdi, DusenMiktar AS dusenMiktar,
+            ArtanStokNo AS artanStokNo, ArtanStokAdi AS artanStokAdi, ArtanMiktar AS artanMiktar,
+            Sebep AS sebep, VegayaYazildi AS vegayaYazildi, VegaFisler AS vegaFisler,
+            Iptal AS iptal
+     FROM [${p}].dbo.Tutanak WHERE Id = @id`,
+    { id: Number(secim.id) }
+  );
+  if (!r.length) throw new Error('Tutanak bulunamadı.');
+  const t = r[0];
+  try {
+    t.fisler = t.vegaFisler ? JSON.parse(t.vegaFisler) : null;
+  } catch (e) {
+    t.fisler = null;
+  }
+  return t;
 }
 
 async function tutanakIptal(kayit) {
@@ -130,6 +156,7 @@ async function thirdIsaretliler(secim) {
 module.exports = {
   tutanakKaydet,
   tutanakListesi,
+  tutanakGetir,
   tutanakIptal,
   thirdIsaretle,
   thirdIsaretliler

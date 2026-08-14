@@ -14,6 +14,7 @@ try {
 
 let havuz = null;
 let havuzAnahtari = '';
+let aktifSurucu = mssql;
 
 // Sunucu adını sürücünün anlayacağı hale getirir.
 //
@@ -103,6 +104,7 @@ async function havuzAl() {
   }
   const { surucu, config } = baglantiAyari(a);
   havuz = await new surucu.ConnectionPool(config).connect();
+  aktifSurucu = surucu;
   havuzAnahtari = anahtar;
   return havuz;
 }
@@ -158,6 +160,48 @@ async function calistir(metin, parametreler) {
   return sonuc.rowsAffected || [];
 }
 
+// Birden fazla tabloya yazan işlemler için. İş parçası hata verirse hiçbir
+// satır kalmaz; yarım belge oluşmaz.
+//
+//   await islem(async (t) => {
+//     const r = await t.sorgu('INSERT ... OUTPUT INSERTED.IND AS ind ...', {...});
+//     await t.calistir('INSERT ...', { ind: r[0].ind });
+//   });
+async function islem(isFn) {
+  const h = await havuzAl();
+  const islem = new aktifSurucu.Transaction(h);
+  await islem.begin();
+
+  function istekHazirla(parametreler) {
+    const istek = new aktifSurucu.Request(islem);
+    if (parametreler) {
+      for (const ad of Object.keys(parametreler)) {
+        const p = parametreler[ad];
+        if (p && typeof p === 'object' && 'tip' in p) istek.input(ad, p.tip, p.deger);
+        else istek.input(ad, p);
+      }
+    }
+    return istek;
+  }
+
+  const araclar = {
+    sorgu: async (metin, p) => (await istekHazirla(p).query(metin)).recordset || [],
+    calistir: async (metin, p) => (await istekHazirla(p).query(metin)).rowsAffected || []
+  };
+
+  let tamamlandi = false;
+  try {
+    const sonuc = await isFn(araclar);
+    await islem.commit();
+    tamamlandi = true;
+    return sonuc;
+  } finally {
+    if (!tamamlandi) {
+      try { await islem.rollback(); } catch (e) { /* zaten geri alınmışsa yoksay */ }
+    }
+  }
+}
+
 async function baglantiTesti() {
   const a = ayarOku();
   const satirlar = await sorgu('SELECT @@VERSION AS surum, DB_NAME() AS veritabani');
@@ -169,4 +213,13 @@ async function baglantiTesti() {
   };
 }
 
-module.exports = { mssql, sorgu, sorguCoklu, calistir, havuzAl, havuzKapat, baglantiTesti };
+module.exports = {
+  mssql,
+  sorgu,
+  sorguCoklu,
+  calistir,
+  islem,
+  havuzAl,
+  havuzKapat,
+  baglantiTesti
+};

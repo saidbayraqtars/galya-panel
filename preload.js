@@ -46,6 +46,8 @@ const kanallar = [
   'sayim:iptal',
   'tutanak:kaydet',
   'tutanak:liste',
+  'tutanak:vegayaYaz',
+  'tutanak:vegadanGeriAl',
   'tutanak:iptal',
   'yazma:durum',
   'vegaprogram:durum',

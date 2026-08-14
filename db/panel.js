@@ -103,6 +103,10 @@ async function kur() {
       Iptal         BIT           NOT NULL DEFAULT 0
     );
 
+    -- Vega'ya yazılan fiş çiftinin kimlikleri; geri alma bunları kullanıyor.
+    IF COL_LENGTH('dbo.Tutanak', 'VegaFisler') IS NULL
+      ALTER TABLE dbo.Tutanak ADD VegaFisler NVARCHAR(MAX) NULL;
+
     IF OBJECT_ID('dbo.ThirdIsaret') IS NULL
     CREATE TABLE dbo.ThirdIsaret (
       Id          INT IDENTITY(1,1) PRIMARY KEY,

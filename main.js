@@ -238,6 +238,35 @@ kayitEt('tutanak:kaydet', async (g, k) =>
   tutanak.tutanakKaydet(Object.assign({}, g, { duzenleyen: g.duzenleyen || k.kullanici }))
 );
 kayitEt('tutanak:liste', async (g) => tutanak.tutanakListesi(g));
+kayitEt('tutanak:vegayaYaz', async (g, k) => {
+  const t = await tutanak.tutanakGetir({ id: g.id });
+  if (t.vegayaYazildi) throw new Error('Bu tutanak zaten Vega\'ya yazılmış.');
+  return yazma.tutanakFisiYaz({
+    firma: t.firma,
+    donem: t.donem,
+    depo: t.depo,
+    tutanakId: t.id,
+    dusenStokNo: t.dusenStokNo,
+    dusenMiktar: t.dusenMiktar,
+    artanStokNo: t.artanStokNo,
+    artanMiktar: t.artanMiktar,
+    sebep: t.sebep,
+    kullanici: k.kullanici
+  });
+});
+kayitEt('tutanak:vegadanGeriAl', async (g, k) => {
+  const t = await tutanak.tutanakGetir({ id: g.id });
+  if (!t.vegayaYazildi || !t.fisler) {
+    throw new Error('Bu tutanak Vega\'ya yazılmamış, geri alınacak fiş yok.');
+  }
+  return yazma.tutanakFisiGeriAl({
+    firma: t.firma,
+    donem: t.donem,
+    tutanakId: t.id,
+    fisler: t.fisler,
+    kullanici: k.kullanici
+  });
+});
 kayitEt('tutanak:iptal', async (g, k) =>
   tutanak.tutanakIptal(Object.assign({}, g, { kullanici: k.kullanici }))
 );
