@@ -346,7 +346,7 @@ POS satışlarının reçete düşümlerini de üretim sanır.
 
 ```
 node kurulum/test-yazma.js --kur     # test veritabanını hazırlar/tamamlar
-node kurulum/test-yazma.js           # 55 sınama
+node kurulum/test-yazma.js           # 79 sınama
 ```
 
 Sınama müşteri veritabanına dokunmaz: yapısı VEGADB'den kopyalanmış boş bir
@@ -357,8 +357,87 @@ her firma her modülü kullanmadığı için sabit bir firmadan kopyalamak
 yetmiyor.
 
 Kapsam: yazma kilidi, tutanak fiş çifti, reçete, alış faturası (beş tablo +
-GK + stok kartı alış fiyatı) ve üretim fişi (altı tablo + iki depo transferi
-+ 96/97 hareketleri), hepsinin geri alınması.
+GK + stok kartı alış fiyatı), üretim fişi (altı tablo + iki depo transferi
++ 96/97 hareketleri) ve sayım fişi (giriş + çıkış çifti, stoğun sayılan
+miktara oturması, çift yazma engeli, fark yokken fiş kesilmemesi); hepsinin
+geri alınması.
+
+## Sayım fişi
+
+Vega'nın sayım fişi **mutlak** değil, **fark** belgesidir. Fişteki miktar
+"sayımda şu kadar çıktı" demek değil, "stoğa şu kadar eklenecek" demektir.
+Firmanın 31.07.2026 sayımı (`Z0000047` / `Z0000021`) bunu gösteriyor:
+
+| Ürün | fiş öncesi | fişteki miktar | fiş sonrası |
+|---|---:|---:|---:|
+| Bira.Carlsberg 33 cl | −10 | +10 | 0 |
+| Pizza Marinara | −3 | +3 | 0 |
+| TUZ | −11,197 | +29,017 | 17,820 |
+
+Yani `fark = fiziki sayım − sistemdeki miktar`. Artı farklar sayım **giriş**
+fişine (belge tipi 93), eksi farklar sayım **çıkış** fişine (94) yazılır.
+Vega tek bir sayımda ikisini arka arkaya keser; panel de öyle yapar.
+
+### Tablolar ve bağ alanları
+
+```
+TBLSAYIM{GIRIS|CIKIS}BASLIK      IND (IDENTITY)  ← belge kimliği
+   │                             BELGENO = Z0000001…
+   ├── TBLSAYIM{...}HAREKET      EVRAKNO = başlık IND
+   │                             IND (IDENTITY) ← satır kimliği
+   ├── TBLSTOKHAREKETLERI        BELGENO = başlık IND
+   │                             LN      = satır IND
+   │                             EVRAKNO = belge numarası metni (Z0000048)
+   │                             IZAHAT  = '93' / '94'
+   └── TBLDEPOENVANTER           BELGEIND   = başlık IND
+                                 HAREKETIND = satır IND
+                                 ENVANTER   = +fark / −fark
+```
+
+### Belge numarası
+
+`Z` öneki + 7 hane. Sayaç **her tabloda ayrı** yürüyor: aynı sayımda giriş
+fişi `Z0000048` iken çıkış fişi `Z0000022` olabiliyor (48 giriş, 22 çıkış
+belgesi kesilmiş). `MAX(...) + 1` okuması `WITH (UPDLOCK, HOLDLOCK)` ile
+yapılıyor; aynı anda iki kullanıcı fiş keserse ikincisi bekler.
+
+Z serisi 103/104 otomatik belgelerinde de kullanılıyor ama onlar başka
+tablolarda durduğu için sayaçlar çakışmıyor.
+
+### Alan ayrıntıları
+
+Başlık:
+
+- `GIRIS` = 1 (93) / 0 (94), `BELGETIPI` = 93 / 94
+- `DEPO` = `HAREKETDEPOSU` = sayımın deposu
+- `OZELKOD1` = `OZELKOD2` = depo adı (`MERKEZ`)
+- `FIRMANO` = 1, `USERNO` = kullanıcı, `PARABIRIMI` = `TL`, `KUR` = 1
+- `STOKHAREKETEYAZ` = `CARIHAREKETEYAZ` = 1
+- `TUTAR` = `ARATOPLAM` = giriş fişinde toplam maliyet; **çıkış fişinde 0**
+- `ENVANTERUPDATE` ve `SUCCESS` gerçek fişlerde boş — panel de doldurmuyor
+
+Satır:
+
+- `MIKTAR` = `ENVANTER` = farkın mutlak değeri
+- `BIRIMMIKTAR` = 1, `SATISKOSULU` = 1, `SERIMIKTAR` = 1
+- `TERMIN` = `1899-12-30` (Vega'nın boş tarihi)
+- `ACIKLAMA` = `Sayım`
+- `GK` = rastgele int32 (bkz. GK alanı)
+- Giriş fişinde `AFIYATI` = `FIYATI` = kart maliyeti
+- Çıkış fişinde `AFIYATI` = kart maliyeti ama `FIYATI` = 1 ve `ISK1` = 100
+  (yüzde yüz iskonto). Vega tutarı böyle sıfırlıyor.
+
+### Panelin çalışma biçimi
+
+Fark, **fişin kesildiği andaki** stoğa göre yeniden hesaplanır — sayım
+kaydedildikten sonra Şefim satış işlemeye devam ettiği için ekrandaki eski
+teorik miktarla yazmak stoğu yanlış yere oturtur. Mutlak değeri 0,0001'in
+altındaki farklar yuvarlama artığı sayılıp atlanır; hiç fark yoksa fiş
+kesilmez.
+
+Geri alma dört tablodaki satırları da siler; stok fiş öncesine döner.
+Kesilen fişlerin kimlikleri `GALYA_PANEL.dbo.AraSayim.VegaFisler` alanında
+saklanır.
 
 ## Maliyetlendirme
 
@@ -398,6 +477,7 @@ toplamı gibi anlamsız değerler duruyor.
 
 ## Henüz çıkarılmamış desenler
 
-- **Sayım fişi** — deseni stok giriş/çıkış ile aynı görünüyor (tip 93/94),
-  ancak sayım Vega'da envanteri farklı sıralıyor olabilir; doğrulanmadan
-  açılmamalı.
+Kalmadı: panelin yazdığı bütün belge tipleri (20 alış faturası, 32/33 stok
+giriş/çıkış, 38 depo transferi, 93/94 sayım, 96/97 üretim) gerçek fişlerden
+çıkarıldı, sınandı ve canlıda tek örnekle doğrulandı.
+

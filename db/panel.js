@@ -70,6 +70,11 @@ async function kur() {
     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AraSayimSatir_Sayim')
       CREATE INDEX IX_AraSayimSatir_Sayim ON dbo.AraSayimSatir (SayimId);
 
+    -- Sayım Vega'ya yazılınca kesilen fişlerin kimlikleri buraya konur;
+    -- geri alma bu bilgiyle dört tablodaki satırları tek tek siliyor.
+    IF COL_LENGTH('dbo.AraSayim', 'VegaFisler') IS NULL
+      ALTER TABLE dbo.AraSayim ADD VegaFisler NVARCHAR(MAX) NULL;
+
     IF OBJECT_ID('dbo.SayimListesi') IS NULL
     CREATE TABLE dbo.SayimListesi (
       Id        INT IDENTITY(1,1) PRIMARY KEY,

@@ -102,6 +102,29 @@ async function stokDurumu(secim) {
 // görür. Sayım listesi bu süzgeçten üretiliyor.
 //
 // tumKartlar = true iken hareket görme şartı kalkar; kartın tamamı listelenir.
+// Stok kartındaki sınıflandırma alanları. Adlandırma Vega'nın stok değer
+// raporundaki sütun başlıklarından geliyor; eşleştirme firmanın kendi
+// "stokdeğer" raporuyla satır satır doğrulandı (486/486 kart birebir):
+//
+//   KOD1 = Tür      KOD2 = Sınıf    KOD3 = 3-ÖK    KOD4 = 4-ÖK
+//   KOD5 = 5-ÖK     KOD6 = Sezon/Yıl   KOD7 = Marka   KOD9 = Renk
+//
+// KOD8 ve KOD10 raporda görünmüyor ama firma kullanıyor: KOD8 kartı "PASİF"
+// diye işaretliyor, KOD10 sayım/üretim listesine dahil olanları işaretliyor.
+// Bu ikisi rapordaki adları olmadığı için numarasıyla anılıyor.
+const KOD_ALANLARI = [
+  { no: 1, ad: 'Tür' },
+  { no: 2, ad: 'Sınıf' },
+  { no: 3, ad: '3-ÖK' },
+  { no: 4, ad: '4-ÖK' },
+  { no: 5, ad: '5-ÖK' },
+  { no: 6, ad: 'Sezon/Yıl' },
+  { no: 7, ad: 'Marka' },
+  { no: 8, ad: '8. Kod' },
+  { no: 9, ad: 'Renk' },
+  { no: 10, ad: '10. Kod' }
+];
+
 async function stokKontrolListesi(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const a = ayarOku();
@@ -111,19 +134,20 @@ async function stokKontrolListesi(secim) {
   const aktifGun = Number(secim.aktifGun != null ? secim.aktifGun : a.aktifGun) || 90;
   const suzgec = secim.suzgec || 'sorunlu';
   const tumKartlar = secim.tumKartlar ? 1 : 0;
+  // Gider/hizmet kartları (STOKTIPI 3) normalde bu listede yok; kendi ekranları
+  // var. Vega'nın stok değer raporu onları da bastığı için "Bütün stok listesi"
+  // seçildiğinde rapora birebir uysun diye dahil ediliyor.
+  const giderDahil = secim.giderDahil ? 1 : 0;
   const alt = secim.alt != null && secim.alt !== '' ? Number(secim.alt) : null;
   const ustSinir = secim.ust != null && secim.ust !== '' ? Number(secim.ust) : null;
 
-  // Firmanın kendi sınıflandırması. Vega'nın stok değer raporundaki
-  // sütunların karşılığı:
-  //   KOD1 = Tür (BİRA, RAKI, MEŞRUBAT…)   KOD2 = Sınıf (BAR, MUTFAK…)
-  //   KOD3 = 3-ÖK (İÇECEK)                 KOD4 = 4-ÖK (ALKOL)
-  //   KOD5 = 5-ÖK (VAR)
+  // Firmanın sınıflandırması. Alan karşılıkları KOD_ALANLARI'nda; hangi
+  // kodun kullanıldığını firma TBLSTOKKODTAN'da tanımlıyor.
   const kodSuzgecleri = [];
-  for (const n of [1, 2, 3, 4, 5]) {
-    const deger = secim['kod' + n];
+  for (const k of KOD_ALANLARI) {
+    const deger = secim['kod' + k.no];
     if (deger != null && deger !== '') {
-      kodSuzgecleri.push(`ISNULL(S.KOD${n}, '') = @kod${n}`);
+      kodSuzgecleri.push(`ISNULL(S.KOD${k.no}, '') = @kod${k.no}`);
     }
   }
 
@@ -159,6 +183,11 @@ async function stokKontrolListesi(secim) {
       ISNULL(S.KOD3, '')        AS ok3,
       ISNULL(S.KOD4, '')        AS ok4,
       ISNULL(S.KOD5, '')        AS ok5,
+      ISNULL(S.KOD6, '')        AS sezon,
+      ISNULL(S.KOD7, '')        AS marka,
+      ISNULL(S.KOD8, '')        AS ok8,
+      ISNULL(S.KOD9, '')        AS renk,
+      ISNULL(S.KOD10, '')       AS ok10,
       ISNULL(S.ALISFIYATI, 0)   AS alisFiyati,
       S.STOKTIPI                AS stokTipi,
       ISNULL(B.BIRIMADI, '')    AS birim,
@@ -179,38 +208,77 @@ async function stokKontrolListesi(secim) {
            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
     WHERE ISNULL(S.DELETED, 0) = 0
       AND S.IND >= 100
-      AND S.STOKTIPI NOT IN (3, 7, 9)
+      AND S.STOKTIPI NOT IN (${giderDahil ? '7, 9' : '3, 7, 9'})
       AND (${suzgecler[suzgec] || suzgecler.sorunlu})
       ${kodSuzgecleri.length ? 'AND ' + kodSuzgecleri.join(' AND ') : ''}
     ORDER BY ${kalan} ASC, S.MALINCINSI ASC
   `,
     Object.assign(
       { depo, ust, aktifGun, alt: alt != null ? alt : 0, ustSinir: ustSinir != null ? ustSinir : 0 },
-      [1, 2, 3, 4, 5].reduce((p, n) => {
-        if (secim['kod' + n] != null && secim['kod' + n] !== '') p['kod' + n] = String(secim['kod' + n]);
+      KOD_ALANLARI.reduce((p, k) => {
+        const d = secim['kod' + k.no];
+        if (d != null && d !== '') p['kod' + k.no] = String(d);
         return p;
       }, {})
     )
   );
 }
 
-// Stok ekranındaki sınıflandırma süzgeçlerinin seçenekleri. Sabit liste
-// tutulmuyor; firma hangi kodları kullanıyorsa o geliyor.
+// Stok ekranındaki sınıflandırma süzgeçlerinin seçenekleri.
+//
+// Kaynak firmanın kendi tanım tablosu: TBLSTOKKODTAN, CATEGORY sütunu kaçıncı
+// KOD alanı olduğunu söylüyor (CATEGORY = 1 -> KOD1). Vega'nın stok kartındaki
+// açılır listeler de buradan besleniyor, dolayısıyla program kullanıcıya
+// Vega'nın gösterdiğiyle birebir aynı seçenekleri gösteriyor.
+//
+// Kartlardaki dağılım ayrıca sayılıyor: tanımlı ama hiç kullanılmamış kodlar
+// listede "0" ile görünür, tanım tablosuna girilmeden karta yazılmış kodlar da
+// kaybolmasın diye listeye eklenir.
 async function stokKodListeleri(secim) {
   const { firma } = await dogrula(secim.firma, secim.donem);
   const v = vt();
+
+  const tanimlar = await sorgu(`
+    SELECT CATEGORY AS kategori, LTRIM(RTRIM(KOD)) AS deger
+    FROM ${kart(v, firma, 'TBLSTOKKODTAN')}
+    WHERE LTRIM(RTRIM(ISNULL(KOD, ''))) <> ''
+    ORDER BY CATEGORY, KOD
+  `);
+
   const sonuc = {};
-  for (const n of [1, 2, 3, 4, 5]) {
-    sonuc['kod' + n] = await sorgu(`
-      SELECT ISNULL(S.KOD${n}, '') AS deger, COUNT(*) AS adet
+  for (const k of KOD_ALANLARI) {
+    const kullanim = await sorgu(`
+      SELECT LTRIM(RTRIM(S.KOD${k.no})) AS deger, COUNT(*) AS adet
       FROM ${kart(v, firma, 'TBLSTOKLAR')} S
       WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
         AND S.STOKTIPI NOT IN (3, 7, 9)
-        AND ISNULL(S.KOD${n}, '') <> ''
-      GROUP BY ISNULL(S.KOD${n}, '')
-      ORDER BY COUNT(*) DESC
+        AND LTRIM(RTRIM(ISNULL(S.KOD${k.no}, ''))) <> ''
+      GROUP BY LTRIM(RTRIM(S.KOD${k.no}))
     `);
+    const sayac = new Map(kullanim.map((r) => [r.deger, r.adet]));
+
+    const liste = [];
+    const eklenen = new Set();
+    for (const t of tanimlar) {
+      if (t.kategori !== k.no || eklenen.has(t.deger)) continue;
+      eklenen.add(t.deger);
+      liste.push({ deger: t.deger, adet: sayac.get(t.deger) || 0, tanimli: true });
+    }
+    for (const [deger, adet] of sayac) {
+      if (eklenen.has(deger)) continue;
+      liste.push({ deger, adet, tanimli: false });
+    }
+
+    // Kullanılanlar önce, sonra alfabetik.
+    liste.sort((a, b) => (b.adet - a.adet) || a.deger.localeCompare(b.deger, 'tr'));
+    sonuc['kod' + k.no] = liste;
   }
+
+  sonuc.alanlar = KOD_ALANLARI.map((k) => ({
+    no: k.no,
+    ad: k.ad,
+    kullanilan: sonuc['kod' + k.no].some((x) => x.adet > 0)
+  }));
   return sonuc;
 }
 

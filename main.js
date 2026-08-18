@@ -320,8 +320,49 @@ kayitEt('sayim:listeyiBosalt', async (g, k) =>
 );
 kayitEt('sayim:listedenCikar', async (g) => sayim.listedenCikar(g));
 kayitEt('sayim:ekran', async (g) => sayim.sayimEkraniGetir(g));
-kayitEt('sayim:kaydet', async (g, k) =>
-  sayim.sayimKaydet(Object.assign({}, g, { sayan: g.sayan || k.kullanici }))
+// Sayım da tutanak gibi stok miktarını gerçekten değiştiren bir işlem.
+// Kullanıcı sayımı kaydeder kaydetmez fark fişleri Vega'ya kesiliyor; ayrıca
+// Vega'nın sayım ekranına girmesi gerekmiyor. Yazma kilidi kapalıysa sayım
+// yalnızca panelde durur, listede "Yazılmadı" görünür ve sonra tek tuşla
+// yazılabilir.
+kayitEt('sayim:kaydet', async (g, k) => {
+  const sonuc = await sayim.sayimKaydet(
+    Object.assign({}, g, { sayan: g.sayan || k.kullanici })
+  );
+
+  if (g.vegayaYaz === false || !yazma.yazmaAcikMi()) {
+    return Object.assign({}, sonuc, { vegayaYazildi: false });
+  }
+
+  try {
+    const fis = await yazma.sayimFisiYaz({
+      firma: g.firma,
+      donem: g.donem,
+      sayimId: sonuc.sayimId,
+      kullanici: k.kullanici
+    });
+    return Object.assign({}, sonuc, {
+      vegayaYazildi: !fis.yazilmadi,
+      farkYok: !!fis.yazilmadi,
+      belgeNo: fis.belgeNo || null,
+      girisBelgeNo: fis.girisBelgeNo || null,
+      cikisBelgeNo: fis.cikisBelgeNo || null,
+      artan: fis.artan || 0,
+      azalan: fis.azalan || 0
+    });
+  } catch (e) {
+    // Sayım kaydı duruyor; yalnızca Vega'ya yazılamadı.
+    return Object.assign({}, sonuc, {
+      vegayaYazildi: false,
+      yazmaHatasi: e.message || String(e)
+    });
+  }
+});
+kayitEt('sayim:vegayaYaz', async (g, k) =>
+  yazma.sayimFisiYaz(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('sayim:vegadanGeriAl', async (g, k) =>
+  yazma.sayimFisiGeriAl(Object.assign({}, g, { kullanici: k.kullanici }))
 );
 kayitEt('sayim:gecmis', async (g) => sayim.sayimListesi(g));
 kayitEt('sayim:detay', async (g) => sayim.sayimDetayi(g));

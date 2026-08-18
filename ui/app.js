@@ -284,7 +284,7 @@ ekranlar.ana = async function () {
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Diğer işlemler' }));
   const islemler = el('div', { sinif: 'islem-dugmeleri' }, [
-    islemDugmesi('Ara sayım', 'Seçili ürünleri say, farkı gör', 'sayim'),
+    islemDugmesi('Sayım', "Say, farkı gör, Vega'ya işle", 'sayim'),
     islemDugmesi('Reçete ağacı', 'Mamulün altındaki her şeyi gör', 'recete'),
     islemDugmesi('THIRD listesi', 'Üretim gerektiren stokları işaretle', 'third'),
     islemDugmesi('Ürün değişim tutanağı', 'Bir stoktan düş, diğerine ekle', 'tutanak'),
@@ -292,8 +292,7 @@ ekranlar.ana = async function () {
     islemDugmesi('Cari bakiye', 'Kime ne kadar borç var', 'cari'),
     islemDugmesi('Alış faturası', 'Gelen malı faturasıyla stoğa gir', 'alisFatura'),
     islemDugmesi('Maliyetlendirme', 'Son alış fiyatından maliyet hesapla', 'maliyetlendirme'),
-    islemDugmesi('Üretim', 'Stoğu eksiye düşenleri sıfıra çek', 'uretim'),
-    islemDugmesi('Vega Sayım programı', "VegaWinA5'in sayım aracını aç", null, () => vegaProgramAc('sayim'))
+    islemDugmesi('Üretim', 'Stoğu eksiye düşenleri sıfıra çek', 'uretim')
   ]);
   icerik.appendChild(islemler);
 
@@ -322,6 +321,29 @@ function islemDugmesi(ad, not, ekran, elleIs) {
 // Tek ekran, dört süzgeç. Teorik (Vega'daki) miktarın karşısında en son
 // fiziki sayım ve fark duruyor; hepsi Excel ve PDF olarak dışarı aktarılabiliyor.
 
+// Stok kartındaki sınıflandırma alanları. Eşleştirme firmanın Vega'dan aldığı
+// "stokdeğer" raporuyla kart kart doğrulandı (486/486 satır birebir tuttu):
+//
+//   Tür = KOD1        Sınıf = KOD2       3-ÖK = KOD3     4-ÖK = KOD4
+//   5-ÖK = KOD5       Sezon/Yıl = KOD6   Marka = KOD7    Renk = KOD9
+//
+// KOD8 ve KOD10 o raporda hiç yok ama firma ikisini de kullanıyor: KOD8 kartı
+// "PASİF" diye işaretliyor, KOD10 sayım/üretim listesine girenleri.
+const KOD_ETIKETLERI = [
+  { alan: 'kod1', ad: 'Tür' },
+  { alan: 'kod2', ad: 'Sınıf' },
+  { alan: 'kod3', ad: '3-ÖK' },
+  { alan: 'kod4', ad: '4-ÖK' },
+  { alan: 'kod5', ad: '5-ÖK' },
+  { alan: 'kod6', ad: 'Sezon/Yıl' },
+  { alan: 'kod7', ad: 'Marka' },
+  { alan: 'kod8', ad: '8. Kod' },
+  { alan: 'kod9', ad: 'Renk' },
+  { alan: 'kod10', ad: '10. Kod' }
+];
+
+const KOD_NUMARALARI = KOD_ETIKETLERI.map((k) => Number(k.alan.slice(3)));
+
 const STOK_SUZGECLERI = [
   { anahtar: 'sorunlu', ad: 'Dikkat isteyenler', not: 'Eksi, biten ve azalan' },
   { anahtar: 'eksi', ad: 'Eksi stok', not: 'Miktarı sıfırın altında' },
@@ -330,7 +352,7 @@ const STOK_SUZGECLERI = [
   { anahtar: 'aralik', ad: 'Kalan 6–20', not: 'Altı ile yirmi arası', alt: 6, ust: 20 },
   { anahtar: 'azalan', ad: 'Azalanlar', not: 'Kritik seviyenin altı' },
   { anahtar: 'tumu', ad: 'Tüm ürünler', not: 'Hareket görmüş bütün kartlar' },
-  { anahtar: 'tumu', ad: 'Bütün stok listesi', not: 'Hareketsiz kartlar dahil, komple liste', tumKartlar: true }
+  { anahtar: 'tumu', ad: 'Bütün stok listesi', not: 'Hareketsiz kartlar ve gider kartları dahil, komple liste', tumKartlar: true, giderDahil: true }
 ];
 
 function suzgecAnahtari(s) {
@@ -356,10 +378,10 @@ ekranlar.stok = async function (parametre) {
   const elleUst = parametre.ust;
   const elleAralik = elleAlt !== undefined || elleUst !== undefined;
 
-  // Firmanın kendi sınıflandırma kodları (Vega stok değer raporundaki
-  // Tür / Sınıf / 3-4-5-ÖK sütunları) süzgeç olarak kullanılıyor.
+  // Firmanın kendi sınıflandırma kodları süzgeç olarak kullanılıyor.
+  // Alan karşılıkları KOD_ETIKETLERI'nde.
   const kodSecimi = {};
-  for (const n of [1, 2, 3, 4, 5]) {
+  for (const n of KOD_NUMARALARI) {
     const d = parametre['kod' + n];
     if (d) kodSecimi['kod' + n] = d;
   }
@@ -371,7 +393,8 @@ ekranlar.stok = async function (parametre) {
           suzgec: secili.anahtar,
           alt: secili.alt,
           ust: secili.ust,
-          tumKartlar: secili.tumKartlar ? 1 : 0
+          tumKartlar: secili.tumKartlar ? 1 : 0,
+          giderDahil: secili.giderDahil ? 1 : 0
         },
     kodSecimi
   );
@@ -411,6 +434,11 @@ ekranlar.stok = async function (parametre) {
         { ad: '3-ÖK', alan: 'ok3', tur: 'metin', genislik: 10 },
         { ad: '4-ÖK', alan: 'ok4', tur: 'metin', genislik: 10 },
         { ad: '5-ÖK', alan: 'ok5', tur: 'metin', genislik: 10 },
+        { ad: 'Marka', alan: 'marka', tur: 'metin', genislik: 10 },
+        { ad: 'Renk', alan: 'renk', tur: 'metin', genislik: 10 },
+        { ad: 'Sezon/Yıl', alan: 'sezon', tur: 'metin', genislik: 12 },
+        { ad: '8. Kod', alan: 'ok8', tur: 'metin', genislik: 10 },
+        { ad: '10. Kod', alan: 'ok10', tur: 'metin', genislik: 14 },
         { ad: 'Birim', alan: 'birim', tur: 'metin', genislik: 10 },
         { ad: 'Envanter', alan: 'teorik', tur: 'sayi', genislik: 15 },
         { ad: 'Fiziki sayım', alan: 'sayilan', tur: 'sayi', genislik: 15 },
@@ -484,26 +512,29 @@ ekranlar.stok = async function (parametre) {
     el('div', { style: 'flex:1' }, [el('label', { metin: 'Ara' }), aramaKutu])
   ]));
 
-  // Sınıflandırma süzgeçleri: Vega stok değer raporundaki sütunların aynısı.
+  // Sınıflandırma süzgeçleri: Vega stok kartındaki kod alanlarının aynısı.
   // Firma hangi kodu kullanıyorsa o kutu çıkıyor; boş olan gösterilmiyor.
-  const KOD_ETIKETLERI = [
-    { alan: 'kod1', ad: 'Tür' },
-    { alan: 'kod2', ad: 'Sınıf' },
-    { alan: 'kod3', ad: '3-ÖK' },
-    { alan: 'kod4', ad: '4-ÖK' },
-    { alan: 'kod5', ad: '5-ÖK' }
-  ];
+  //
+  // Listedeki değerler firmanın kendi tanım tablosundan (TBLSTOKKODTAN)
+  // geliyor. Kartlara tanım tablosundan geçmeden yazılmış kodlar da var —
+  // bunların büyük kısmı Şefim'den sızmış adisyon notu ("ULAŞ BEY", "S-15")
+  // olduğu için ayrı bir grupta, en altta duruyor.
   const kodKutulari = [];
   for (const bilgi of KOD_ETIKETLERI) {
     const secenekler = (kodListeleri && kodListeleri[bilgi.alan]) || [];
     if (!secenekler.length) continue;
-    const kutu = el('select', { sinif: 'form' }, [
-      el('option', { value: '', metin: bilgi.ad + ' — hepsi' })
-    ].concat(
-      secenekler.map((o) =>
-        el('option', { value: o.deger, metin: `${o.deger} (${sayiYaz(o.adet)})` })
-      )
-    ));
+    const tanimli = secenekler.filter((o) => o.tanimli);
+    const serbest = secenekler.filter((o) => !o.tanimli);
+    const secenekYap = (o) =>
+      el('option', { value: o.deger, metin: `${o.deger} (${sayiYaz(o.adet)})` });
+    const cocuklar = [el('option', { value: '', metin: bilgi.ad + ' — hepsi' })];
+    if (tanimli.length && serbest.length) {
+      cocuklar.push(el('optgroup', { label: 'Tanımlı kodlar' }, tanimli.map(secenekYap)));
+      cocuklar.push(el('optgroup', { label: 'Kartlarda geçen diğer' }, serbest.map(secenekYap)));
+    } else {
+      cocuklar.push.apply(cocuklar, secenekler.map(secenekYap));
+    }
+    const kutu = el('select', { sinif: 'form' }, cocuklar);
     kutu.value = parametre[bilgi.alan] || '';
     kutu.addEventListener('change', () => {
       const yeniParametre = Object.assign({}, parametre);
@@ -860,9 +891,9 @@ ekranlar.sayim = async function () {
     cagir('sayim:gecmis')
   ]);
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Ara sayım', [
-    el('button', { sinif: 'dugme-sade', metin: 'Sayılacak ürünleri düzenle', tikla: sayimListesiDuzenle }),
-    el('button', { sinif: 'dugme-sade', metin: "Vega Sayım programını aç", tikla: () => vegaProgramAc('sayim') })
+  const durum = await cagir('yazma:durum').catch(() => ({ yazmaAcik: false }));
+  icerik.appendChild(ekranBasligi('Sayım', [
+    el('button', { sinif: 'dugme-sade', metin: 'Sayılacak ürünleri düzenle', tikla: sayimListesiDuzenle })
   ]));
 
   if (!liste.length) {
@@ -884,8 +915,13 @@ ekranlar.sayim = async function () {
     }));
 
     icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-      'Her ürünün sayılan miktarını yazın, sonra tek düğmeye basın. ' +
-      'Kaydettikten sonra fark listesi açılır.'
+      durum.yazmaAcik
+        ? 'Her ürünün sayılan miktarını yazın, sonra tek düğmeye basın. Program ' +
+          "farkı kendisi hesaplayıp Vega'ya sayım fişini keser — Vega'nın sayım " +
+          'ekranına girmenize gerek yok. Miktar yazılmayan ürünler sayıma girmez.'
+        : 'Her ürünün sayılan miktarını yazın, sonra tek düğmeye basın. ' +
+          "Vega'ya yazma şu anda kapalı olduğu için sayım yalnızca panele " +
+          "kaydedilir; listeden sonradan tek tuşla Vega'ya yazabilirsiniz."
     ]));
     icerik.appendChild(el('div', { sinif: 'tablo-sarmal' }, [
       el('table', null, [
@@ -918,18 +954,35 @@ ekranlar.sayim = async function () {
         bildir('En az bir ürüne miktar yazın.', 'kotu');
         return;
       }
+      // Fark önizlemesi: kullanıcı neyi onayladığını görsün.
+      const farkli = satirlar.filter((s) => Math.abs(s.sayilan - s.teorik) >= 0.0001);
+      const artan = farkli.filter((s) => s.sayilan > s.teorik).length;
+      const azalan = farkli.length - artan;
+
       const onay = await window.galya.cagir('sistem:onay', {
         baslik: 'Sayımı kaydet',
-        mesaj: `${satirlar.length} ürün kaydedilecek.`,
-        detay: 'Kayıt panel veritabanına yazılır, Vega değişmez. İstenirse listeden geri alınabilir.',
-        evet: 'Kaydet',
+        mesaj: `${satirlar.length} ürün sayıldı, ${farkli.length} üründe fark var.`,
+        detay: durum.yazmaAcik
+          ? `Vega'ya ${artan} ürün için sayım giriş fişi, ${azalan} ürün için sayım ` +
+            'çıkış fişi kesilecek ve stok sayılan miktara oturacak. Yanlışlık olursa ' +
+            'geçmiş listesinden geri alınabilir.'
+          : "Kayıt yalnızca panele yazılır, Vega değişmez.",
+        evet: durum.yazmaAcik ? "Kaydet ve Vega'ya yaz" : 'Kaydet',
         hayir: 'Vazgeç'
       });
       if (!onay.veri || !onay.veri.onay) return;
       try {
         kaydetDugme.disabled = true;
         const sonuc = await cagir('sayim:kaydet', { satirlar });
-        bildir('Sayım kaydedildi.', 'iyi');
+        if (sonuc.yazmaHatasi) {
+          bildir("Sayım kaydedildi ama Vega'ya yazılamadı: " + sonuc.yazmaHatasi, 'kotu');
+        } else if (sonuc.farkYok) {
+          bildir('Sayım kaydedildi. Fark çıkmadığı için fiş kesilmedi.', 'iyi');
+        } else if (sonuc.vegayaYazildi) {
+          bildir("Sayım kaydedildi ve Vega'ya yazıldı. Belge: " + sonuc.belgeNo, 'iyi');
+        } else {
+          bildir('Sayım kaydedildi.', 'iyi');
+        }
         sayimDetayGoster(sonuc.sayimId);
         ekranAc('sayim');
       } catch (e) {
@@ -942,32 +995,89 @@ ekranlar.sayim = async function () {
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Geçmiş sayımlar' }));
   icerik.appendChild(tabloYap(
-    ['Tarih', 'Sayan', 'Ürün', 'Farklı', 'Fark tutarı', ''],
+    ['Tarih', 'Sayan', 'Ürün', 'Farklı', 'Fark tutarı', 'Vega', ''],
     gecmis,
-    (g) => el('tr', null, [
-      hucre(saatliTarih(g.tarih)),
-      hucre(g.sayan || '—'),
-      hucre(sayiYaz(g.satirSayisi), 'sayi'),
-      hucre(sayiYaz(g.farkliSatir), 'sayi ' + (g.farkliSatir ? 'eksi' : '')),
-      hucre(paraYaz(g.farkTutari), 'sayi'),
-      el('td', null, [
-        el('button', { sinif: 'dugme-kucuk', metin: 'Farkları gör', tikla: () => sayimDetayGoster(g.id) }),
-        el('button', {
+    (g) => {
+      const dugmeler = [
+        el('button', { sinif: 'dugme-kucuk', metin: 'Farkları gör', tikla: () => sayimDetayGoster(g.id) })
+      ];
+      // Vega'ya yazılmamışsa yazma, yazılmışsa geri alma düğmesi çıkar.
+      if (durum.yazmaAcik && !g.vegayaYazildi) {
+        dugmeler.push(el('button', {
           sinif: 'dugme-kucuk',
-          metin: 'Geri al',
+          metin: "Vega'ya yaz",
           style: 'margin-left:6px',
-          tikla: () => sayimGeriAl(g.id)
-        })
-      ])
-    ])
+          tikla: () => sayimVegayaYaz(g)
+        }));
+      }
+      if (durum.yazmaAcik && g.vegayaYazildi) {
+        dugmeler.push(el('button', {
+          sinif: 'dugme-kucuk',
+          metin: "Vega'dan geri al",
+          style: 'margin-left:6px',
+          tikla: () => sayimVegadanGeriAl(g)
+        }));
+      }
+      dugmeler.push(el('button', {
+        sinif: 'dugme-kucuk',
+        metin: 'Listeden sil',
+        style: 'margin-left:6px',
+        tikla: () => sayimGeriAl(g.id)
+      }));
+      return el('tr', null, [
+        hucre(saatliTarih(g.tarih)),
+        hucre(g.sayan || '—'),
+        hucre(sayiYaz(g.satirSayisi), 'sayi'),
+        hucre(sayiYaz(g.farkliSatir), 'sayi ' + (g.farkliSatir ? 'eksi' : '')),
+        hucre(paraYaz(g.farkTutari), 'sayi'),
+        hucre(g.vegayaYazildi ? (g.vegaBelgeNo || 'Yazıldı') : 'Yazılmadı'),
+        el('td', null, dugmeler)
+      ]);
+    }
   ));
 };
 
-async function vegaProgramAc(anahtar) {
+// Panelde duran bir sayımı sonradan Vega'ya işler.
+async function sayimVegayaYaz(g) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: "Sayımı Vega'ya yaz",
+    mesaj: `${saatliTarih(g.tarih)} tarihli sayım Vega'ya yazılacak.`,
+    detay:
+      'Fark, fişin kesildiği andaki güncel stoğa göre yeniden hesaplanır; ' +
+      'artı farklar için sayım giriş, eksi farklar için sayım çıkış fişi kesilir.',
+    evet: 'Yaz',
+    hayir: 'Vazgeç'
+  });
+  if (!onay.veri || !onay.veri.onay) return;
   try {
-    const sonuc = await cagir('vegaprogram:ac', { program: anahtar });
-    bildir(sonuc.ad + ' açılıyor…', 'iyi');
-  } catch (e) { hataGoster(e); }
+    const sonuc = await cagir('sayim:vegayaYaz', { sayimId: g.id });
+    if (sonuc.yazilmadi) bildir(sonuc.mesaj, 'iyi');
+    else bildir('Sayım yazıldı. Belge: ' + sonuc.belgeNo, 'iyi');
+    ekranAc('sayim');
+  } catch (e) {
+    hataGoster(e);
+  }
+}
+
+// Yanlış kesilen sayım fişini Vega'dan siler; stok fiş öncesine döner.
+async function sayimVegadanGeriAl(g) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: "Sayım fişini geri al",
+    mesaj: (g.vegaBelgeNo || 'Sayım fişi') + " Vega'dan silinecek.",
+    detay:
+      'Fişin dört tablodaki bütün satırları silinir ve stok fiş kesilmeden ' +
+      'önceki miktarına döner. Sayım kaydı panelde kalır.',
+    evet: 'Geri al',
+    hayir: 'Vazgeç'
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    const sonuc = await cagir('sayim:vegadanGeriAl', { sayimId: g.id });
+    bildir('Geri alındı: ' + sonuc.geriAlinan, 'iyi');
+    ekranAc('sayim');
+  } catch (e) {
+    hataGoster(e);
+  }
 }
 
 async function sayimDetayGoster(sayimId) {

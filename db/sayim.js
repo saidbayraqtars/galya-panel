@@ -202,13 +202,14 @@ async function sayimListesi(secim) {
       S.Sayan AS sayan,
       S.Aciklama AS aciklama,
       S.VegayaYazildi AS vegayaYazildi,
+      S.VegaBelgeNo AS vegaBelgeNo,
       COUNT(D.Id) AS satirSayisi,
       SUM(CASE WHEN D.Fark <> 0 THEN 1 ELSE 0 END) AS farkliSatir,
       ISNULL(SUM(D.Fark * D.BirimMaliyet), 0) AS farkTutari
     FROM [${p}].dbo.AraSayim S
     LEFT JOIN [${p}].dbo.AraSayimSatir D ON D.SayimId = S.Id
     WHERE S.Firma = @firma AND S.Iptal = 0
-    GROUP BY S.Id, S.SayimTarihi, S.Sayan, S.Aciklama, S.VegayaYazildi
+    GROUP BY S.Id, S.SayimTarihi, S.Sayan, S.Aciklama, S.VegayaYazildi, S.VegaBelgeNo
     ORDER BY S.SayimTarihi DESC
   `,
     { firma }

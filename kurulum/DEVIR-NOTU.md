@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 17.08.2026 · Sürüm 1.3.0
+Son güncelleme: 17.08.2026 · Sürüm 1.4.0
 
 ---
 
@@ -90,7 +90,7 @@ rapor programı (galya)/
     sql-yetki-tazele.sql     restore sonrası okuma yetkisini geri verir
     sql-yazma-yetkisi-ver.sql  VEGADB'ye yazma yetkisi (ikinci kilit)
     test-sorgular.js         91 okuma sınaması
-    test-yazma.js            56 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
+    test-yazma.js            79 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
     izleyici-kur.sql / izleyici-kapat.sql / izleyici-oku.js   (eski, elle sürüm)
 ```
 
@@ -180,7 +180,7 @@ Yani yazma açılsa bile SQL tarafında ayrıca yetki verilmesi gerekir.
 | Madde | Durum |
 |---|---|
 | THIRD (özel kod 11) okuma + ekleme | Çalışıyor |
-| Ara sayım (Vega'nın sayım programını açma) | Çalışıyor |
+| Sayım (panelden say, farkı Vega'ya yaz) | Çalışıyor — 93/94 fiş çifti |
 | Reçete okuma / oluşturma / güncelleme | Çalışıyor |
 | Tutanak (ürün değişimi) + log | Çalışıyor |
 | Stok kontrol (teorik ↔ fiziki) | Çalışıyor |
@@ -191,11 +191,27 @@ Yani yazma açılsa bile SQL tarafında ayrıca yetki verilmesi gerekir.
 | Üretim fişi ("sıfıra kadar üret") | Çalışıyor — tam desen (38+38+97+96) |
 | Alış faturası girişi | Çalışıyor — taslak, sonra tek onayla Vega'ya |
 | Tutanak belgesi (imzalı çıktı) | Çalışıyor — PDF ve yazıcı |
-| Sınıflandırma süzgeçleri (Tür/Sınıf/ÖK) | Çalışıyor |
-| Sayım fişini Vega'ya yazma | `sayimFisiYaz` hâlâ hata fırlatan taslak |
+| Sınıflandırma süzgeçleri (10 kod alanı) | Çalışıyor |
+| Sayım fişini Vega'ya yazma | Çalışıyor — canlıda denendi ve geri alındı |
 
-Sayım fişi tahminle yazılmamalı. Yanlış yazılan fiş stok, maliyet ve
-muhasebe zincirini birden bozar.
+Belgedeki maddelerin tamamı bitti. Panelin yazdığı her belge tipi gerçek
+Vega fişlerinden çıkarıldı, `GALYA_TEST` üzerinde sınandı ve canlı firmada
+tek örnekle doğrulanıp geri alındı.
+
+### 18.08.2026'da eklenenler
+- **Sayım artık panelden yapılıyor.** Kullanıcı sayılan miktarları yazıp
+  kaydediyor; program farkı kendisi hesaplayıp Vega'ya sayım fişini kesiyor.
+  Vega'nın sayım programına yönlendiren düğmeler kaldırıldı. Fark, fişin
+  kesildiği andaki güncel stoğa göre yeniden hesaplanır — sayım kaydedildikten
+  sonra Şefim satış işlemeye devam ettiği için ekrandaki eski miktarla yazmak
+  stoğu yanlış yere oturturdu. Yanlışlık olursa geçmiş listesinden geri
+  alınıyor. Desen `kurulum/BELGE-DESENI.md` → "Sayım fişi".
+- **Sınıflandırma süzgeçleri düzeltildi.** Önceki hâli beş kod alanını
+  kapsıyordu ve seçenekleri kartlardaki değerlerden üretiyordu. Stok değer
+  raporu yeniden çözümlenince iki eksik çıktı: firma `KOD6` / `KOD7` /
+  `KOD9`'u da (Sezon/Yıl, Marka, Renk) ve raporda hiç görünmeyen `KOD8`
+  (PASİF) ile `KOD10`'u (SAYIMURETIM) kullanıyormuş. Seçenekler artık
+  firmanın kendi tanım tablosundan (`TBLSTOKKODTAN`) geliyor.
 
 ### 17.08.2026'da eklenenler
 
@@ -228,18 +244,40 @@ muhasebe zincirini birden bozar.
   (`galya döküman/stokdeğer17.08.2026.xls`) çözümlendi; oradaki sütunların
   Vega karşılığı şu:
 
-  | Rapordaki sütun | Vega alanı | Örnek değerler |
-  |---|---|---|
-  | Tür | `KOD1` | BİRA, RAKI, MEŞRUBAT, M (256 değer) |
-  | Sınıf | `KOD2` | BAR, MUTFAK, GİDER (32 değer) |
-  | 3-ÖK | `KOD3` | İÇECEK |
-  | 4-ÖK | `KOD4` | ALKOL, FİRE |
-  | 5-ÖK | `KOD5` | VAR, FİRE |
+  | Rapordaki sütun | Vega alanı | Tanımlı değer | Kart |
+  |---|---|---|---|
+  | Tür | `KOD1` | 51 | 1390 |
+  | Sınıf | `KOD2` | 12 | 978 |
+  | 3-ÖK | `KOD3` | 2 (İÇECEK) | 68 |
+  | 4-ÖK | `KOD4` | 3 (ALKOL, FİRE) | 181 |
+  | 5-ÖK | `KOD5` | 3 (VAR, FİRE) | 597 |
+  | Sezon/Yıl | `KOD6` | 15 (sayı kodları) | 317 |
+  | Marka | `KOD7` | 11 (sayı kodları) | 156 |
+  | — raporda yok | `KOD8` | PASİF | 373 |
+  | Renk | `KOD9` | 6 (sayı kodları) | 17 |
+  | — raporda yok | `KOD10` | SAYIMURETIM | 47 |
 
-  Stok ekranındaki açılır kutular bu kodlardan üretiliyor; liste sabit
-  yazılmadı, firma hangi kodu kullanıyorsa o çıkıyor. Dışa aktarmada da
-  aynı sütunlar var, böylece panelin çıktısı Vega'nın stok değer raporuyla
-  karşılaştırılabiliyor (`Bira.Henieken` satırı birebir tutuyor).
+  Eşleştirme raporla kart kart karşılaştırılarak doğrulandı: **486/486 satır
+  birebir tuttu**. Raporda `3-ÖK` sütunu hiç basılmıyor, buna karşılık
+  `Marka` / `Renk` / `Sezon/Yıl` sütunları var — bunlar Vega'nın stok
+  kartındaki `KOD7` / `KOD9` / `KOD6` alanları ve firma bunlara ad değil
+  sayı kodu yazmış. `KOD8` ve `KOD10` raporda hiç görünmüyor ama firma
+  ikisini de kullanıyor.
+
+  Açılır kutuların içeriği firmanın kendi tanım tablosundan geliyor:
+  `F{firma}TBLSTOKKODTAN`, `CATEGORY` sütunu kaçıncı KOD alanı olduğunu
+  söylüyor. Vega'nın kendi açılır listeleri de buradan beslendiği için
+  kullanıcı Vega'da ne görüyorsa panelde de onu görüyor.
+
+  > `KOD1`'de tanım tablosunda olmayan ~250 değer var: `ULAŞ BEY`,
+  > `MÜZİKÇİLER`, `S-15`, `SOS OLMASIN`… Bunlar Şefim'den sızmış adisyon
+  > notları. Silinmedi (kartlarda duruyor) ama açılır listede ayrı bir
+  > "Kartlarda geçen diğer" grubunda, en altta duruyor.
+
+  Dışa aktarmada da aynı sütunlar var, böylece panelin çıktısı Vega'nın
+  stok değer raporuyla karşılaştırılabiliyor. "Bütün stok listesi"
+  süzgeci gider/hizmet kartlarını da alır; rapor onları da bastığı için
+  ancak böyle birebir örtüşüyor.
 - **Tutanak belgesi.** İmza alanlı, A4 tek sayfa resmî çıktı. Tutanak
   listesindeki "Belge" düğmesi PDF kaydeder, "Yazdır" doğrudan yazıcıya
   gönderir. Sayfa düzeni `db/disaaktar.js` → `tutanakBelgeHtml()`.
@@ -283,7 +321,7 @@ sürümüdür. Kalsın; sunucuda exe çalıştırılamayan durumlarda işe yarar
 ```
 node kurulum/test-sorgular.js     # 91 okuma sınaması
 node kurulum/test-yazma.js --kur  # test veritabanını hazırla/tamamla
-node kurulum/test-yazma.js        # 55 yazma sınaması
+node kurulum/test-yazma.js        # 79 yazma sınaması
 node izleyici/test-izleyici.js …  #  6 izleyici sınaması
 ```
 
@@ -365,9 +403,6 @@ tablo tutuyor ve firmalar şöyle:
 3. **Alış faturasının canlıda ilk denemesi.** Cari borç oluşturduğu için
    muhasebe zincirine dokunan tek yazma işlemi. İlk faturanın Vega'da
    doğru göründüğü ve cari ekstresine düştüğü teyit edilmeli.
-4. **Sayım fişi yazımı.** Deseni stok giriş/çıkışla aynı görünüyor (tip
-   93/94), ama sayımda Vega envanteri farklı sıralıyor olabilir.
-   `GALYA_TEST` üzerinde doğrulanmadan açılmamalı.
 
 ---
 

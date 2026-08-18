@@ -95,7 +95,9 @@ const DONEM_TABLOLARI = [
   'TBLALFATBASLIK', 'TBLALFATHAREKET',
   'TBLDEPOHARBASLIK', 'TBLDEPOHARHAREKET',
   'TBLUREURETIMLIST', 'TBLUREURETIM', 'TBLUREURETIMCIKTI', 'TBLUREURETIMPOZ',
-  'TBLUREBELGE'
+  'TBLUREBELGE',
+  'TBLSAYIMGIRISBASLIK', 'TBLSAYIMGIRISHAREKET',
+  'TBLSAYIMCIKISBASLIK', 'TBLSAYIMCIKISHAREKET'
 ];
 
 async function testVeritabaniKur() {
@@ -571,6 +573,138 @@ if (process.argv.includes('--kur')) {
   kontrol('Geri almada bileşen stoğu eski hâline döndü',
     (await kalan(bilesenStok)) === oncekiBilesen);
 
+  // --- Sayım fişi ---------------------------------------------------------
+  //
+  // Sayım fişi fark belgesidir: fişe yazılan miktar "sayımda şu çıktı" değil,
+  // "stoğa şu kadar eklenecek" demektir. Sınama iki yönü birden deniyor:
+  // bir üründe sayım stoktan fazla (giriş fişi), diğerinde az (çıkış fişi).
+  console.log('\n== Sayım fişi ==');
+
+  const panelDb = require(path.join(kok, 'db', 'panel'));
+  await panelDb.kur();
+  const pAd = panelDb.p();
+
+  const sayimStok1 = stoklar[0].stokNo; // sayım fazla çıkacak
+  const sayimStok2 = stoklar[1].stokNo; // sayım eksik çıkacak
+  const oncekiS1 = await kalan(sayimStok1);
+  const oncekiS2 = await kalan(sayimStok2);
+
+  const sayimBaslik = await sql.sorgu(
+    `INSERT INTO [${pAd}].dbo.AraSayim (Firma, Donem, Depo, Sayan, Aciklama)
+     OUTPUT INSERTED.Id AS id VALUES ('F0103', 'D0015', 1, 'test', 'sınama sayımı')`
+  );
+  const sayimId = sayimBaslik[0].id;
+  // Fiziki sayım: birincide 4 fazla, ikincide 2,5 eksik.
+  for (const [stokNo, sayilan] of [[sayimStok1, oncekiS1 + 4], [sayimStok2, oncekiS2 - 2.5]]) {
+    await sql.calistir(
+      `INSERT INTO [${pAd}].dbo.AraSayimSatir
+         (SayimId, StokNo, StokAdi, Birim, TeorikMiktar, SayilanMiktar, BirimMaliyet)
+       VALUES (@sayimId, @stokNo, 'sınama', 'ADET', 0, @sayilan, 10)`,
+      { sayimId, stokNo, sayilan }
+    );
+  }
+
+  const sayimSonuc = await yazma.sayimFisiYaz(
+    Object.assign({}, SECIM, { sayimId, kullanici: 'test' })
+  );
+  console.log(`  Sayım belgeleri: ${sayimSonuc.belgeNo}`);
+
+  kontrol('Sayım giriş fişi kesildi', !!sayimSonuc.girisBelgeNo, String(sayimSonuc.girisBelgeNo));
+  kontrol('Sayım çıkış fişi kesildi', !!sayimSonuc.cikisBelgeNo, String(sayimSonuc.cikisBelgeNo));
+  kontrol('Belge numarası Z serisi',
+    /^Z\d{7}$/.test(sayimSonuc.girisBelgeNo || ''), String(sayimSonuc.girisBelgeNo));
+  kontrol('Artan ürün sayısı 1', sayimSonuc.artan === 1, String(sayimSonuc.artan));
+  kontrol('Azalan ürün sayısı 1', sayimSonuc.azalan === 1, String(sayimSonuc.azalan));
+
+  const sayimGirisBaslik = await sql.sorgu(
+    `SELECT IND AS ind, BELGETIPI AS tip, GIRIS AS giris, DEPO AS depo
+     FROM [GALYA_TEST].dbo.F0103D0015TBLSAYIMGIRISBASLIK WHERE BELGENO = @b`,
+    { b: sayimSonuc.girisBelgeNo }
+  );
+  kontrol('Giriş başlığı belge tipi 93', sayimGirisBaslik[0].tip === 93,
+    String(sayimGirisBaslik[0].tip));
+  kontrol('Giriş başlığında GIRIS bayrağı açık', sayimGirisBaslik[0].giris === true);
+
+  const sayimCikisBaslik = await sql.sorgu(
+    `SELECT IND AS ind, BELGETIPI AS tip, GIRIS AS giris
+     FROM [GALYA_TEST].dbo.F0103D0015TBLSAYIMCIKISBASLIK WHERE BELGENO = @b`,
+    { b: sayimSonuc.cikisBelgeNo }
+  );
+  kontrol('Çıkış başlığı belge tipi 94', sayimCikisBaslik[0].tip === 94,
+    String(sayimCikisBaslik[0].tip));
+
+  kontrol('Giriş hareketi yazıldı',
+    (await say('F0103D0015TBLSAYIMGIRISHAREKET', 'EVRAKNO = @i',
+      { i: sayimGirisBaslik[0].ind })) === 1);
+  kontrol('Çıkış hareketi yazıldı',
+    (await say('F0103D0015TBLSAYIMCIKISHAREKET', 'EVRAKNO = @i',
+      { i: sayimCikisBaslik[0].ind })) === 1);
+  kontrol('Stok hareketi 93 yazıldı',
+    (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT = 93 AND STOKNO = @s',
+      { s: sayimStok1 })) === 1);
+  kontrol('Stok hareketi 94 yazıldı',
+    (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT = 94 AND STOKNO = @s',
+      { s: sayimStok2 })) === 1);
+
+  const sayimGk = await sql.sorgu(
+    `SELECT COUNT(*) AS adet FROM [GALYA_TEST].dbo.F0103D0015TBLSAYIMGIRISHAREKET
+     WHERE EVRAKNO = @i AND (GK IS NULL OR GK = 0)`,
+    { i: sayimGirisBaslik[0].ind }
+  );
+  kontrol('Sayım satırlarında GK dolduruldu', sayimGk[0].adet === 0);
+
+  // Asıl mesele: stok fiziki sayıma oturmuş olmalı.
+  kontrol('Fazla çıkan ürünün stoğu sayılan miktara oturdu',
+    Math.abs((await kalan(sayimStok1)) - (oncekiS1 + 4)) < 0.0001,
+    `${await kalan(sayimStok1)} beklenen ${oncekiS1 + 4}`);
+  kontrol('Eksik çıkan ürünün stoğu sayılan miktara oturdu',
+    Math.abs((await kalan(sayimStok2)) - (oncekiS2 - 2.5)) < 0.0001,
+    `${await kalan(sayimStok2)} beklenen ${oncekiS2 - 2.5}`);
+
+  const yazildiMi = await sql.sorgu(
+    `SELECT VegayaYazildi AS y, VegaBelgeNo AS b FROM [${pAd}].dbo.AraSayim WHERE Id = @i`,
+    { i: sayimId }
+  );
+  kontrol('Panel kaydı yazıldı olarak işaretlendi', yazildiMi[0].y === true);
+
+  let ikinciYazmaHatasi = null;
+  try {
+    await yazma.sayimFisiYaz(Object.assign({}, SECIM, { sayimId, kullanici: 'test' }));
+  } catch (e) {
+    ikinciYazmaHatasi = e.message;
+  }
+  kontrol('Aynı sayım ikinci kez yazılamıyor', !!ikinciYazmaHatasi, String(ikinciYazmaHatasi));
+
+  await yazma.sayimFisiGeriAl(Object.assign({}, SECIM, { sayimId, kullanici: 'test' }));
+  kontrol('Geri almada giriş başlığı silindi',
+    (await say('F0103D0015TBLSAYIMGIRISBASLIK', 'IND = @i',
+      { i: sayimGirisBaslik[0].ind })) === 0);
+  kontrol('Geri almada çıkış başlığı silindi',
+    (await say('F0103D0015TBLSAYIMCIKISBASLIK', 'IND = @i',
+      { i: sayimCikisBaslik[0].ind })) === 0);
+  kontrol('Geri almada 93/94 hareketleri silindi',
+    (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT IN (93, 94)', {})) === 0);
+  kontrol('Geri almada birinci ürünün stoğu eski hâline döndü',
+    Math.abs((await kalan(sayimStok1)) - oncekiS1) < 0.0001);
+  kontrol('Geri almada ikinci ürünün stoğu eski hâline döndü',
+    Math.abs((await kalan(sayimStok2)) - oncekiS2) < 0.0001);
+
+  // Fark yoksa fiş kesilmemeli.
+  await sql.calistir(
+    `UPDATE [${pAd}].dbo.AraSayimSatir SET SayilanMiktar = @m WHERE SayimId = @i AND StokNo = @s`,
+    { i: sayimId, s: sayimStok1, m: await kalan(sayimStok1) }
+  );
+  await sql.calistir(
+    `UPDATE [${pAd}].dbo.AraSayimSatir SET SayilanMiktar = @m WHERE SayimId = @i AND StokNo = @s`,
+    { i: sayimId, s: sayimStok2, m: await kalan(sayimStok2) }
+  );
+  const farksiz = await yazma.sayimFisiYaz(
+    Object.assign({}, SECIM, { sayimId, kullanici: 'test' })
+  );
+  kontrol('Fark yokken fiş kesilmiyor', farksiz.yazilmadi === true, String(farksiz.mesaj));
+
+  await sql.calistir(`DELETE FROM [${pAd}].dbo.AraSayimSatir WHERE SayimId = @i`, { i: sayimId });
+  await sql.calistir(`DELETE FROM [${pAd}].dbo.AraSayim WHERE Id = @i`, { i: sayimId });
   console.log(`\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı\n`);
   await sql.havuzKapat();
   process.exit(basarisiz ? 1 : 0);

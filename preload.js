@@ -64,6 +64,8 @@ const kanallar = [
   'sayim:listeyiBosalt',
   'sayim:ekran',
   'sayim:kaydet',
+  'sayim:vegayaYaz',
+  'sayim:vegadanGeriAl',
   'sayim:gecmis',
   'sayim:detay',
   'sayim:iptal',
