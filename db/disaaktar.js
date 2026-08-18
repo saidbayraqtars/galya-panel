@@ -327,6 +327,230 @@ function pdfHtml(rapor) {
   </body></html>`;
 }
 
+
+// --- Ürün değişim tutanağı belgesi -----------------------------------------
+//
+// Liste raporlarından ayrı bir şey: tek bir tutanağın ıslak imzayla
+// dosyalanacak resmî çıktısı. A4 dikey, tek sayfa, altında imza alanları.
+//
+// Tasarım kuralları:
+//   - Tek sayfaya sığar; imza bloğu her zaman sayfanın altına yaslanır.
+//   - Düşen ve artan ürün yan yana, biri kırmızı biri yeşil şeritli;
+//     hangi üründen düşüldüğü bir bakışta görünsün.
+//   - Vega'ya yazılmamışsa bu belgede açıkça yazar; imzalayan kişi stok
+//     kaydının henüz oluşmadığını bilerek imzalasın.
+
+function belgeTarihi(deger) {
+  if (!deger) return '—';
+  const t = new Date(deger);
+  if (isNaN(t)) return '—';
+  const iki = (n) => String(n).padStart(2, '0');
+  return `${iki(t.getDate())}.${iki(t.getMonth() + 1)}.${t.getFullYear()}`;
+}
+
+function belgeSaatliTarih(deger) {
+  if (!deger) return '—';
+  const t = new Date(deger);
+  if (isNaN(t)) return '—';
+  const iki = (n) => String(n).padStart(2, '0');
+  return `${iki(t.getDate())}.${iki(t.getMonth() + 1)}.${t.getFullYear()} ${iki(t.getHours())}:${iki(t.getMinutes())}`;
+}
+
+function belgeMiktar(deger, birim) {
+  const s = Number(deger);
+  if (isNaN(s)) return String(deger || '');
+  return (
+    s.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 3 }) +
+    (birim ? ' ' + birim : '')
+  );
+}
+
+const VARSAYILAN_IMZALAR = ['Düzenleyen', 'Depo Sorumlusu', 'Muhasebe', 'Onaylayan'];
+
+// t: {
+//   id, tarih, firmaAdi, firma, donem, depo, depoAdi, duzenleyen, sebep,
+//   dusenAd, dusenKod, dusenMiktar, dusenBirim, dusenMaliyet,
+//   artanAd, artanKod, artanMiktar, artanBirim, artanMaliyet,
+//   vegayaYazildi, vegaBelgeNo, imzalar
+// }
+function tutanakBelgeHtml(t) {
+  const imzalar = (Array.isArray(t.imzalar) && t.imzalar.length ? t.imzalar : VARSAYILAN_IMZALAR)
+    .slice(0, 4);
+
+  const dusenTutar = Number(t.dusenMiktar || 0) * Number(t.dusenMaliyet || 0);
+  const artanTutar = Number(t.artanMiktar || 0) * Number(t.artanMaliyet || 0);
+
+  const imzaHucreleri = imzalar
+    .map(
+      (ad) => `
+      <td class="imza-hucre">
+        <div class="imza-unvan">${xmlKacir(ad)}</div>
+        <div class="imza-satir">
+          <span class="imza-etiket">Adı Soyadı</span>
+          <span class="imza-cizgi"></span>
+        </div>
+        <div class="imza-satir">
+          <span class="imza-etiket">Tarih</span>
+          <span class="imza-cizgi"></span>
+        </div>
+        <div class="imza-alan"><span class="imza-etiket">İmza</span></div>
+      </td>`
+    )
+    .join('');
+
+  const vegaRozeti = t.vegayaYazildi
+    ? `<span class="rozet rozet-yesil">Vega'ya işlendi${t.vegaBelgeNo ? ' · ' + xmlKacir(t.vegaBelgeNo) : ''}</span>`
+    : '<span class="rozet rozet-gri">Vega\'ya işlenmedi</span>';
+
+  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
+    @page { size: A4 portrait; margin: 16mm 15mm; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 11px; color: #212529; margin: 0;
+      display: flex; flex-direction: column; min-height: 100%;
+    }
+
+    .ust { border-bottom: 2.5px solid #1c3d5a; padding-bottom: 10px; margin-bottom: 16px; }
+    .ust-satir { display: flex; justify-content: space-between; align-items: flex-end; }
+    .kurum { font-size: 15px; font-weight: 700; color: #1c3d5a; letter-spacing: .2px; }
+    .kurum-alt { font-size: 10px; color: #6c757d; margin-top: 2px; }
+    .belge-no { text-align: right; font-size: 10px; color: #495057; line-height: 1.7; }
+    .belge-no b { color: #1c3d5a; font-size: 12px; }
+    h1 {
+      font-size: 16px; font-weight: 700; color: #1c3d5a; margin: 14px 0 0;
+      text-align: center; letter-spacing: 1.5px; text-transform: uppercase;
+    }
+
+    .kunye { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+    .kunye td { padding: 5px 8px; border: 1px solid #dee2e6; }
+    .kunye .etiket { background: #f1f3f5; color: #495057; width: 17%; font-weight: 600; }
+
+    .urunler { display: flex; gap: 10px; margin-bottom: 14px; }
+    .urun { flex: 1; border: 1px solid #dee2e6; border-top-width: 3px; padding: 9px 11px; }
+    .urun.dusen { border-top-color: #c92a2a; }
+    .urun.artan { border-top-color: #2b8a3e; }
+    .urun-baslik {
+      font-size: 9px; font-weight: 700; letter-spacing: .8px;
+      text-transform: uppercase; margin-bottom: 6px;
+    }
+    .urun.dusen .urun-baslik { color: #c92a2a; }
+    .urun.artan .urun-baslik { color: #2b8a3e; }
+    .urun-ad { font-size: 12px; font-weight: 600; line-height: 1.35; margin-bottom: 2px; }
+    .urun-kod { font-size: 9px; color: #868e96; margin-bottom: 8px; min-height: 11px; }
+    .urun-satir {
+      display: flex; justify-content: space-between;
+      padding: 3px 0; border-top: 1px solid #f1f3f5; font-size: 10px;
+    }
+    .urun-satir .deger { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .miktar { font-size: 14px; font-weight: 700; }
+    .urun.dusen .miktar { color: #c92a2a; }
+    .urun.artan .miktar { color: #2b8a3e; }
+
+    .bolum-baslik {
+      font-size: 9px; font-weight: 700; color: #1c3d5a; letter-spacing: .8px;
+      text-transform: uppercase; margin: 0 0 5px;
+    }
+    .sebep {
+      border: 1px solid #dee2e6; padding: 9px 11px; min-height: 46px;
+      font-size: 11px; line-height: 1.5; margin-bottom: 14px;
+    }
+    .beyan {
+      background: #f8f9fa; border-left: 3px solid #1c3d5a;
+      padding: 9px 12px; font-size: 10px; line-height: 1.6;
+    }
+
+    .alt { margin-top: auto; padding-top: 16px; }
+    .imzalar { width: 100%; border-collapse: separate; border-spacing: 8px 0; }
+    .imza-hucre { width: 25%; border: 1px solid #ced4da; padding: 8px 10px 6px; vertical-align: top; }
+    .imza-unvan {
+      font-size: 10px; font-weight: 700; color: #1c3d5a; text-align: center;
+      padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid #e9ecef;
+    }
+    .imza-satir { display: flex; align-items: flex-end; gap: 5px; margin-bottom: 9px; }
+    .imza-etiket { font-size: 8px; color: #868e96; white-space: nowrap; }
+    .imza-cizgi { flex: 1; border-bottom: 1px dotted #adb5bd; height: 11px; }
+    .imza-alan { height: 42px; border-bottom: 1px solid #adb5bd; position: relative; }
+    .imza-alan .imza-etiket { position: absolute; bottom: 2px; left: 0; }
+
+    .dip {
+      margin-top: 10px; padding-top: 7px; border-top: 1px solid #e9ecef;
+      display: flex; justify-content: space-between; font-size: 8px; color: #adb5bd;
+    }
+    .rozet { display: inline-block; padding: 2px 7px; border-radius: 9px; font-size: 9px; font-weight: 600; }
+    .rozet-yesil { background: #d3f9d8; color: #2b8a3e; }
+    .rozet-gri { background: #f1f3f5; color: #868e96; }
+  </style></head><body>
+
+    <div class="ust">
+      <div class="ust-satir">
+        <div>
+          <div class="kurum">${xmlKacir(t.firmaAdi || 'GALYA')}</div>
+          <div class="kurum-alt">${xmlKacir([t.firma, t.donem].filter(Boolean).join(' / '))}${t.depoAdi ? ' · ' + xmlKacir(t.depoAdi) : ''}</div>
+        </div>
+        <div class="belge-no">
+          Tutanak No <b>${xmlKacir(String(t.id || '—'))}</b><br>
+          Tarih ${xmlKacir(belgeTarihi(t.tarih))}
+        </div>
+      </div>
+      <h1>Ürün Değişim Tutanağı</h1>
+    </div>
+
+    <table class="kunye">
+      <tr>
+        <td class="etiket">Düzenleyen</td>
+        <td>${xmlKacir(t.duzenleyen || '—')}</td>
+        <td class="etiket">Depo</td>
+        <td>${xmlKacir(t.depoAdi || String(t.depo || '—'))}</td>
+      </tr>
+      <tr>
+        <td class="etiket">Kayıt zamanı</td>
+        <td>${xmlKacir(belgeSaatliTarih(t.tarih))}</td>
+        <td class="etiket">Stok kaydı</td>
+        <td>${vegaRozeti}</td>
+      </tr>
+    </table>
+
+    <div class="urunler">
+      <div class="urun dusen">
+        <div class="urun-baslik">Stoktan düşülen ürün</div>
+        <div class="urun-ad">${xmlKacir(t.dusenAd || '—')}</div>
+        <div class="urun-kod">${xmlKacir(t.dusenKod || '')}</div>
+        <div class="urun-satir"><span>Miktar</span><span class="deger miktar">− ${xmlKacir(belgeMiktar(t.dusenMiktar, t.dusenBirim))}</span></div>
+        <div class="urun-satir"><span>Birim maliyet</span><span class="deger">${xmlKacir(sayiBicimle(t.dusenMaliyet, 'para'))} TL</span></div>
+        <div class="urun-satir"><span>Tutar</span><span class="deger">${xmlKacir(sayiBicimle(dusenTutar, 'para'))} TL</span></div>
+      </div>
+      <div class="urun artan">
+        <div class="urun-baslik">Stoğa eklenen ürün</div>
+        <div class="urun-ad">${xmlKacir(t.artanAd || '—')}</div>
+        <div class="urun-kod">${xmlKacir(t.artanKod || '')}</div>
+        <div class="urun-satir"><span>Miktar</span><span class="deger miktar">+ ${xmlKacir(belgeMiktar(t.artanMiktar, t.artanBirim))}</span></div>
+        <div class="urun-satir"><span>Birim maliyet</span><span class="deger">${xmlKacir(sayiBicimle(t.artanMaliyet, 'para'))} TL</span></div>
+        <div class="urun-satir"><span>Tutar</span><span class="deger">${xmlKacir(sayiBicimle(artanTutar, 'para'))} TL</span></div>
+      </div>
+    </div>
+
+    <div class="bolum-baslik">Değişim gerekçesi</div>
+    <div class="sebep">${xmlKacir(t.sebep || '')}</div>
+
+    <div class="beyan">
+      Yukarıda belirtilen ürün değişimi işletme stoklarında fiilen
+      gerçekleşmiştir. Düşülen ve eklenen miktarlar yerinde tespit edilmiş
+      olup, bu tutanak taraflarca okunarak imza altına alınmıştır.
+    </div>
+
+    <div class="alt">
+      <table class="imzalar"><tr>${imzaHucreleri}</tr></table>
+      <div class="dip">
+        <span>Galya Panel · ${xmlKacir(belgeSaatliTarih(new Date()))} tarihinde oluşturuldu</span>
+        <span>Belge kimliği: TUT-${xmlKacir(String(t.id || '0').padStart(6, '0'))}</span>
+      </div>
+    </div>
+
+  </body></html>`;
+}
+
 // --- Dosya adı -------------------------------------------------------------
 
 function dosyaAdiUret(baslik, uzanti) {
@@ -352,4 +576,11 @@ function excelDosyayaYaz(rapor, hedefYol) {
   return hedefYol;
 }
 
-module.exports = { excelUret, excelDosyayaYaz, pdfHtml, dosyaAdiUret, xmlKacir };
+module.exports = {
+  excelUret,
+  excelDosyayaYaz,
+  pdfHtml,
+  tutanakBelgeHtml,
+  dosyaAdiUret,
+  xmlKacir
+};

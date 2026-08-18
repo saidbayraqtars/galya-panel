@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 14.08.2026 · Sürüm 1.2.0 · Son commit `68c46ad`
+Son güncelleme: 17.08.2026 · Sürüm 1.3.0
 
 ---
 
@@ -75,6 +75,9 @@ rapor programı (galya)/
     panel.js         GALYA_PANEL şeması (kendi veritabanımız)
     tutanak.js       Ürün değişim tutanakları
     sayim.js         Ara sayım
+    maliyet.js       Maliyet hesabı (son alış fiyatı + reçete)
+    fatura.js        Alış faturası taslağı (panel veritabanında)
+    uretim.js        "Stoğu sıfıra kadar üret" iş akışı
     rapor.js         Rapor üretimi
     disaaktar.js     Excel / PDF dışa aktarma
     guncelleme.js    electron-updater sarmalayıcı
@@ -84,8 +87,10 @@ rapor programı (galya)/
     BELGE-DESENI.md          Vega'ya yazma deseni — yazmaya dokunmadan önce okuyun
     DEVIR-NOTU.md            bu dosya
     sql-kullanici-olustur.sql
-    test-sorgular.js         88 okuma sınaması
-    test-yazma.js            29 yazma sınaması (GALYA_TEST üzerinde)
+    sql-yetki-tazele.sql     restore sonrası okuma yetkisini geri verir
+    sql-yazma-yetkisi-ver.sql  VEGADB'ye yazma yetkisi (ikinci kilit)
+    test-sorgular.js         91 okuma sınaması
+    test-yazma.js            56 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
     izleyici-kur.sql / izleyici-kapat.sql / izleyici-oku.js   (eski, elle sürüm)
 ```
 
@@ -144,10 +149,18 @@ Panel yalnızca `A` serisini kullanır; böylece Vega'nın kendi numaralarıyla
 
 `db/yazma.js` içindeki her fonksiyon `kilitKontrol()` çağırır. `ayarlar.json`
 içinde `vegayaYazmaAktif: false` iken `{kod: 'YAZMA_KAPALI'}` fırlatır ve
-VEGADB'ye tek satır gitmez. Kullanıcının açık isteği bu.
+VEGADB'ye tek satır gitmez.
+
+> **17.08.2026:** Bayrağın varsayılanı **açık** yapıldı. Sebep: bütün
+> özellikler yazma açıkken denenecek, canlı kurulum ancak o denemeden sonra
+> dağıtılacak. İkinci emniyet SQL tarafında duruyor — `galya_panel`
+> kullanıcısı VEGADB üzerinde salt okunur; yetki verilmeden bayrak açık olsa
+> da yazma başarısız olur. Müşteri kurulumuna geçerken bu varsayılanın
+> istenip istenmediği yeniden değerlendirilmeli.
 
 Yazan işler: THIRD özel kod 11, gider/hizmet stok sıfırlama, reçete
-oluştur/güncelle/sil, tutanak fişi. Her biri geri alınabilir. Her yazma
+oluştur/güncelle/sil, tutanak fişi, alış faturası, üretim fişi,
+maliyetlendirme. Her biri geri alınabilir. Her yazma
 `GALYA_PANEL.dbo.Islem` tablosuna kullanıcı + bilgisayar + satır kimlikleriyle
 loglanır.
 
@@ -174,21 +187,66 @@ Yani yazma açılsa bile SQL tarafında ayrıca yetki verilmesi gerekir.
 | Kritik stok raporu | Çalışıyor |
 | Gider/hizmet stok sıfırlama | Çalışıyor |
 | Excel / PDF dışa aktarma | Çalışıyor |
-| **Maliyetlendirme tetikleme** | **Yapılmadı** — desen çıkarılmadı |
-| **Üretim tetikleme** | **Yapılmadı** — desen çıkarılmadı |
+| Maliyetlendirme | Çalışıyor — son alış fiyatı, `TBLSTOKLAR.MALIYET`'e yazıyor |
+| Üretim fişi ("sıfıra kadar üret") | Çalışıyor — tam desen (38+38+97+96) |
+| Alış faturası girişi | Çalışıyor — taslak, sonra tek onayla Vega'ya |
+| Tutanak belgesi (imzalı çıktı) | Çalışıyor — PDF ve yazıcı |
+| Sınıflandırma süzgeçleri (Tür/Sınıf/ÖK) | Çalışıyor |
 | Sayım fişini Vega'ya yazma | `sayimFisiYaz` hâlâ hata fırlatan taslak |
 
-Son üçü tahminle yazılmamalı. Yanlış yazılan fiş stok, maliyet ve muhasebe
-zincirini birden bozar.
+Sayım fişi tahminle yazılmamalı. Yanlış yazılan fiş stok, maliyet ve
+muhasebe zincirini birden bozar.
 
-### Neden yapılamadı
+### 17.08.2026'da eklenenler
 
-- **Üretim:** Elde üretim yapılmış bir Vega veritabanı yok. İncelenen
-  veritabanında `TBLURERECETE`, `TBLUREURETIM`, `TBLUREBELGE` bomboş ve
-  hiçbir hareket `IZAHAT` 96/97 taşımıyor. Desen yokluktan çıkarılamaz.
-- **Maliyetlendirme:** Tek belge yazımı değil, toplu yeniden hesaplama.
-  Ne yaptığını görmek için Vega çalışırken SQL trafiğini yakalamak gerekiyor.
-  İzleyici tam bunun için yazıldı.
+- **Alış faturası.** Kullanıcı faturayı panelde hazırlıyor, kaydediyor,
+  düzeltebiliyor; Vega'ya yazma ayrı bir onayla oluyor. Yazınca stok
+  girişi, depo envanteri ve **cari borç** birlikte oluşuyor. Geri alınabilir.
+- **Maliyetlendirme.** İzleyici kaydı Vega'nın maliyetlendirme sırasında
+  veritabanına hiçbir şey yazmadığını gösterdi (6.468 okuma, 0 yazma);
+  müşteri de sonucun `TBLSTOKLAR`'daki maliyet alanına yazıldığını doğruladı.
+  Panel maliyeti kendisi hesaplayıp o alana yazıyor, eski değerleri saklıyor.
+- **Üretim fişi.** `BELGE-DESENI.md`'deki tam desen kodlandı. 96/97 belge
+  numarası kilitli okunuyor, yazımdan önce çakışma kontrolü yapılıyor,
+  çakışırsa işlem geri alınıp yeniden deneniyor.
+- **Tutanak artık anında Vega'ya yazılıyor.** Kayıt oluşur oluşmaz çıkış
+  (−) ve giriş (+) fişi çifti yazılıyor; yazma kapalıysa eskisi gibi
+  yalnızca panelde kalıyor.
+- **GK alanı çözüldü** (bkz. `BELGE-DESENI.md`), tutanak fişi dahil bütün
+  hareket satırlarında dolduruluyor.
+- **Bugünkü satış ekranı kaldırıldı.** Şefim satışları Vega'ya
+  aktarılmadığı sürece o ekran gerçeği göstermiyordu; aktarım açığı zaten
+  "Satış aktarımı" ekranında duruyor.
+- **Stok ekranı:** kalan 0 / 1–5 / 6–20 süzgeçleri, serbest aralık, ad-kod
+  araması, hareketsiz kartlar dahil komple liste, ekrandaki listeden tek
+  tuşla sayım listesi oluşturma.
+- **Cari ekranı:** arama, borçlu/alacaklı süzgeci, en az bakiye eşiği,
+  bakiyesi sıfır olanları da gösterme.
+- **Reçete ağacı:** her bileşenin maliyeti, mamulün alttan yukarı hesaplanan
+  toplam maliyeti ve ağacın içinden satır düzenleme/silme/ekleme.
+- **Sınıflandırma süzgeçleri.** Müşterinin verdiği stok değer raporu
+  (`galya döküman/stokdeğer17.08.2026.xls`) çözümlendi; oradaki sütunların
+  Vega karşılığı şu:
+
+  | Rapordaki sütun | Vega alanı | Örnek değerler |
+  |---|---|---|
+  | Tür | `KOD1` | BİRA, RAKI, MEŞRUBAT, M (256 değer) |
+  | Sınıf | `KOD2` | BAR, MUTFAK, GİDER (32 değer) |
+  | 3-ÖK | `KOD3` | İÇECEK |
+  | 4-ÖK | `KOD4` | ALKOL, FİRE |
+  | 5-ÖK | `KOD5` | VAR, FİRE |
+
+  Stok ekranındaki açılır kutular bu kodlardan üretiliyor; liste sabit
+  yazılmadı, firma hangi kodu kullanıyorsa o çıkıyor. Dışa aktarmada da
+  aynı sütunlar var, böylece panelin çıktısı Vega'nın stok değer raporuyla
+  karşılaştırılabiliyor (`Bira.Henieken` satırı birebir tutuyor).
+- **Tutanak belgesi.** İmza alanlı, A4 tek sayfa resmî çıktı. Tutanak
+  listesindeki "Belge" düğmesi PDF kaydeder, "Yazdır" doğrudan yazıcıya
+  gönderir. Sayfa düzeni `db/disaaktar.js` → `tutanakBelgeHtml()`.
+  Dört imza kutusu var (Düzenleyen, Depo Sorumlusu, Muhasebe, Onaylayan);
+  başlıklar `imzalar` parametresiyle değiştirilebiliyor. Belgenin üstünde
+  stok kaydının Vega'ya işlenip işlenmediği yazıyor — imzalayan bunu
+  bilerek imzalasın.
 
 ---
 
@@ -223,8 +281,9 @@ sürümüdür. Kalsın; sunucuda exe çalıştırılamayan durumlarda işe yarar
 ## 8. Sınama
 
 ```
-node kurulum/test-sorgular.js     # 88 okuma sınaması
-node kurulum/test-yazma.js        # 29 yazma sınaması
+node kurulum/test-sorgular.js     # 91 okuma sınaması
+node kurulum/test-yazma.js --kur  # test veritabanını hazırla/tamamla
+node kurulum/test-yazma.js        # 55 yazma sınaması
 node izleyici/test-izleyici.js …  #  6 izleyici sınaması
 ```
 
@@ -267,33 +326,46 @@ Arayüzde CSP var: `default-src 'self'; script-src 'self'; style-src 'self'
 
 ---
 
-## 10. Şu anki veritabanı durumu — DİKKAT
+## 10. Şu anki veritabanı durumu
 
-`VEGADB` yeniden restore edildi ve şu an **başka bir müşterinin** verisini
-tutuyor: **ÖZDEMİRKAYA** (15.421 tablo, canlı dönemler `F0103D0015`,
-`F0101D0015`, `F0101D0017`). Galya verisi (`F0102` / MARQUE GIDA) bu
-veritabanında **yok**.
+Gerçek Galya verisi **geri yüklendi** (14.08.2026). `VEGADB` artık 3.883
+tablo tutuyor ve firmalar şöyle:
 
-Panel yine de çalışıyor, çünkü firma/dönem keşfi dinamik (88/88 okuma
-sınaması geçiyor). Ama:
+| Firma | Ad | Canlı dönem | Hareket | Son hareket |
+|---|---|---|---|---|
+| `F0100` | DEMO | — | 0 | — |
+| `F0101` | GALYA eski | `D0001` | 40.407 | 22.10.2025 |
+| `F0102` | **GALYA YENİ** (MARQUE GIDA) | **`D0002`** | 185.151 | 12.08.2026 |
+| `F0103` | GALYA KEBAP | `D0001` | 20.442 | 09.08.2026 |
 
-- `ayarlar.json` hâlâ `varsayilanFirma: "F0102"`, `varsayilanDonem: "D0002"`
-  diyor. Bunlar artık yok; panel ilk firmaya düşüyor. Gerçek Galya
-  veritabanı geri geldiğinde bu iki satır düzeltilmeli.
-- ÖZDEMİRKAYA'da hiç üretim/reçete verisi yok, bu yüzden üretim deseni
-  buradan çıkarılamaz.
+`ayarlar.json` içindeki `varsayilanFirma: "F0102"` / `varsayilanDonem:
+"D0002"` bu tabloya uyuyor; düzeltme gerekmedi.
+
+> **Restore sonrası ilk iş: yetki.** Yedek başka bir sunucudan geldiği için
+> `galya_panel` kullanıcısı VEGADB ve sefim içinde yoktu; panel
+> `Login failed for user 'galya_panel'` veriyordu. Giriş aslında sunucuda
+> duruyor, başarısız olan veritabanını açmak. Çözüm:
+> `sqlcmd -S localhost -E -C -i kurulum/sql-yetki-tazele.sql`
+> (yalnızca okuma yetkisi verir). Her restore'dan sonra tekrarlanacak.
 
 ---
 
 ## 11. Sıradaki işler
 
-1. **Gerçek Galya veritabanı restore edilsin.** Kullanıcı bunu yapacağını
-   söyledi. Sonrasında `ayarlar.json` içindeki varsayılan firma/dönem
-   düzeltilecek ve üretim (`IZAHAT` 96/97) deseni gerçek veriden çıkarılacak.
-2. **Maliyetlendirme deseni.** İzleyici çalışırken VegaWinA5 → Stok Yönetimi
-   → Araçlar → Maliyetlendirme çalıştırılacak, kayıt dosyası incelenecek,
-   sonra kodlanacak.
-3. **Sayım fişi yazımı.** Deseni stok giriş/çıkışla aynı görünüyor (tip
+1. **Reçete verimleri.** 433 reçetenin 430'unda verim (`TBLURERECETELIST.
+   MIKTAR`) 1 girilmiş. Bir kazan tiramisu da "1 birim" sayıldığı için
+   hesaplanan mamul maliyeti porsiyon değil kazan maliyeti çıkıyor. Bu
+   panelin hesabındaki bir hata değil, reçete verisindeki eksiklik; müşteriye
+   söylenmeli, doldurulmadan mamul maliyetleri kullanılmamalı.
+2. **Üretim fişinin canlıda ilk denemesi.** Kod `GALYA_TEST` üzerinde
+   doğrulandı (14 sınama). Canlıda ilk kez çalıştırırken tek üründen
+   başlanmalı ve Vega arayüzünden fişin göründüğü kontrol edilmeli.
+   96/97 sayacını Şefim entegrasyonu günde 250–600 belge hızında
+   ilerlettiği için yoğun saatlerde toplu üretimden kaçınılmalı.
+3. **Alış faturasının canlıda ilk denemesi.** Cari borç oluşturduğu için
+   muhasebe zincirine dokunan tek yazma işlemi. İlk faturanın Vega'da
+   doğru göründüğü ve cari ekstresine düştüğü teyit edilmeli.
+4. **Sayım fişi yazımı.** Deseni stok giriş/çıkışla aynı görünüyor (tip
    93/94), ama sayımda Vega envanteri farklı sıralıyor olabilir.
    `GALYA_TEST` üzerinde doğrulanmadan açılmamalı.
 
@@ -301,7 +373,23 @@ sınaması geçiyor). Ama:
 
 ## 12. Şefim tarafı (bilinmesi gereken)
 
-Şefim aktarımı **kopuk**: 20.451 satış Vega'ya aktarılmamış ve ürün isim
-eşleşmesi 324'te 1. Yani teorik stok bugün güvenilir değil. Panel bunu
-gizlemiyor, ekranda gösteriyor. Stok sayılarına dayanan bir özellik
-eklemeden önce bu akılda tutulmalı.
+Gerçek veriyle ölçüldü (14.08.2026, `F0102` / `D0002`):
+
+| | |
+|---|---|
+| Aktarılan satış | 121.533 |
+| **Aktarılmayan satış** | **20.451** |
+| En eski bekleyen | 12.06.2026 |
+| Ürün eşleşmesi | 326'da 321 otomatik eşleşti, 5 eşleşmedi |
+
+Yani sorun **isim eşleşmesi değil, aktarımın kendisi**: 12.06.2026'dan beri
+biriken 20.451 satış Vega'ya hiç geçmemiş. Teorik stok bu yüzden gerçeğin
+gerisinde. Panel bunu gizlemiyor, ekranda gösteriyor.
+
+> Daha önceki devir notunda "eşleşme 324'te 1" yazıyordu. O ölçüm, VEGADB
+> geçici olarak ÖZDEMİRKAYA verisi tutarken alınmıştı — Şefim ürünleri
+> başka bir müşterinin stok kartlarıyla karşılaştırılıyordu. Gerçek Galya
+> verisinde eşleşme sorunu yok.
+
+Stok sayılarına dayanan bir özellik eklemeden önce aktarım açığı akılda
+tutulmalı.

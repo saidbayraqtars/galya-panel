@@ -73,6 +73,101 @@ async function pdfKaydet(anaPencere, rapor, kim) {
   return { yol, tur: 'PDF' };
 }
 
+
+// --- Tutanak belgesi -------------------------------------------------------
+//
+// Liste raporundan farkı: tek bir tutanağın imzalanacak resmî çıktısı.
+// Sayfa düzeni db/disaaktar.js → tutanakBelgeHtml() içinde.
+
+async function belgeyiPdfeBas(html, yol) {
+  // Görünmez bir pencerede basıyoruz. İmza kutuları sayfanın altına
+  // yaslandığı için sayfa boyu sabit: A4 dikey.
+  const gizli = new BrowserWindow({
+    show: false,
+    webPreferences: { offscreen: true, javascript: false, images: false }
+  });
+  try {
+    await gizli.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    const veri = await gizli.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      landscape: false,
+      margins: { marginType: 'default' }
+    });
+    fs.mkdirSync(path.dirname(yol), { recursive: true });
+    fs.writeFileSync(yol, veri);
+  } finally {
+    gizli.destroy();
+  }
+}
+
+async function tutanakBelgesiKaydet(anaPencere, tutanak, kim) {
+  if (!tutanak || !tutanak.id) throw new Error('Tutanak bilgisi eksik.');
+
+  const baslik = 'Tutanak-' + String(tutanak.id).padStart(6, '0');
+  const yol = await kaydetYeriSor(anaPencere, baslik, 'pdf', 'PDF dosyası');
+  if (!yol) return { iptal: true };
+
+  await belgeyiPdfeBas(disaAktar.tutanakBelgeHtml(tutanak), yol);
+
+  try {
+    await panel.kayit(
+      'Tutanak',
+      'Tutanak belgesi PDF olarak kaydedildi',
+      { tutanakId: tutanak.id, dosya: yol },
+      kim && kim.kullanici,
+      kim && kim.bilgisayar
+    );
+  } catch (e) {
+    // Günlük yazılamazsa belge yine de kullanıcıda.
+  }
+
+  return { yol, tur: 'PDF' };
+}
+
+// Doğrudan yazıcıya gönderir; kullanıcı yazıcı seçme penceresini görür.
+async function tutanakBelgesiYazdir(tutanak, kim) {
+  if (!tutanak || !tutanak.id) throw new Error('Tutanak bilgisi eksik.');
+
+  const gizli = new BrowserWindow({
+    show: false,
+    webPreferences: { javascript: false }
+  });
+  try {
+    const html = disaAktar.tutanakBelgeHtml(tutanak);
+    await gizli.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await new Promise((coz, ret) => {
+      gizli.webContents.print(
+        { silent: false, printBackground: true, pageSize: 'A4' },
+        (basarili, hataSebebi) => {
+          // Kullanıcı vazgeçtiyse hata değil.
+          if (!basarili && hataSebebi && hataSebebi !== 'cancelled') {
+            ret(new Error('Yazdırma başarısız: ' + hataSebebi));
+          } else {
+            coz();
+          }
+        }
+      );
+    });
+  } finally {
+    gizli.destroy();
+  }
+
+  try {
+    await panel.kayit(
+      'Tutanak',
+      'Tutanak belgesi yazdırıldı',
+      { tutanakId: tutanak.id },
+      kim && kim.kullanici,
+      kim && kim.bilgisayar
+    );
+  } catch (e) {
+    // yoksay
+  }
+
+  return { tamam: true };
+}
+
 async function kayitDus(rapor, tur, yol, kim) {
   try {
     await panel.kayit(
@@ -92,4 +187,10 @@ function dosyaAc(yol) {
   return { tamam: true };
 }
 
-module.exports = { excelKaydet, pdfKaydet, dosyaAc };
+module.exports = {
+  excelKaydet,
+  pdfKaydet,
+  tutanakBelgesiKaydet,
+  tutanakBelgesiYazdir,
+  dosyaAc
+};

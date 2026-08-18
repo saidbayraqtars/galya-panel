@@ -95,7 +95,13 @@ async function stokDurumu(secim) {
 // Fiziki sayım karşılıkları panel veritabanından geldiği için burada değil,
 // db/sayim.js içindeki fizikiSayimlar() ile birleştiriliyor.
 //
-// suzgec: 'tumu' | 'eksi' | 'sifir' | 'azalan' | 'sorunlu'
+// suzgec: 'tumu' | 'eksi' | 'sifir' | 'azalan' | 'sorunlu' | 'aralik'
+//
+// 'aralik' süzgecinde kalan miktarın alt ve üst sınırı verilir: 0 ile 0
+// arasını isteyen "stoğu bitenleri", 1 ile 5 arasını isteyen "az kalanları"
+// görür. Sayım listesi bu süzgeçten üretiliyor.
+//
+// tumKartlar = true iken hareket görme şartı kalkar; kartın tamamı listelenir.
 async function stokKontrolListesi(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const a = ayarOku();
@@ -105,17 +111,38 @@ async function stokKontrolListesi(secim) {
   const aktifGun = Number(secim.aktifGun != null ? secim.aktifGun : a.aktifGun) || 90;
   const suzgec = secim.suzgec || 'sorunlu';
   const tumKartlar = secim.tumKartlar ? 1 : 0;
+  const alt = secim.alt != null && secim.alt !== '' ? Number(secim.alt) : null;
+  const ustSinir = secim.ust != null && secim.ust !== '' ? Number(secim.ust) : null;
+
+  // Firmanın kendi sınıflandırması. Vega'nın stok değer raporundaki
+  // sütunların karşılığı:
+  //   KOD1 = Tür (BİRA, RAKI, MEŞRUBAT…)   KOD2 = Sınıf (BAR, MUTFAK…)
+  //   KOD3 = 3-ÖK (İÇECEK)                 KOD4 = 4-ÖK (ALKOL)
+  //   KOD5 = 5-ÖK (VAR)
+  const kodSuzgecleri = [];
+  for (const n of [1, 2, 3, 4, 5]) {
+    const deger = secim['kod' + n];
+    if (deger != null && deger !== '') {
+      kodSuzgecleri.push(`ISNULL(S.KOD${n}, '') = @kod${n}`);
+    }
+  }
 
   // Eşik: karta özel kritik seviye varsa o, yoksa ayarlardaki genel üst sınır.
   const esik = `CASE WHEN ISNULL(S.KRITIKSEVIYE,0) > 0 THEN S.KRITIKSEVIYE ELSE @ust END`;
   const kalan = `ISNULL(K.KALAN, 0)`;
+
+  const aralik = [
+    alt != null ? `${kalan} >= @alt` : null,
+    ustSinir != null ? `${kalan} <= @ustSinir` : null
+  ].filter(Boolean).join(' AND ') || '1 = 1';
 
   const suzgecler = {
     tumu: '1 = 1',
     eksi: `${kalan} < 0`,
     sifir: `${kalan} = 0`,
     azalan: `${kalan} > 0 AND ${kalan} <= ${esik}`,
-    sorunlu: `${kalan} <= ${esik}`
+    sorunlu: `${kalan} <= ${esik}`,
+    aralik
   };
 
   return sorgu(
@@ -127,6 +154,12 @@ async function stokKontrolListesi(secim) {
       S.MALINCINSI              AS ad,
       ISNULL(S.STOKKODU, '')    AS kod,
       ISNULL(S.KOD1, '')        AS grup,
+      ISNULL(S.KOD1, '')        AS tur,
+      ISNULL(S.KOD2, '')        AS sinif,
+      ISNULL(S.KOD3, '')        AS ok3,
+      ISNULL(S.KOD4, '')        AS ok4,
+      ISNULL(S.KOD5, '')        AS ok5,
+      ISNULL(S.ALISFIYATI, 0)   AS alisFiyati,
       S.STOKTIPI                AS stokTipi,
       ISNULL(B.BIRIMADI, '')    AS birim,
       ${kalan}                  AS teorik,
@@ -148,10 +181,37 @@ async function stokKontrolListesi(secim) {
       AND S.IND >= 100
       AND S.STOKTIPI NOT IN (3, 7, 9)
       AND (${suzgecler[suzgec] || suzgecler.sorunlu})
+      ${kodSuzgecleri.length ? 'AND ' + kodSuzgecleri.join(' AND ') : ''}
     ORDER BY ${kalan} ASC, S.MALINCINSI ASC
   `,
-    { depo, ust, aktifGun }
+    Object.assign(
+      { depo, ust, aktifGun, alt: alt != null ? alt : 0, ustSinir: ustSinir != null ? ustSinir : 0 },
+      [1, 2, 3, 4, 5].reduce((p, n) => {
+        if (secim['kod' + n] != null && secim['kod' + n] !== '') p['kod' + n] = String(secim['kod' + n]);
+        return p;
+      }, {})
+    )
   );
+}
+
+// Stok ekranındaki sınıflandırma süzgeçlerinin seçenekleri. Sabit liste
+// tutulmuyor; firma hangi kodları kullanıyorsa o geliyor.
+async function stokKodListeleri(secim) {
+  const { firma } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const sonuc = {};
+  for (const n of [1, 2, 3, 4, 5]) {
+    sonuc['kod' + n] = await sorgu(`
+      SELECT ISNULL(S.KOD${n}, '') AS deger, COUNT(*) AS adet
+      FROM ${kart(v, firma, 'TBLSTOKLAR')} S
+      WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
+        AND S.STOKTIPI NOT IN (3, 7, 9)
+        AND ISNULL(S.KOD${n}, '') <> ''
+      GROUP BY ISNULL(S.KOD${n}, '')
+      ORDER BY COUNT(*) DESC
+    `);
+  }
+  return sonuc;
 }
 
 // Gider ve hizmet kartları (STOKTIPI = 3): elektrik, su, nakliye, reklam gibi.
@@ -418,28 +478,95 @@ async function maliyetiEskimisler(secim) {
   );
 }
 
-// --- Cari -----------------------------------------------------------------
-
-async function cariBakiye(secim) {
+// Her stok kartının SON ALIŞ fiyatı: alış faturası (IZAHAT 20) hareketleri
+// içinde en yeni tarihli satırın birim fiyatı. Hiç alış görmemiş kartlarda
+// stok kartındaki ALISFIYATI'na düşülür.
+//
+// Maliyetlendirme bunun üzerine kuruluyor: hammaddenin maliyeti = son alış
+// fiyatı, mamulün maliyeti = reçetesindeki bileşenlerin maliyet toplamı.
+async function sonAlisFiyatlari(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const v = vt();
   return sorgu(`
     SELECT
+      S.IND                    AS stokNo,
+      S.MALINCINSI             AS ad,
+      ISNULL(S.STOKKODU, '')   AS kod,
+      S.STOKTIPI               AS stokTipi,
+      ISNULL(B.BIRIMADI, '')   AS birim,
+      ISNULL(S.MALIYET, 0)     AS kartMaliyeti,
+      ISNULL(S.ALISFIYATI, 0)  AS kartAlisFiyati,
+      A.birimFiyat             AS sonAlisFiyati,
+      A.tarih                  AS sonAlisTarihi
+    FROM ${kart(v, firma, 'TBLSTOKLAR')} S
+    LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+           ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+    OUTER APPLY (
+      SELECT TOP 1 H.BIRIMFIYAT AS birimFiyat, H.TARIH AS tarih
+      FROM ${tablo(v, firma, donem, 'TBLSTOKHAREKETLERI')} H
+      WHERE H.STOKNO = S.IND AND H.IZAHAT = 20
+        AND ISNULL(H.BIRIMFIYAT, 0) > 0
+      ORDER BY H.TARIH DESC, H.IND DESC
+    ) A
+    WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
+      -- 3 = gider/hizmet, 11 = grup kartı (STOK, MUTFAK, ALKOL…),
+      -- 26 = hizmet. Bunların birim maliyeti olmaz; alış fiyatı alanlarında
+      -- fatura toplamı gibi anlamsız değerler duruyor.
+      AND S.STOKTIPI NOT IN (3, 7, 9, 11, 26)
+  `);
+}
+
+// --- Cari -----------------------------------------------------------------
+
+// hepsi = true iken bakiyesi sıfır olan cariler de gelir; cari listesini
+// ada göre arayan kullanıcı bakiyesi kapanmış firmayı da bulabilsin diye.
+async function cariBakiye(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const hepsi = secim.hepsi ? 1 : 0;
+  return sorgu(
+    `
+    SELECT
+      C.IND       AS cariNo,
       C.FIRMAKODU AS kod,
       C.FIRMAADI  AS ad,
       ISNULL(SUM(H.BORC), 0)   AS borc,
       ISNULL(SUM(H.ALACAK), 0) AS alacak,
-      ISNULL(SUM(H.BORC - H.ALACAK), 0) AS bakiye
+      ISNULL(SUM(H.BORC - H.ALACAK), 0) AS bakiye,
+      MAX(H.TARIH) AS sonHareket
     FROM ${kart(v, firma, 'TBLCARI')} C
     LEFT JOIN ${tablo(v, firma, donem, 'TBLCARIHAREKETLERI')} H
            ON H.FIRMANO = C.IND
           AND H.IZAHAT NOT IN (18, 19, 30, 31)
     WHERE ISNULL(C.DELETED, 0) = 0 AND C.IND >= 100
       AND C.FIRMATIPI NOT IN (11, 12)
-    GROUP BY C.FIRMAKODU, C.FIRMAADI
-    HAVING ISNULL(SUM(H.BORC - H.ALACAK), 0) <> 0
+    GROUP BY C.IND, C.FIRMAKODU, C.FIRMAADI
+    HAVING @hepsi = 1 OR ISNULL(SUM(H.BORC - H.ALACAK), 0) <> 0
     ORDER BY ISNULL(SUM(H.BORC - H.ALACAK), 0) DESC
-  `);
+  `,
+    { hepsi }
+  );
+}
+
+// Alış faturası ekranında tedarikçi seçmek için ad/kod araması.
+async function cariAra(secim) {
+  const { firma } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const terim = '%' + String(secim.terim || '').trim() + '%';
+  return sorgu(
+    `
+    SELECT TOP 100
+      C.IND       AS cariNo,
+      C.FIRMAKODU AS kod,
+      C.FIRMAADI  AS ad,
+      ISNULL(C.VERGINO, '') AS vergiNo
+    FROM ${kart(v, firma, 'TBLCARI')} C
+    WHERE ISNULL(C.DELETED, 0) = 0 AND C.IND >= 100
+      AND (C.FIRMAADI LIKE @terim OR C.FIRMAKODU LIKE @terim)
+    ORDER BY C.FIRMAADI
+  `,
+    { terim }
+  );
 }
 
 // --- E-Fatura -------------------------------------------------------------
@@ -534,6 +661,7 @@ async function sonHareketTarihi(secim) {
 module.exports = {
   stokDurumu,
   stokKontrolListesi,
+  stokKodListeleri,
   giderHizmetStoklari,
   stokAra,
   stokHareketleri,
@@ -542,7 +670,9 @@ module.exports = {
   receteAgaci,
   thirdAdaylari,
   maliyetiEskimisler,
+  sonAlisFiyatlari,
   cariBakiye,
+  cariAra,
   bekleyenFaturalar,
   faturaUrunEslesmeleri,
   gunlukHareket,

@@ -21,6 +21,6 @@
   "aktifGun": 90,
   "maliyetEskimeGun": 30,
 
-  "vegayaYazmaAktif": false,
-  "_vegayaYazmaNotu": "true yapılana kadar program VEGADB'ye tek satır yazmaz."
+  "vegayaYazmaAktif": true,
+  "_vegayaYazmaNotu": "false yapılırsa program VEGADB'ye tek satır yazmaz. SQL tarafında da yetki gerekir: galya_panel kullanıcısı VEGADB üzerinde salt okunur kurulur."
 }

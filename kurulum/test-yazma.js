@@ -66,6 +66,176 @@ async function say(tabloAdi, kosul, p) {
   return r[0].adet;
 }
 
+// Bir stoğun güncel miktarı = depo envanteri deltalarının toplamı.
+async function kalan(stokNo) {
+  const r = await sql.sorgu(
+    `SELECT ISNULL(SUM(ENVANTER), 0) AS k
+     FROM [GALYA_TEST].dbo.F0103D0015TBLDEPOENVANTER
+     WHERE STOKNO = @s AND BELGETIPI <> 67`,
+    { s: Number(stokNo) }
+  );
+  return Number(r[0].k);
+}
+
+// --- Test veritabanı kurulumu (--kur) -------------------------------------
+//
+// Yapı VEGADB'den `SELECT * INTO … WHERE 1=0` ile kopyalanır. Bu kalıp
+// IDENTITY özelliğini korur; belge kimlikleri gerçekteki gibi SQL Server
+// tarafından üretilir.
+//
+// Kaynak firma canlı veritabanındaki ilk firma, hedef her zaman F0103/D0015.
+
+const KART_TABLOLARI = [
+  'TBLSTOKLAR', 'TBLBIRIMLEREX', 'TBLCARI',
+  'TBLURERECETELIST', 'TBLURERECETE', 'TBLURERECETEPOZ'
+];
+const DONEM_TABLOLARI = [
+  'TBLSTOKHAREKETLERI', 'TBLDEPOENVANTER', 'TBLCARIHAREKETLERI',
+  'TBLSTKCIKBASLIK', 'TBLSTKCIKHAREKET', 'TBLSTKGIRBASLIK', 'TBLSTKGIRHAREKET',
+  'TBLALFATBASLIK', 'TBLALFATHAREKET',
+  'TBLDEPOHARBASLIK', 'TBLDEPOHARHAREKET',
+  'TBLUREURETIMLIST', 'TBLUREURETIM', 'TBLUREURETIMCIKTI', 'TBLUREURETIMPOZ',
+  'TBLUREBELGE'
+];
+
+async function testVeritabaniKur() {
+  const kaynakVt = gercek.vegaVeritabani || 'VEGADB';
+  console.log(`\n== Test veritabanı kuruluyor (kaynak: ${kaynakVt}) ==`);
+
+  await sql.calistir(`IF DB_ID(N'GALYA_TEST') IS NULL EXEC('CREATE DATABASE [GALYA_TEST]')`);
+
+  // Kaynak firma: yapı bütün firmalarda aynı, ama örnek veri de kopyalandığı
+  // için stok kartı en çok olan firma seçiliyor (DEMO firması boş olabiliyor).
+  const firmalar = await sql.sorgu(`
+    SELECT LEFT(t.name, 5) AS firma, SUM(p.rows) AS satir
+    FROM [${kaynakVt}].sys.tables t
+    JOIN [${kaynakVt}].sys.partitions p
+      ON p.object_id = t.object_id AND p.index_id IN (0, 1)
+    WHERE t.name LIKE 'F[0-9][0-9][0-9][0-9]TBLSTOKLAR'
+    GROUP BY LEFT(t.name, 5)
+    ORDER BY SUM(p.rows) DESC
+  `);
+  if (!firmalar.length) throw new Error(`${kaynakVt} içinde firma tablosu bulunamadı.`);
+  const kaynakFirma = firmalar[0].firma;
+
+  const donemler = await sql.sorgu(`
+    SELECT TOP 1 SUBSTRING(name, 6, 5) AS donem
+    FROM [${kaynakVt}].sys.tables
+    WHERE name LIKE '${kaynakFirma}D[0-9][0-9][0-9][0-9]TBLSTOKHAREKETLERI'
+    ORDER BY name DESC
+  `);
+  if (!donemler.length) throw new Error(`${kaynakFirma} için dönem tablosu bulunamadı.`);
+  // SUBSTRING zaten 'D0003' biçiminde dönüyor; başına ikinci bir D konmamalı.
+  const kaynakDonem = donemler[0].donem;
+  console.log(`  Kaynak firma/dönem: ${kaynakFirma}/${kaynakDonem}`);
+
+  let olusan = 0;
+  let atlanan = 0;
+
+  // Bir firma bütün modülleri kullanmamış olabiliyor (F0101'de üretim ve
+  // alış faturası tabloları yok). Bu yüzden her tablo için kaynakta o adı
+  // taşıyan HERHANGİ bir firma/dönem aranıyor.
+  async function kaynakTabloBul(desen) {
+    const r = await sql.sorgu(
+      `SELECT TOP 1 t.name
+       FROM [${kaynakVt}].sys.tables t
+       WHERE t.name LIKE @desen
+       ORDER BY t.name DESC`,
+      { desen }
+    );
+    return r.length ? r[0].name : null;
+  }
+
+  async function kopyala(desen, hedefAd) {
+    const varMi = await sql.sorgu(
+      `SELECT COUNT(*) AS adet FROM [GALYA_TEST].sys.tables WHERE name = @ad`,
+      { ad: hedefAd }
+    );
+    if (varMi[0].adet > 0) { atlanan++; return; }
+
+    const kaynakAd = await kaynakTabloBul(desen);
+    if (!kaynakAd) {
+      console.log(`  ATLA  ${hedefAd} (kaynakta ${desen} eşleşmedi)`);
+      return;
+    }
+
+    await sql.calistir(
+      `SELECT * INTO [GALYA_TEST].dbo.[${hedefAd}]
+       FROM [${kaynakVt}].dbo.[${kaynakAd}] WHERE 1 = 0`
+    );
+    olusan++;
+    console.log(`  YENİ  ${hedefAd}  (yapı: ${kaynakAd})`);
+  }
+
+  for (const t of KART_TABLOLARI) {
+    await kopyala('F[0-9][0-9][0-9][0-9]' + t, 'F0103' + t);
+  }
+  for (const t of DONEM_TABLOLARI) {
+    await kopyala('F[0-9][0-9][0-9][0-9]D[0-9][0-9][0-9][0-9]' + t, 'F0103D0015' + t);
+  }
+  await kopyala('TBLDEPOLAR', 'TBLDEPOLAR');
+  await kopyala('TBLFIRMA', 'TBLFIRMA');
+
+  console.log(`  ${olusan} tablo oluşturuldu, ${atlanan} tablo zaten vardı.`);
+
+  // Sınamanın ihtiyacı olan asgari veri. Test tabloları eski bir kopyadan
+  // gelmiş olabildiği için sütunlar birebir aynı olmayabilir; iki tarafta da
+  // bulunan sütunlar üzerinden kopyalanıyor.
+  async function ortakSutunlarlaKopyala(kaynakAd, hedefAd, kosul, adet) {
+    const sutunlar = await sql.sorgu(
+      `SELECT k.name
+       FROM [${kaynakVt}].sys.columns k
+       JOIN [GALYA_TEST].sys.columns h
+         ON h.name = k.name AND h.object_id = OBJECT_ID('GALYA_TEST.dbo.' + @hedef)
+       WHERE k.object_id = OBJECT_ID('${kaynakVt}.dbo.' + @kaynak)
+         AND k.is_identity = 0 AND h.is_identity = 0
+         AND k.is_computed = 0 AND h.is_computed = 0`,
+      { kaynak: kaynakAd, hedef: hedefAd }
+    );
+    if (!sutunlar.length) {
+      console.log(`  (${hedefAd} için ortak sütun bulunamadı, veri kopyalanmadı)`);
+      return;
+    }
+    const liste = sutunlar.map((s) => `[${s.name}]`).join(', ');
+    await sql.calistir(`
+      SET IDENTITY_INSERT [GALYA_TEST].dbo.[${hedefAd}] ON;
+      INSERT INTO [GALYA_TEST].dbo.[${hedefAd}] (IND, ${liste})
+      SELECT TOP ${Number(adet)} IND, ${liste}
+      FROM [${kaynakVt}].dbo.[${kaynakAd}] WHERE ${kosul} ORDER BY IND;
+      SET IDENTITY_INSERT [GALYA_TEST].dbo.[${hedefAd}] OFF;
+    `);
+    console.log(`  ${hedefAd} için örnek veri kopyalandı.`);
+  }
+
+  const stokSayisi = await say('F0103TBLSTOKLAR', '1=1');
+  if (stokSayisi < 3) {
+    await ortakSutunlarlaKopyala(
+      kaynakFirma + 'TBLSTOKLAR', 'F0103TBLSTOKLAR',
+      'ISNULL(DELETED,0) = 0 AND IND >= 100', 20
+    ).catch((e) => console.log('  (stok kopyalanamadı: ' + e.message + ')'));
+  }
+  const cariSayisi = await say('F0103TBLCARI', '1=1');
+  if (cariSayisi < 1) {
+    await ortakSutunlarlaKopyala(
+      kaynakFirma + 'TBLCARI', 'F0103TBLCARI',
+      'ISNULL(DELETED,0) = 0 AND IND >= 100', 5
+    ).catch((e) => console.log('  (cari kopyalanamadı: ' + e.message + ')'));
+  }
+
+  console.log('\nTest veritabanı hazır. Sınamayı çalıştırın: node kurulum/test-yazma.js');
+}
+
+if (process.argv.includes('--kur')) {
+  testVeritabaniKur()
+    .then(async () => { await sql.havuzKapat(); process.exit(0); })
+    .catch(async (e) => {
+      console.log('\nKurulum hatası: ' + e.message);
+      await sql.havuzKapat();
+      process.exit(1);
+    });
+  return;
+}
+
 (async () => {
   console.log('\n== Hazırlık ==');
   const stoklar = await sql.sorgu(`
@@ -178,6 +348,16 @@ async function say(tabloAdi, kosul, p) {
   const mamulStok = stoklar[0].stokNo;
   const bilesenStok = stoklar[1].stokNo;
 
+  // Önceki koşudan kalan reçete başlıkları temizleniyor; yoksa "yeni başlık
+  // oluştu" sınaması ikinci çalıştırmada boşuna hata veriyor.
+  await sql.calistir(
+    `DELETE R FROM [GALYA_TEST].dbo.F0103TBLURERECETE R
+     JOIN [GALYA_TEST].dbo.F0103TBLURERECETELIST L ON L.IND = R.EVRAKNO
+     WHERE L.STOKNO IN (@m, @b);
+     DELETE FROM [GALYA_TEST].dbo.F0103TBLURERECETELIST WHERE STOKNO IN (@m, @b);`,
+    { m: mamulStok, b: bilesenStok }
+  );
+
   const bas = await yazma.receteOlustur(
     Object.assign({}, SECIM, { mamulNo: mamulStok, verim: 1, kullanici: 'test' })
   );
@@ -251,6 +431,145 @@ async function say(tabloAdi, kosul, p) {
   kontrol('Belge numarası A ile başlıyor ve 7 hane', /^A\d{7}$/.test(ikinci.cikisBelgeNo),
     ikinci.cikisBelgeNo);
   await yazma.tutanakFisiGeriAl(Object.assign({}, SECIM, { fisler: ikinci.fisler, kullanici: 'test' }));
+
+  // --- Alış faturası ------------------------------------------------------
+  console.log('\n== Alış faturası ==');
+  const cariler = await sql.sorgu(`
+    SELECT TOP 1 IND AS cariNo, FIRMAADI AS ad
+    FROM [GALYA_TEST].dbo.F0103TBLCARI ORDER BY IND
+  `);
+  if (!cariler.length) {
+    kontrol('Test carisi bulundu', false, 'F0103TBLCARI boş, --kur çalıştırın');
+  } else {
+    const cari = cariler[0];
+    const fSatir = [
+      { stokNo: stoklar[0].stokNo, stokAdi: stoklar[0].ad, miktar: 5, birimFiyat: 100, kdvOrani: 20 },
+      { stokNo: stoklar[1].stokNo, stokAdi: stoklar[1].ad, miktar: 2, birimFiyat: 250, kdvOrani: 10 }
+    ];
+    const oncekiKalanF = await kalan(stoklar[0].stokNo);
+
+    const fatura = await yazma.alisFaturasiYaz(Object.assign({}, SECIM, {
+      cariNo: cari.cariNo, cariAdi: cari.ad, satirlar: fSatir,
+      aciklama: 'Sınama faturası', kullanici: 'test'
+    }));
+    console.log(`  Fatura: ${fatura.belgeNo} (IND ${fatura.baslikInd})`);
+
+    kontrol('Fatura başlığı yazıldı',
+      (await say('F0103D0015TBLALFATBASLIK', 'IND = @i AND BELGETIPI = 20', { i: fatura.baslikInd })) === 1);
+    kontrol('Fatura satırları yazıldı',
+      (await say('F0103D0015TBLALFATHAREKET', 'EVRAKNO = @i', { i: fatura.baslikInd })) === 2);
+    kontrol('Stok hareketleri yazıldı',
+      (await say('F0103D0015TBLSTOKHAREKETLERI', 'BELGENO = @i AND IZAHAT = 20', { i: fatura.baslikInd })) === 2);
+    kontrol('Depo envanteri arttı',
+      (await say('F0103D0015TBLDEPOENVANTER', 'BELGEIND = @i AND BELGETIPI = 20', { i: fatura.baslikInd })) === 2);
+    kontrol('Cari hareketi (borç) yazıldı',
+      (await say('F0103D0015TBLCARIHAREKETLERI', 'LN = @i AND IZAHAT = 20', { i: fatura.baslikInd })) === 1);
+
+    const genel = 5 * 100 * 1.2 + 2 * 250 * 1.1;
+    const cariTutar = await sql.sorgu(
+      `SELECT ALACAK AS a FROM [GALYA_TEST].dbo.F0103D0015TBLCARIHAREKETLERI
+       WHERE LN = @i AND IZAHAT = 20`,
+      { i: fatura.baslikInd }
+    );
+    kontrol('Cari borcu KDV dahil tutar',
+      Math.abs(Number(cariTutar[0].a) - genel) < 0.01,
+      `${cariTutar[0].a} ≠ ${genel}`);
+
+    kontrol('Ürünün stoğu 5 arttı',
+      (await kalan(stoklar[0].stokNo)) - oncekiKalanF === 5);
+
+    const gk = await sql.sorgu(
+      `SELECT COUNT(*) AS adet FROM [GALYA_TEST].dbo.F0103D0015TBLALFATHAREKET
+       WHERE EVRAKNO = @i AND (GK IS NULL OR GK = 0)`,
+      { i: fatura.baslikInd }
+    );
+    kontrol('Satırlarda GK dolduruldu', gk[0].adet === 0, 'boş GK=' + gk[0].adet);
+
+    const alisFiyati = await sql.sorgu(
+      `SELECT ALISFIYATI AS f FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @i`,
+      { i: stoklar[0].stokNo }
+    );
+    kontrol('Stok kartına son alış fiyatı işlendi',
+      Math.abs(Number(alisFiyati[0].f) - 100) < 0.01, 'fiyat=' + alisFiyati[0].f);
+
+    const oncekiFiyat = fatura.satirlar[0].oncekiAlisFiyati;
+    await yazma.alisFaturasiGeriAl(Object.assign({}, SECIM, {
+      baslikInd: fatura.baslikInd, satirlar: fatura.satirlar, kullanici: 'test'
+    }));
+    const donenFiyat = await sql.sorgu(
+      `SELECT ISNULL(ALISFIYATI, 0) AS f FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @i`,
+      { i: stoklar[0].stokNo }
+    );
+    kontrol('Geri almada kartın alış fiyatı eski hâline döndü',
+      Math.abs(Number(donenFiyat[0].f) - Number(oncekiFiyat)) < 0.01,
+      `${donenFiyat[0].f} ≠ ${oncekiFiyat}`);
+    kontrol('Geri almada fatura başlığı silindi',
+      (await say('F0103D0015TBLALFATBASLIK', 'IND = @i', { i: fatura.baslikInd })) === 0);
+    kontrol('Geri almada cari hareketi silindi',
+      (await say('F0103D0015TBLCARIHAREKETLERI', 'LN = @i AND IZAHAT = 20', { i: fatura.baslikInd })) === 0);
+    kontrol('Geri almada stok eski hâline döndü',
+      (await kalan(stoklar[0].stokNo)) === oncekiKalanF);
+  }
+
+  // --- Üretim fişi --------------------------------------------------------
+  console.log('\n== Üretim fişi ==');
+  // stoklar[0] mamul, stoklar[1] bileşen olacak şekilde reçete kuruluyor.
+  await yazma.receteOlustur(
+    Object.assign({}, SECIM, { mamulNo: mamulStok, verim: 1, kullanici: 'test' })
+  );
+  const uReceteler = await sql.sorgu(
+    `SELECT IND FROM [GALYA_TEST].dbo.F0103TBLURERECETELIST WHERE STOKNO = @s`,
+    { s: mamulStok }
+  );
+  await yazma.receteSatiriEkle(Object.assign({}, SECIM, {
+    receteNo: uReceteler[0].IND, stokNo: bilesenStok, miktar: 2, kullanici: 'test'
+  }));
+
+  const oncekiMamul = await kalan(mamulStok);
+  const oncekiBilesen = await kalan(bilesenStok);
+
+  const uretimSonuc = await yazma.uretimFisiYaz(Object.assign({}, SECIM, {
+    mamulStokNo: mamulStok, miktar: 3, aciklama: 'Sınama üretimi', kullanici: 'test'
+  }));
+  console.log(`  Üretim fişi: ${uretimSonuc.fisNo} (IND ${uretimSonuc.uretimInd})`);
+
+  kontrol('Üretim başlığı yazıldı',
+    (await say('F0103D0015TBLUREURETIMLIST', 'IND = @i', { i: uretimSonuc.uretimInd })) === 1);
+  kontrol('Tüketim satırı yazıldı',
+    (await say('F0103D0015TBLUREURETIM', 'EVRAKNO = @i', { i: uretimSonuc.uretimInd })) === 1);
+  kontrol('Çıktı satırı yazıldı',
+    (await say('F0103D0015TBLUREURETIMCIKTI', 'EVRAKNO = @i', { i: uretimSonuc.uretimInd })) === 1);
+  kontrol('İki pozisyon adımı yazıldı',
+    (await say('F0103D0015TBLUREURETIMPOZ', 'EVRAKNO = @i', { i: uretimSonuc.uretimInd })) === 2);
+  kontrol('Dört doğan belge dizine yazıldı',
+    (await say('F0103D0015TBLUREBELGE', 'EIND = @i', { i: uretimSonuc.uretimInd })) === 4);
+  kontrol('İki depo transferi oluştu',
+    (await say('F0103D0015TBLDEPOHARBASLIK', 'BELGETIPI = 38', {})) >= 2);
+  kontrol('96 çıktı hareketi yazıldı',
+    (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT = 96 AND STOKNO = @s', { s: mamulStok })) === 1);
+  kontrol('97 tüketim hareketi yazıldı',
+    (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT = 97 AND STOKNO = @s', { s: bilesenStok })) === 1);
+  kontrol('Mamul stoğu 3 arttı', (await kalan(mamulStok)) - oncekiMamul === 3,
+    `${await kalan(mamulStok)} - ${oncekiMamul}`);
+  kontrol('Bileşen stoğu 6 azaldı', oncekiBilesen - (await kalan(bilesenStok)) === 6,
+    `${oncekiBilesen} → ${await kalan(bilesenStok)}`);
+
+  const belgeler = await sql.sorgu(
+    `SELECT BELGENO AS belgeNo, IZAHAT AS izahat, EVRAKNO AS evrakNo
+     FROM [GALYA_TEST].dbo.F0103D0015TBLUREBELGE WHERE EIND = @i`,
+    { i: uretimSonuc.uretimInd }
+  );
+  await yazma.uretimFisiGeriAl(Object.assign({}, SECIM, {
+    uretimInd: uretimSonuc.uretimInd, belgeler, kullanici: 'test'
+  }));
+  kontrol('Geri almada üretim başlığı silindi',
+    (await say('F0103D0015TBLUREURETIMLIST', 'IND = @i', { i: uretimSonuc.uretimInd })) === 0);
+  kontrol('Geri almada 96/97 hareketleri silindi',
+    (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT IN (96, 97)', {})) === 0);
+  kontrol('Geri almada mamul stoğu eski hâline döndü',
+    (await kalan(mamulStok)) === oncekiMamul);
+  kontrol('Geri almada bileşen stoğu eski hâline döndü',
+    (await kalan(bilesenStok)) === oncekiBilesen);
 
   console.log(`\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı\n`);
   await sql.havuzKapat();

@@ -48,6 +48,54 @@ async function listeyeEkle(kayit) {
   return { tamam: true };
 }
 
+// Stok ekranındaki süzgeçten çıkan listeyi tek seferde sayım listesine
+// aktarır. "Stoğu sıfır olanlar" ya da "1–5 arası kalanlar" süzgecinden
+// doğrudan sayım föyü üretilebilsin diye.
+async function topluEkle(kayit) {
+  await panel.kur();
+  const { firma } = await dogrula(kayit.firma, kayit.donem);
+  const p = panel.p();
+  const urunler = Array.isArray(kayit.urunler) ? kayit.urunler : [];
+  if (!urunler.length) throw new Error('Listeye eklenecek ürün yok.');
+
+  let eklenen = 0;
+  for (const u of urunler) {
+    if (!Number(u.stokNo)) continue;
+    await calistir(
+      `
+      MERGE [${p}].dbo.SayimListesi AS H
+      USING (SELECT @firma AS Firma, @stokNo AS StokNo) AS Y
+         ON H.Firma = Y.Firma AND H.StokNo = Y.StokNo
+      WHEN MATCHED THEN UPDATE SET Aktif = 1, StokAdi = @stokAdi
+      WHEN NOT MATCHED THEN INSERT (Firma, StokNo, StokAdi, Sira, Aktif)
+        VALUES (@firma, @stokNo, @stokAdi, 0, 1);
+    `,
+      { firma, stokNo: Number(u.stokNo), stokAdi: u.stokAdi || u.ad || '' }
+    );
+    eklenen++;
+  }
+
+  await panel.kayit(
+    'Ara Sayım',
+    'Sayım listesi süzgeçten oluşturuldu',
+    { firma, eklenen, kaynak: kayit.kaynak || null },
+    kayit.kullanici
+  );
+  return { tamam: true, eklenen };
+}
+
+async function listeyiBosalt(kayit) {
+  await panel.kur();
+  const { firma } = await dogrula(kayit.firma, kayit.donem);
+  const p = panel.p();
+  const etkilenen = await calistir(
+    `UPDATE [${p}].dbo.SayimListesi SET Aktif = 0 WHERE Firma = @firma AND Aktif = 1`,
+    { firma }
+  );
+  await panel.kayit('Ara Sayım', 'Sayım listesi boşaltıldı', { firma }, kayit.kullanici);
+  return { tamam: true, cikarilan: etkilenen[0] || 0 };
+}
+
 async function listedenCikar(kayit) {
   await panel.kur();
   const { firma } = await dogrula(kayit.firma, kayit.donem);
@@ -252,6 +300,8 @@ async function sayimIptal(kayit) {
 module.exports = {
   listeGetir,
   listeyeEkle,
+  topluEkle,
+  listeyiBosalt,
   listedenCikar,
   sayimEkraniGetir,
   sayimKaydet,

@@ -20,7 +20,10 @@ const VARSAYILAN = {
   aktifGun: 90,
   maliyetEskimeGun: 30,
   vegaKlasoru: 'C:\\VegaWinA5',
-  vegayaYazmaAktif: false
+  // Geliştirme ve deneme aşamasında açık. Kapatmak Ayarlar ekranından.
+  // Not: SQL tarafında galya_panel kullanıcısı VEGADB üzerinde salt okunur;
+  // bu bayrak açık olsa da yetki verilmeden Vega'ya satır gitmez.
+  vegayaYazmaAktif: true
 };
 
 // Ayar dosyası nerede duruyor?

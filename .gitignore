@@ -13,3 +13,6 @@ kurulum/yakalanan/
 npm-debug.log*
 .DS_Store
 Thumbs.db
+
+# Musteriden gelen ham belgeler (gercek fiyat ve stok verisi icerir).
+galya döküman/

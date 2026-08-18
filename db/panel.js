@@ -140,6 +140,88 @@ async function kur() {
       CREATE UNIQUE INDEX UX_FaturaEslestirme
         ON dbo.FaturaEslestirme (Firma, FaturaUrunAdi);
 
+    -- Alış faturası taslağı. Kullanıcı faturayı panelde hazırlar; Vega'ya
+    -- yazma ayrı bir onayla olur, böylece yanlış giriş Vega'ya hiç gitmez.
+    IF OBJECT_ID('dbo.AlisFatura') IS NULL
+    CREATE TABLE dbo.AlisFatura (
+      Id            INT IDENTITY(1,1) PRIMARY KEY,
+      Firma         NVARCHAR(10)  NOT NULL,
+      Donem         NVARCHAR(10)  NOT NULL,
+      Depo          INT           NOT NULL,
+      CariNo        INT           NOT NULL,
+      CariAdi       NVARCHAR(400) NOT NULL,
+      BelgeNo       NVARCHAR(50)  NULL,
+      Tarih         DATE          NOT NULL,
+      VadeTarihi    DATE          NULL,
+      Aciklama      NVARCHAR(300) NULL,
+      AraToplam     DECIMAL(18,4) NOT NULL DEFAULT 0,
+      KdvToplam     DECIMAL(18,4) NOT NULL DEFAULT 0,
+      GenelToplam   DECIMAL(18,4) NOT NULL DEFAULT 0,
+      Duzenleyen    NVARCHAR(100) NULL,
+      KayitTarihi   DATETIME      NOT NULL DEFAULT GETDATE(),
+      VegayaYazildi BIT           NOT NULL DEFAULT 0,
+      VegaBelgeInd  INT           NULL,
+      VegaBelgeNo   NVARCHAR(50)  NULL,
+      Iptal         BIT           NOT NULL DEFAULT 0
+    );
+
+    -- Fatura yazılırken stok kartındaki alış fiyatı alanları değişiyor.
+    -- Geri alma bunları eski hâline döndürebilsin diye önceki değerler
+    -- burada saklanıyor.
+    IF COL_LENGTH('dbo.AlisFatura', 'OncekiFiyatlar') IS NULL
+      ALTER TABLE dbo.AlisFatura ADD OncekiFiyatlar NVARCHAR(MAX) NULL;
+
+    IF OBJECT_ID('dbo.AlisFaturaSatir') IS NULL
+    CREATE TABLE dbo.AlisFaturaSatir (
+      Id          INT IDENTITY(1,1) PRIMARY KEY,
+      FaturaId    INT           NOT NULL,
+      Sira        INT           NOT NULL DEFAULT 0,
+      StokNo      INT           NOT NULL,
+      StokAdi     NVARCHAR(400) NOT NULL,
+      StokKodu    NVARCHAR(100) NULL,
+      Birim       NVARCHAR(20)  NULL,
+      BirimEx     INT           NULL,
+      Miktar      DECIMAL(18,6) NOT NULL,
+      BirimFiyat  DECIMAL(18,6) NOT NULL,
+      KdvOrani    DECIMAL(9,4)  NOT NULL DEFAULT 0,
+      Tutar       AS (Miktar * BirimFiyat) PERSISTED
+    );
+
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AlisFaturaSatir_Fatura')
+      CREATE INDEX IX_AlisFaturaSatir_Fatura ON dbo.AlisFaturaSatir (FaturaId);
+
+    -- Maliyetlendirme geçmişi: karta yazılan maliyetin önceki değeri burada
+    -- durur; geri alma bunu kullanır.
+    IF OBJECT_ID('dbo.MaliyetYazma') IS NULL
+    CREATE TABLE dbo.MaliyetYazma (
+      Id            INT IDENTITY(1,1) PRIMARY KEY,
+      Firma         NVARCHAR(10)  NOT NULL,
+      Tarih         DATETIME      NOT NULL DEFAULT GETDATE(),
+      Kullanici     NVARCHAR(100) NULL,
+      UrunSayisi    INT           NOT NULL DEFAULT 0,
+      GeriAlindi    BIT           NOT NULL DEFAULT 0,
+      Detay         NVARCHAR(MAX) NULL
+    );
+
+    -- Panelin yazdığı üretim fişleri; geri alma bu kayıttan yürüyor.
+    IF OBJECT_ID('dbo.UretimFisi') IS NULL
+    CREATE TABLE dbo.UretimFisi (
+      Id            INT IDENTITY(1,1) PRIMARY KEY,
+      Firma         NVARCHAR(10)  NOT NULL,
+      Donem         NVARCHAR(10)  NOT NULL,
+      Depo          INT           NOT NULL,
+      Tarih         DATETIME      NOT NULL DEFAULT GETDATE(),
+      MamulStokNo   INT           NOT NULL,
+      MamulAdi      NVARCHAR(400) NOT NULL,
+      Miktar        DECIMAL(18,6) NOT NULL,
+      ReceteNo      INT           NULL,
+      FisNo         NVARCHAR(50)  NULL,
+      UretimInd     INT           NULL,
+      Kullanici     NVARCHAR(100) NULL,
+      GeriAlindi    BIT           NOT NULL DEFAULT 0,
+      Belgeler      NVARCHAR(MAX) NULL
+    );
+
     IF OBJECT_ID('dbo.Islem') IS NULL
     CREATE TABLE dbo.Islem (
       Id         INT IDENTITY(1,1) PRIMARY KEY,

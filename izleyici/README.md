@@ -1,58 +1,43 @@
 # Galya İzleyici
 
-VegaWinA5'in veritabanına gerçekte hangi SQL'i gönderdiğini kaydeden
-taşınabilir araç. Amacı, Vega'nın arayüzünden yapılan bir işlemi (örneğin
-**Stok Yönetimi → Araçlar → Maliyetlendirme**) panelin de yapabilmesi için
-Vega'nın hangi tabloya ne yazdığını öğrenmek.
-
-**Veri değiştirmez.** Yalnızca SQL Server'da bir Extended Events oturumu
-açar, çalışan ifadeleri dinler ve masaüstüne metin dosyası olarak kaydeder.
+`Galya-Izleyici.bat` — tek dosya. VegaWinA5'in veritabanına gerçekte hangi
+SQL'i yazdığını kaydeder ve masaüstüne bir `.md` dosyası bırakır.
+**Veri değiştirmez**; sadece SQL Server'da bir Extended Events oturumu açar.
 
 ## Kullanım
 
-`GalyaIzleyici.exe` dosyasını VegaWinA5'in çalıştığı bilgisayara kopyalayıp
-çift tıklayın. Kurulum yapmaz, tek dosyadır.
+`Galya-Izleyici.bat` dosyasını Vega'nın çalıştığı bilgisayara kopyala, çift
+tıkla. Kurulum yok, Node yok, .NET/PowerShell zaten Windows'ta var.
 
-1. **Bağlanın.** Sunucu adı, SQL kullanıcısı ve şifresi. İzleme açmak
-   **sysadmin** yetkisi ister — genelde `sa` kullanıcısı kullanılır.
-   Sunucu adı: `localhost`, bilgisayar adı veya `BILGISAYAR\SQLEXPRESS`.
-2. **İzlemeyi başlatın.** İzlenecek veritabanını seçin (genelde `VEGADB`).
-3. **VegaWinA5'te öğrenmek istediğiniz işlemi yapın.** Tek bir işlem yapın;
-   ne kadar az başka şey yaparsanız kayıt o kadar temiz olur.
-4. **Yakalananları gösterin.** Hangi tablolara kaç ifade yazıldığını ve ilk
-   yazan ifadeleri ekranda görürsünüz.
-5. **Dosyaya kaydedin.** "Sadece yazanları kaydet" genelde yeterlidir.
-   Dosya masaüstünde `Galya-Izleyici-Kayitlari` klasörüne düşer.
-6. **İzlemeyi kapatın.** Açık kalırsa sunucuda kayıt dosyası büyümeye
-   devam eder.
+1. Sunucu adı (boş = `localhost`), SQL kullanıcı + şifre (boş bırakırsan
+   Windows girişi kullanılır), veritabanı (boş = `VEGADB`).
+   İzleme açmak **sysadmin** ister — genelde `sa`.
+2. "Şimdi Vega'da işlemi yap" yazınca Vega'ya geç, öğrenmek istediğin tek
+   işlemi yap (ör. Stok Yönetimi → Araçlar → Maliyetlendirme).
+3. Enter'a bas. Kayıtlar okunur, oturum kapatılır, dosya masaüstünde
+   `Galya-Izleyici-Kayitlari\izleme-<tarih>.md` olarak açılır.
+4. O dosyayı bana gönder.
 
-Kaydedilen dosyayı bana gönderin; Vega'nın ne yaptığını oradan çıkarıp
-panele eklerim.
+## Dosyada ne var
+
+- Sunucu / veritabanı / olay sayısı özeti
+- Hangi tabloya kaç INSERT / UPDATE / DELETE gittiği tablosu
+- Yazan ifadelerin tam SQL metni (ilk 3000 tanesi)
+
+`SELECT`'ler yazılmaz — işe yarayan kısım yazma ifadeleri.
 
 ## Nereye ne yazar
 
 | Ne | Nerede |
 |---|---|
-| Ham kayıtlar (.xel) | `C:\Users\Public\galya-izleyici\` (sunucu makinesinde) |
-| Kaydettiğiniz metin dosyaları | Masaüstü → `Galya-Izleyici-Kayitlari` |
-| SQL Server'daki oturum adı | `galya_vega_izleyici` |
+| Ham kayıtlar (.xel) | `C:\Users\Public\galya-izleyici\` (SQL Server'ın makinesinde) |
+| Sonuç dosyası | Masaüstü → `Galya-Izleyici-Kayitlari` |
+| Oturum adı | `galya_vega_izleyici` |
 
-Her izleme başlatışı kendi dosyasına yazar, eski kayıtlar yenisine
-karışmaz. "İzlemeyi kapat" oturumu sunucudan tamamen kaldırır; ham `.xel`
-dosyaları klasörde kalır, elle silebilirsiniz.
+Program biterken oturumu sunucudan tamamen kaldırır. Ham `.xel` dosyaları
+klasörde kalır, elle silinebilir.
 
-## Sınama
+## Eski Electron sürümü
 
-```
-node test-izleyici.js <sunucu> <kullanici> <sifre> [veritabani]
-```
-
-İzleme açar, izlenen veritabanında tanınabilir bir `SELECT` çalıştırır,
-yakalandığını doğrular ve oturumu kaldırır. Hiçbir veri değiştirilmez.
-
-## Derleme
-
-```
-npm install
-npm run dist       # dist/GalyaIzleyici.exe
-```
+`main.js`, `ui/`, `lib/`, `dist/` eski GUI sürümüne ait — artık gerekmiyor,
+silinebilir.

@@ -5,7 +5,7 @@
 
 const { sorgu, calistir } = require('./sql');
 const { ayarOku } = require('./ayar');
-const { dogrula } = require('./firma');
+const { dogrula, kart, depolariGetir } = require('./firma');
 const panel = require('./panel');
 
 // --- Tutanak --------------------------------------------------------------
@@ -82,9 +82,11 @@ async function tutanakGetir(secim) {
   const p = panel.p();
   const r = await sorgu(
     `SELECT Id AS id, Firma AS firma, Donem AS donem, Depo AS depo,
+            Tarih AS tarih, Duzenleyen AS duzenleyen,
             DusenStokNo AS dusenStokNo, DusenStokAdi AS dusenStokAdi, DusenMiktar AS dusenMiktar,
             ArtanStokNo AS artanStokNo, ArtanStokAdi AS artanStokAdi, ArtanMiktar AS artanMiktar,
-            Sebep AS sebep, VegayaYazildi AS vegayaYazildi, VegaFisler AS vegaFisler,
+            Sebep AS sebep, VegayaYazildi AS vegayaYazildi, VegaBelgeNo AS vegaBelgeNo,
+            VegaFisler AS vegaFisler,
             Iptal AS iptal
      FROM [${p}].dbo.Tutanak WHERE Id = @id`,
     { id: Number(secim.id) }
@@ -97,6 +99,72 @@ async function tutanakGetir(secim) {
     t.fisler = null;
   }
   return t;
+}
+
+
+// Tutanak belgesinin (imzalı çıktının) ihtiyacı olan her şeyi tek yerde
+// toplar: panel kaydı + Vega stok kartlarından kod, birim ve maliyet +
+// firma ve depo adı. Belgeyi basan taraf ayrıca sorgu atmasın diye.
+async function tutanakBelgeVerisi(secim) {
+  const t = await tutanakGetir({ id: secim.id });
+  const v = ayarOku().vegaVeritabani;
+
+  let kartlar = [];
+  try {
+    kartlar = await sorgu(
+      `SELECT S.IND AS stokNo, ISNULL(S.STOKKODU,'') AS kod,
+              ISNULL(S.MALIYET, 0) AS maliyet,
+              ISNULL(B.BIRIMADI, '') AS birim
+       FROM ${kart(v, t.firma, 'TBLSTOKLAR')} S
+       LEFT JOIN ${kart(v, t.firma, 'TBLBIRIMLEREX')} B
+              ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+       WHERE S.IND IN (@dusen, @artan)`,
+      { dusen: Number(t.dusenStokNo), artan: Number(t.artanStokNo) }
+    );
+  } catch (e) {
+    // Kart okunamazsa belge yine basılsın; miktar ve ad panel kaydında var.
+    kartlar = [];
+  }
+  const bul = (no) => kartlar.find((k) => Number(k.stokNo) === Number(no)) || {};
+  const d = bul(t.dusenStokNo);
+  const a = bul(t.artanStokNo);
+
+  let firmaAdi = t.firma;
+  let depoAdi = null;
+  try {
+    const bilgi = await dogrula(t.firma, t.donem);
+    firmaAdi = bilgi.ad || t.firma;
+    const depolar = await depolariGetir();
+    const depo = depolar.find((x) => Number(x.no) === Number(t.depo));
+    depoAdi = depo ? depo.ad : null;
+  } catch (e) {
+    // Firma/depo adı okunamazsa kodlarla basılır.
+  }
+
+  return {
+    id: t.id,
+    tarih: t.tarih,
+    firma: t.firma,
+    donem: t.donem,
+    depo: t.depo,
+    depoAdi,
+    firmaAdi,
+    duzenleyen: t.duzenleyen,
+    sebep: t.sebep,
+    dusenAd: t.dusenStokAdi,
+    dusenKod: d.kod || '',
+    dusenMiktar: t.dusenMiktar,
+    dusenBirim: d.birim || '',
+    dusenMaliyet: d.maliyet || 0,
+    artanAd: t.artanStokAdi,
+    artanKod: a.kod || '',
+    artanMiktar: t.artanMiktar,
+    artanBirim: a.birim || '',
+    artanMaliyet: a.maliyet || 0,
+    vegayaYazildi: !!t.vegayaYazildi,
+    vegaBelgeNo: t.vegaBelgeNo || null,
+    imzalar: Array.isArray(secim.imzalar) && secim.imzalar.length ? secim.imzalar : null
+  };
 }
 
 async function tutanakIptal(kayit) {
@@ -157,6 +225,7 @@ module.exports = {
   tutanakKaydet,
   tutanakListesi,
   tutanakGetir,
+  tutanakBelgeVerisi,
   tutanakIptal,
   thirdIsaretle,
   thirdIsaretliler

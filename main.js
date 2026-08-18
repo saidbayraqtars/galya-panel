@@ -17,6 +17,9 @@ const yazma = require('./db/yazma');
 const guncelleme = require('./db/guncelleme');
 const vegaprogram = require('./db/vegaprogram');
 const rapor = require('./db/rapor');
+const maliyet = require('./db/maliyet');
+const alisFatura = require('./db/fatura');
+const uretim = require('./db/uretim');
 
 let pencere = null;
 
@@ -147,6 +150,7 @@ kayitEt('ozet:anaEkran', async (g) => ozet.anaEkran(g));
 // Stok
 kayitEt('stok:durum', async (g) => vega.stokDurumu(g));
 kayitEt('stok:ara', async (g) => vega.stokAra(g));
+kayitEt('stok:kodListeleri', async (g) => vega.stokKodListeleri(g));
 kayitEt('stok:hareket', async (g) => vega.stokHareketleri(g));
 
 // Stok kontrol: teorik miktarın karşısına en son fiziki sayım yazılıyor.
@@ -213,27 +217,106 @@ kayitEt('third:vegayaYaz', async (g, k) =>
 // Maliyet
 kayitEt('maliyet:eskiyenler', async (g) => vega.maliyetiEskimisler(g));
 
+// Maliyetlendirme: hammaddede son alış fiyatı, mamulde reçeteden hesap.
+// "yaz" ucu TBLSTOKLAR.MALIYET alanını günceller — Vega'nın kendi
+// maliyetlendirmesinin yaptığı da budur.
+kayitEt('maliyet:hesapla', async (g) => maliyet.hesapla(g));
+kayitEt('maliyet:yaz', async (g, k) =>
+  maliyet.yaz(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('maliyet:gecmis', async (g) => maliyet.gecmis(g));
+kayitEt('maliyet:geriAl', async (g, k) =>
+  maliyet.geriAl(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('maliyet:mamul', async (g) => maliyet.mamulMaliyeti(g));
+
+// Üretim (stoğu sıfıra çeken üretim fişi)
+kayitEt('uretim:adaylar', async (g) => uretim.adaylar(g));
+kayitEt('uretim:uret', async (g, k) =>
+  uretim.uret(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('uretim:hepsiniUret', async (g, k) =>
+  uretim.hepsiniUret(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('uretim:gecmis', async (g) => uretim.gecmis(g));
+kayitEt('uretim:geriAl', async (g, k) =>
+  uretim.geriAl(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+
 // Cari
 kayitEt('cari:bakiye', async (g) => vega.cariBakiye(g));
+kayitEt('cari:ara', async (g) => vega.cariAra(g));
 
 // E-Fatura
 kayitEt('fatura:bekleyen', async (g) => vega.bekleyenFaturalar(g));
 kayitEt('fatura:eslesmeler', async (g) => vega.faturaUrunEslesmeleri(g));
 
+// Alış faturası: panelde taslak olarak hazırlanır, ayrı onayla Vega'ya yazılır.
+kayitEt('alisFatura:kaydet', async (g, k) =>
+  alisFatura.taslakKaydet(Object.assign({}, g, { duzenleyen: g.duzenleyen || k.kullanici }))
+);
+kayitEt('alisFatura:liste', async (g) => alisFatura.taslakListesi(g));
+kayitEt('alisFatura:getir', async (g) => alisFatura.taslakGetir(g));
+kayitEt('alisFatura:sil', async (g, k) =>
+  alisFatura.taslakSil(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('alisFatura:vegayaYaz', async (g, k) => {
+  const f = await alisFatura.taslakGetir({ id: g.id });
+  if (f.vegayaYazildi) throw new Error("Bu fatura zaten Vega'ya yazılmış.");
+  return yazma.alisFaturasiYaz({
+    firma: f.firma,
+    donem: f.donem,
+    depo: f.depo,
+    faturaId: f.id,
+    cariNo: f.cariNo,
+    cariAdi: f.cariAdi,
+    belgeNo: f.belgeNo,
+    tarih: f.tarih,
+    vadeTarihi: f.vadeTarihi,
+    aciklama: f.aciklama,
+    satirlar: f.satirlar,
+    kullanici: k.kullanici
+  });
+});
+kayitEt('alisFatura:vegadanGeriAl', async (g, k) => {
+  const f = await alisFatura.taslakGetir({ id: g.id });
+  if (!f.vegayaYazildi || !f.vegaBelgeInd) {
+    throw new Error("Bu fatura Vega'ya yazılmamış, geri alınacak belge yok.");
+  }
+  let oncekiFiyatlar = [];
+  try {
+    oncekiFiyatlar = JSON.parse(f.oncekiFiyatlar || '[]');
+  } catch (e) {
+    oncekiFiyatlar = [];
+  }
+  return yazma.alisFaturasiGeriAl({
+    firma: f.firma,
+    donem: f.donem,
+    faturaId: f.id,
+    baslikInd: f.vegaBelgeInd,
+    satirlar: oncekiFiyatlar,
+    kullanici: k.kullanici
+  });
+});
+
 // Şefim / satış aktarımı
 kayitEt('satis:aktarimDurumu', async () => sefim.aktarimDurumu());
-kayitEt('satis:ozet', async (g) => sefim.satisOzeti(g));
 kayitEt('satis:eslestirmeDurumu', async (g) => sefim.eslestirmeDurumu(g));
 kayitEt('satis:eslestirmeKaydet', async (g, k) =>
   sefim.eslestirmeKaydet(Object.assign({}, g, { kaydeden: k.kullanici }))
 );
 kayitEt('satis:oneri', async (g) => sefim.eslesmeOnerisi(g));
-kayitEt('satis:tuketim', async (g) => sefim.satistanTuketim(g));
 
 // Ara sayım
 kayitEt('sayim:liste', async (g) => sayim.listeGetir(g));
 kayitEt('sayim:listeyeEkle', async (g, k) =>
   sayim.listeyeEkle(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('sayim:topluEkle', async (g, k) =>
+  sayim.topluEkle(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('sayim:listeyiBosalt', async (g, k) =>
+  sayim.listeyiBosalt(Object.assign({}, g, { kullanici: k.kullanici }))
 );
 kayitEt('sayim:listedenCikar', async (g) => sayim.listedenCikar(g));
 kayitEt('sayim:ekran', async (g) => sayim.sayimEkraniGetir(g));
@@ -247,9 +330,49 @@ kayitEt('sayim:iptal', async (g, k) =>
 );
 
 // Tutanak
-kayitEt('tutanak:kaydet', async (g, k) =>
-  tutanak.tutanakKaydet(Object.assign({}, g, { duzenleyen: g.duzenleyen || k.kullanici }))
-);
+//
+// Tutanak stok miktarını gerçekten değiştiren bir işlem: bir üründen düşer,
+// diğerine ekler. Bu yüzden kayıt oluşur oluşmaz Vega'ya da yazılıyor
+// (çıkış fişi −, giriş fişi +). Yazma kilidi kapalıysa kayıt yalnızca
+// panelde kalır ve listede "Yazılmadı" görünür; kullanıcı sonra tek tuşla
+// yazabilir.
+kayitEt('tutanak:kaydet', async (g, k) => {
+  const sonuc = await tutanak.tutanakKaydet(
+    Object.assign({}, g, { duzenleyen: g.duzenleyen || k.kullanici })
+  );
+
+  if (g.vegayaYaz === false || !yazma.yazmaAcikMi()) {
+    return Object.assign({}, sonuc, { vegayaYazildi: false });
+  }
+
+  const t = await tutanak.tutanakGetir({ id: sonuc.tutanakNo });
+  try {
+    const fis = await yazma.tutanakFisiYaz({
+      firma: t.firma,
+      donem: t.donem,
+      depo: t.depo,
+      tutanakId: t.id,
+      dusenStokNo: t.dusenStokNo,
+      dusenMiktar: t.dusenMiktar,
+      artanStokNo: t.artanStokNo,
+      artanMiktar: t.artanMiktar,
+      sebep: t.sebep,
+      kullanici: k.kullanici
+    });
+    return Object.assign({}, sonuc, {
+      vegayaYazildi: true,
+      cikisBelgeNo: fis.cikisBelgeNo,
+      girisBelgeNo: fis.girisBelgeNo
+    });
+  } catch (e) {
+    // Tutanak kaydı duruyor; sadece Vega'ya yazılamadı. Kullanıcı listeden
+    // tekrar deneyebilsin diye hata yutulmuyor, mesaja ekleniyor.
+    return Object.assign({}, sonuc, {
+      vegayaYazildi: false,
+      yazmaHatasi: e.message || String(e)
+    });
+  }
+});
 kayitEt('tutanak:liste', async (g) => tutanak.tutanakListesi(g));
 kayitEt('tutanak:vegayaYaz', async (g, k) => {
   const t = await tutanak.tutanakGetir({ id: g.id });
@@ -280,6 +403,16 @@ kayitEt('tutanak:vegadanGeriAl', async (g, k) => {
     kullanici: k.kullanici
   });
 });
+// Tutanak belgesi: imzalanacak A4 çıktı (PDF veya doğrudan yazıcı).
+kayitEt('tutanak:belgePdf', async (g, k) => {
+  const veri = await tutanak.tutanakBelgeVerisi({ id: g.id, imzalar: g.imzalar });
+  return rapor.tutanakBelgesiKaydet(pencere, veri, k);
+});
+kayitEt('tutanak:belgeYazdir', async (g, k) => {
+  const veri = await tutanak.tutanakBelgeVerisi({ id: g.id, imzalar: g.imzalar });
+  return rapor.tutanakBelgesiYazdir(veri, k);
+});
+
 kayitEt('tutanak:iptal', async (g, k) =>
   tutanak.tutanakIptal(Object.assign({}, g, { kullanici: k.kullanici }))
 );
