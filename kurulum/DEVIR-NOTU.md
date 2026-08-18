@@ -406,6 +406,63 @@ tablo tutuyor ve firmalar şöyle:
 
 ---
 
+## 11b. Uzaktan erişim (mobil / web) — 18.08.2026 kararı
+
+**Karar: yapılmadı, masaüstü programıyla devam.** Müşteri kullanmaya
+başlasın, uzaktan neye ihtiyaç duyduğu ortaya çıkınca yeniden bakılır.
+Aşağısı o gün baştan araştırılmasın diye.
+
+### Kod tarafı zaten hazır
+
+Arayüz SQL'e hiç dokunmuyor; her şey kanal üzerinden gidiyor:
+
+```
+ui/app.js → cagir(kanal, veri) → preload → main.js kayitEt → db/*.js → SQL
+```
+
+`db/` altındaki 16 dosyanın 13'ü saf Node — Electron bağımlılığı yok.
+Kalan üçü: `rapor.js` (PDF/yazdırma, `BrowserWindow`), `guncelleme.js`
+(electron-updater), `ayar.js` (Electron require'ı zaten `try/catch` ile
+korumalı, o yüzden test betikleri Electron'suz çalışıyor).
+
+83 kanalın hepsi `async (girdi, kim) => sonuç` imzasında. Web'e taşımak
+kabaca `kayitEt`'i bir Map'e alıp aynı işleyicileri HTTP'den de çağırmak
+demek — yarım günlük iş.
+
+### Yorucu olan kod değil, şunlar
+
+1. **Veritabanını dışarı açmak.** Program şu an yerel ağda; dışarıya bakan
+   hiçbir yüzey yok. Cloudflare Tunnel port açmadan ve sabit IP gerektirmeden
+   çözer ama risk sıfırlanmaz — `galya_panel` kullanıcısının VEGADB'deki
+   yazma yetkisi de bu durumda yeniden değerlendirilmeli.
+2. **Kimlik doğrulama yok.** "Kullanıcı" = Windows oturum adı. Giriş, rol,
+   yetki yok. Yazma kilidi de tek global bayrak; uzaktan çok kullanıcıda
+   "kim yazabilir" sorusuna dönüşür.
+3. **İki arayüzü sonsuza kadar senkron tutmak.** Asıl kalıcı yük bu.
+
+### Yapılacaksa nasıl yapılmalı
+
+Native mobil uygulama **değil** — iki kod tabanı, mağaza onayı, güncelleme
+sürtünmesi getirir ve mobil web sayfasının üstüne hiçbir şey koymaz; ikisi
+de aynı tünelden geçecek. Web sayfası ana ekrana eklenince uygulama gibi
+durur.
+
+Tam web paneli de değil (3-4 hafta, bakım yükü iki katı). Dar bir mobil
+sayfa yeter: **sayım + salt okunur stok/cari**. Ekranların çoğu masa başı
+işi (alış faturası, maliyetlendirme, reçete, tutanak) ve telefonda
+yapılması kimseye bir şey kazandırmaz. Tek gerçek kazanç sayım: şu an
+depoda kâğıda yazıp masaya gelip giriyorlar.
+
+Kaba efor ~1 hafta: HTTP katmanı yarım gün, giriş+roller 1 gün, mobil
+sayım ekranı 2-3 gün, okuma ekranları 1 gün, tünel+TLS yarım gün, test
+1 gün.
+
+> **Barkod okutma olmaz.** `F0102TBLBIRIMLEREX`'te 2.464 birim satırının
+> yalnızca 62'sinde `BARCODE` dolu (%2,5). Firma barkod girmemiş; mobil
+> sayım ada göre arama olmak zorunda.
+
+---
+
 ## 12. Şefim tarafı (bilinmesi gereken)
 
 Gerçek veriyle ölçüldü (14.08.2026, `F0102` / `D0002`):
