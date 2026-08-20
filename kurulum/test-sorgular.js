@@ -120,6 +120,95 @@ async function dene(ad, isFn) {
     return 'tamam';
   });
 
+  // Sınıflandırma süzgeci: çoklu seçim, "hariç tut" kipi ve pasif kartlar.
+  // Müşterinin istediği "bar-mutfak dışındakileri getirme" işi bu ikisiyle
+  // çıkıyor; sayıların birbirini tutması aranıyor.
+  console.log('\n== Sınıflandırma süzgeci ==');
+  // Sınıf kullanan bir firma seçiyoruz; DEMO firmasında stok kartı yok.
+  // Pasif kartı da olan firma tercih ediliyor, yoksa o kontrol atlanıyor.
+  let SECIM = null;
+  let pasifKartVar = false;
+  for (const f of firmalar) {
+    const aday = { firma: f.kod, donem: f.varsayilanDonem, depo: 0 };
+    const kodlar = await vega.stokKodListeleri(aday).catch(() => ({}));
+    if (!((kodlar && kodlar.kod2) || []).some((o) => o.adet > 0)) continue;
+    const pasifli = ((kodlar && kodlar['kod' + vega.PASIF_ALANI.slice(3)]) || []).some(
+      (o) => o.deger === vega.PASIF_KODU && o.adet > 0
+    );
+    if (!SECIM || (pasifli && !pasifKartVar)) {
+      SECIM = aday;
+      pasifKartVar = pasifli;
+    }
+    if (pasifKartVar) break;
+  }
+  if (!SECIM) SECIM = { firma: firmalar[0].kod, donem: firmalar[0].varsayilanDonem, depo: 0 };
+  console.log(`  (firma ${SECIM.firma}/${SECIM.donem}${pasifKartVar ? '' : ', pasif kart yok'})`);
+  const temel = { suzgec: 'tumu', tumKartlar: 1 };
+
+  // SQL Server karşılaştırması büyük/küçük harfe duyarsız; JS tarafındaki
+  // doğrulama da öyle olmalı, yoksa "70 cl" ile "70 CL" farklı sanılır.
+  const sinifi = (s) => String(s.sinif || '').trim().toLocaleLowerCase('tr');
+  const hepsi = await dene('Pasifler gizli (varsayılan)', () =>
+    vega.stokKontrolListesi(Object.assign({}, SECIM, temel))
+  );
+  const pasifli = await dene('Pasifler dahil', () =>
+    vega.stokKontrolListesi(Object.assign({}, SECIM, temel, { pasifDahil: 1 }))
+  );
+  await dene('Pasif kartlar varsayılanda gizleniyor', async () => {
+    if (!hepsi || !pasifli) throw new Error('önceki sorgu başarısız');
+    if (hepsi.some((s) => s.pasif)) throw new Error('gizli listede pasif kart var');
+    // Firmada hiç pasif kart yoksa iki liste eşit olur; bu da doğru sonuç.
+    if (pasifKartVar && !(pasifli.length > hepsi.length)) {
+      throw new Error(`pasifli ${pasifli.length}, gizli ${hepsi.length}`);
+    }
+    if (!pasifKartVar && pasifli.length !== hepsi.length) {
+      throw new Error('pasif kart yokken listeler farklı çıktı');
+    }
+    return 'tamam';
+  });
+
+  const secilenSinif = ((await vega.stokKodListeleri(SECIM)).kod2 || [])
+    .filter((o) => o.adet > 0)
+    .slice(0, 2)
+    .map((o) => o.deger);
+  if (secilenSinif.length === 2) {
+    const icinde = await dene(`Yalnızca ${secilenSinif.join(' + ')}`, () =>
+      vega.stokKontrolListesi(
+        Object.assign({}, SECIM, temel, { kod2: secilenSinif.join(',') })
+      )
+    );
+    const disinda = await dene(`${secilenSinif.join(' + ')} HARİÇ`, () =>
+      vega.stokKontrolListesi(
+        Object.assign({}, SECIM, temel, { kod2: secilenSinif.join(','), kod2Haric: 1 })
+      )
+    );
+    const secilenKucuk = secilenSinif.map((d) => d.toLocaleLowerCase('tr'));
+    await dene('Seçilen ve hariç tutulan birbirini tamamlıyor', async () => {
+      if (!icinde || !disinda) throw new Error('önceki sorgu başarısız');
+      const sizan = icinde.find((s) => !secilenKucuk.includes(sinifi(s)));
+      if (sizan) throw new Error('seçim dışı sınıf sızdı: ' + sizan.sinif);
+      const kalan = disinda.find((s) => secilenKucuk.includes(sinifi(s)));
+      if (kalan) throw new Error('hariç tutulan sınıf listede kaldı: ' + kalan.sinif);
+      if (icinde.length + disinda.length !== hepsi.length) {
+        throw new Error(
+          `${icinde.length} + ${disinda.length} = ${icinde.length + disinda.length}, ` +
+          `toplam ${hepsi.length}`
+        );
+      }
+      return 'tamam';
+    });
+    await dene('Dizi olarak da seçilebiliyor', async () => {
+      const dizi = await vega.stokKontrolListesi(
+        Object.assign({}, SECIM, temel, { kod2: [secilenSinif[0]] })
+      );
+      if (!dizi.length) throw new Error('boş döndü');
+      if (!dizi.every((s) => sinifi(s) === secilenKucuk[0])) {
+        throw new Error('başka sınıf sızdı');
+      }
+      return dizi;
+    });
+  }
+
   console.log(`\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı\n`);
   await sql.havuzKapat();
   process.exit(basarisiz ? 1 : 0);

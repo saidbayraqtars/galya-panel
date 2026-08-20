@@ -93,15 +93,17 @@ async function anaEkran(secim) {
   const ust = Number(a.kritikStokUst);
   const aktifGun = Number(a.aktifGun) || 90;
 
-  const [stok, aktarim, sayimFark, fatura, maliyet, eslesmeyen, sonTarih] = await Promise.all([
-    guvenli('stok', () => stokSayilari(firma, donem, depo, ust, aktifGun)),
-    guvenli('aktarim', () => sefim.aktarimDurumu()),
-    guvenli('sayim', () => sayim.sonSayimFarki({ firma, donem })),
-    guvenli('fatura', () => faturaSayisi(firma, donem)),
-    guvenli('maliyet', () => maliyetSayisi(firma)),
-    guvenli('eslesmeyen', () => eslesmeyenUrunSayisi({ firma, donem })),
-    guvenli('sonTarih', () => vega.sonHareketTarihi({ firma, donem }))
-  ]);
+  const [stok, aktarim, sayimFark, fatura, maliyet, eslesmeyen, sonTarih, bekleyen] =
+    await Promise.all([
+      guvenli('stok', () => stokSayilari(firma, donem, depo, ust, aktifGun)),
+      guvenli('aktarim', () => sefim.aktarimDurumu()),
+      guvenli('sayim', () => sayim.sonSayimFarki({ firma, donem })),
+      guvenli('fatura', () => faturaSayisi(firma, donem)),
+      guvenli('maliyet', () => maliyetSayisi(firma)),
+      guvenli('eslesmeyen', () => eslesmeyenUrunSayisi({ firma, donem })),
+      guvenli('sonTarih', () => vega.sonHareketTarihi({ firma, donem })),
+      guvenli('bekleyen', async () => (await sayim.bekleyenler({ firma, donem })).length)
+    ]);
 
   return {
     firma,
@@ -151,6 +153,17 @@ async function anaEkran(secim) {
         renk: 'turuncu',
         ekran: 'sayim',
         hata: sayimFark.hata
+      },
+      // Sayım artık kaydedilir kaydedilmez Vega'ya gitmiyor; yönetici
+      // onaylayana kadar burada bekliyor.
+      {
+        anahtar: 'sayimOnay',
+        baslik: 'Onay bekleyen sayım',
+        deger: bekleyen.deger,
+        altBaslik: "Onaylanınca Vega'ya işlenir",
+        renk: 'mavi',
+        ekran: 'sayimOnay',
+        hata: bekleyen.hata
       },
       {
         anahtar: 'fatura',

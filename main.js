@@ -20,6 +20,8 @@ const rapor = require('./db/rapor');
 const maliyet = require('./db/maliyet');
 const alisFatura = require('./db/fatura');
 const uretim = require('./db/uretim');
+const oturum = require('./db/oturum');
+const zayi = require('./db/zayi');
 
 let pencere = null;
 
@@ -76,10 +78,96 @@ const kim = {
   bilgisayar: os.hostname()
 };
 
+// Yetki süzgeci.
+//
+// HİÇ KULLANICI TANIMLI DEĞİLSE kilit yoktur; program bugüne kadar nasıl
+// çalışıyorsa öyle çalışır ve herkes yöneticidir. Kullanıcı tanımlandığı
+// anda aşağıdaki üç katman devreye girer:
+//
+//   1. YONETICI_KANALLARI — yalnızca yönetici çağırabilir.
+//   2. YETKI_KANALLARI    — kullanıcının o yetkisi işaretliyse çağrılabilir.
+//   3. Yanıt süzme        — sayım ekranının teorik miktarı gibi alanlar
+//                           role göre nesneden çıkarılır (gizlenmez,
+//                           GÖNDERİLMEZ).
+//
+// Sayan kişi Vega'daki miktarı görürse çoğu zaman aynı sayıyı yazar ve
+// sayım anlamını kaybeder; yönetici girişi yapılınca teorik miktar gelir.
+const YONETICI_KANALLARI = new Set([
+  'sayim:gecmis',        // fark tutarı ve farklı satır sayısı
+  'sayim:detay',         // satır satır teorik / fark
+  'sayim:bekleyenler',   // onay kuyruğu
+  'sayim:onayla',        // sayımı Vega'ya işleyen tek uç
+  'sayim:reddet',
+  'sayim:vegayaYaz',
+  'sayim:vegadanGeriAl',
+  'sayim:iptal',
+  'kullanici:liste',
+  'kullanici:kaydet',
+  'kullanici:sil',
+  'oturum:pinBelirle',
+  'oturum:pinKaldir',
+  'ayar:yaz',
+  'stok:pasifYap'
+]);
+
+// Kanal → gereken yetki anahtarı. Yönetici hepsini geçer.
+const YETKI_KANALLARI = {
+  'sayim:ekran': 'sayim',
+  'sayim:kaydet': 'sayim',
+  'sayim:liste': 'sayim',
+  'sayim:listeyeEkle': 'sayim',
+  'sayim:topluEkle': 'sayim',
+  'sayim:listedenCikar': 'sayim',
+  'sayim:listeyiBosalt': 'sayim',
+  'zayi:kaydet': 'zayi',
+  'zayi:liste': 'zayi',
+  'zayi:getir': 'zayi',
+  'zayi:sil': 'zayi',
+  'zayi:cariler': 'zayi',
+  'zayi:vegayaYaz': 'zayi',
+  'zayi:vegadanGeriAl': 'zayi',
+  'uretim:adaylar': 'uretim',
+  'uretim:uretilebilirler': 'uretim',
+  'uretim:uret': 'uretim',
+  'uretim:zayiatli': 'uretim',
+  'uretim:hepsiniUret': 'uretim',
+  'uretim:gecmis': 'uretim',
+  'uretim:geriAl': 'uretim',
+  'stok:durum': 'stok',
+  'stok:kontrol': 'stok',
+  'stok:ara': 'stok',
+  'stok:hareket': 'stok',
+  'cari:bakiye': 'stok',
+  'cari:ara': 'stok'
+};
+
 function kayitEt(kanal, isFn) {
   ipcMain.handle(kanal, async (olay, girdi) => {
     try {
-      const veri = await isFn(girdi || {}, kim);
+      let o;
+      try {
+        o = await oturum.oturumAl();
+      } catch (e) {
+        // Panel veritabanı okunamadı: kullanıcı tanımlı mı bilinemez.
+        // Program kendini kilitlemesin.
+        o = { rol: oturum.YONETICI, kullaniciAdi: null, yetkiler: {} };
+      }
+
+      const yoneticiMi = o.rol === oturum.YONETICI;
+      if (!yoneticiMi && YONETICI_KANALLARI.has(kanal)) {
+        return yetkisizCevap();
+      }
+      const gereken = YETKI_KANALLARI[kanal];
+      if (!yoneticiMi && gereken && !(o.yetkiler && o.yetkiler[gereken])) {
+        return yetkisizCevap(gereken);
+      }
+
+      // İşlem günlüğüne Windows kullanıcısı değil, giriş yapmış kişi düşsün.
+      const kimlik = o.kullaniciAdi
+        ? Object.assign({}, kim, { kullanici: o.kullaniciAdi, windows: kim.kullanici })
+        : kim;
+
+      const veri = await isFn(girdi || {}, kimlik, o);
       return { tamam: true, veri };
     } catch (e) {
       return {
@@ -89,6 +177,25 @@ function kayitEt(kanal, isFn) {
       };
     }
   });
+}
+
+const YETKI_ADLARI = {
+  sayim: 'sayım',
+  tamSayim: 'tam sayım',
+  zayi: 'zayi girişi',
+  uretim: 'üretim',
+  stok: 'stok ve cari görüntüleme'
+};
+
+function yetkisizCevap(gereken) {
+  return {
+    tamam: false,
+    mesaj: gereken
+      ? `Bu iş için "${YETKI_ADLARI[gereken] || gereken}" yetkiniz yok. ` +
+        'Yöneticinize başvurun ya da sağ üstten yönetici PIN\'iyle girin.'
+      : 'Bunu görmek için yönetici girişi gerekiyor. Sağ üstteki "Giriş" düğmesini kullanın.',
+    kod: 'YETKISIZ'
+  };
 }
 
 function anlasilirHata(e) {
@@ -116,9 +223,10 @@ function anlasilirHata(e) {
 
 // Ayar ve bağlantı
 kayitEt('ayar:oku', async () => {
-  const a = Object.assign({}, ayarlar.ayarOku());
+  const tam = ayarlar.ayarOku();
+  const a = Object.assign({}, tam);
   delete a.sifre; // şifre arayüze gönderilmez
-  a.sifreVar = !!ayarlar.ayarOku().sifre;
+  a.sifreVar = !!tam.sifre;
   a.dosyaYolu = ayarlar.ayarYolu();
   return a;
 });
@@ -129,6 +237,7 @@ kayitEt('ayar:yaz', async (girdi) => {
   const sonuc = ayarlar.ayarYaz(yeni);
   await sql.havuzKapat();
   firma.onbellekTemizle();
+  oturum.onbellekTemizle(); // başka bir panel veritabanına geçilmiş olabilir
   const g = Object.assign({}, sonuc);
   delete g.sifre;
   return g;
@@ -230,17 +339,83 @@ kayitEt('maliyet:geriAl', async (g, k) =>
 );
 kayitEt('maliyet:mamul', async (g) => maliyet.mamulMaliyeti(g));
 
-// Üretim (stoğu sıfıra çeken üretim fişi)
+// Üretim. Üç yol: otomatik (stoğu eksiye düşenleri sıfıra çek), manuel
+// (istenen ürün, istenen miktar) ve zayiatlı (zayi fişi + üretim tek işlemde).
 kayitEt('uretim:adaylar', async (g) => uretim.adaylar(g));
+kayitEt('uretim:uretilebilirler', async (g) => uretim.uretilebilirler(g));
 kayitEt('uretim:uret', async (g, k) =>
   uretim.uret(Object.assign({}, g, { kullanici: k.kullanici }))
 );
+// Zayiatlı üretim zayi fişi DE kesiyor; iki yetki birden isteniyor.
+// YETKI_KANALLARI tek anahtar taşıdığı için ikincisi burada denetleniyor.
+kayitEt('uretim:zayiatli', async (g, k, o) => {
+  if (o.rol !== oturum.YONETICI && !(o.yetkiler && o.yetkiler.zayi)) {
+    const e = new Error(
+      'Zayiatlı üretim zayi fişi de kesiyor; "zayi girişi" yetkiniz yok. ' +
+      'Yetkiniz varsa manuel üretimi kullanabilirsiniz.'
+    );
+    e.kod = 'YETKISIZ';
+    throw e;
+  }
+  return uretim.zayiatliUret(Object.assign({}, g, { kullanici: k.kullanici }));
+});
 kayitEt('uretim:hepsiniUret', async (g, k) =>
   uretim.hepsiniUret(Object.assign({}, g, { kullanici: k.kullanici }))
 );
 kayitEt('uretim:gecmis', async (g) => uretim.gecmis(g));
 kayitEt('uretim:geriAl', async (g, k) =>
   uretim.geriAl(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+
+// Zayi / personel çıkışı
+//
+// Fatura gibi önce panelde taslak durur, Vega'ya yazma ayrı bir onayla olur.
+// Vega karşılığı stok çıkış fişi (33) + seçilen carinin borç hareketi.
+kayitEt('zayi:cariler', async (g) => zayi.cariler(g));
+kayitEt('zayi:kaydet', async (g, k) =>
+  zayi.taslakKaydet(Object.assign({}, g, { duzenleyen: g.duzenleyen || k.kullanici }))
+);
+kayitEt('zayi:liste', async (g) => zayi.liste(g));
+kayitEt('zayi:getir', async (g) => zayi.getir(g));
+kayitEt('zayi:sil', async (g, k) =>
+  zayi.sil(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('zayi:vegayaYaz', async (g, k) => {
+  const z = await zayi.getir({ id: g.id });
+  if (z.vegayaYazildi) throw new Error("Bu zayi fişi zaten Vega'ya yazılmış.");
+  return yazma.zayiFisiYaz({
+    firma: z.firma,
+    donem: z.donem,
+    depo: z.depo,
+    zayiId: z.id,
+    cariNo: z.cariNo,
+    cariAdi: z.cariAdi,
+    altHesap: z.altHesap,
+    sebep: z.sebep,
+    tarih: z.tarih,
+    maliyetliMi: z.maliyetliMi,
+    satirlar: z.satirlar,
+    kullanici: k.kullanici
+  });
+});
+kayitEt('zayi:vegadanGeriAl', async (g, k) => {
+  const z = await zayi.getir({ id: g.id });
+  if (!z.vegayaYazildi || !z.vegaBelgeInd) {
+    throw new Error("Bu zayi fişi Vega'ya yazılmamış, geri alınacak belge yok.");
+  }
+  return yazma.zayiFisiGeriAl({
+    firma: z.firma,
+    donem: z.donem,
+    zayiId: z.id,
+    baslikInd: z.vegaBelgeInd,
+    kullanici: k.kullanici
+  });
+});
+
+// Stok kartını pasife alma (KOD8 = 'PASİF'). Firmanın kendi işareti;
+// pasif kartlar listelerde ve sayım föylerinde görünmez.
+kayitEt('stok:pasifYap', async (g, k) =>
+  yazma.stokPasifYap(Object.assign({}, g, { kullanici: k.kullanici }))
 );
 
 // Cari
@@ -319,29 +494,88 @@ kayitEt('sayim:listeyiBosalt', async (g, k) =>
   sayim.listeyiBosalt(Object.assign({}, g, { kullanici: k.kullanici }))
 );
 kayitEt('sayim:listedenCikar', async (g) => sayim.listedenCikar(g));
-kayitEt('sayim:ekran', async (g) => sayim.sayimEkraniGetir(g));
-// Sayım da tutanak gibi stok miktarını gerçekten değiştiren bir işlem.
-// Kullanıcı sayımı kaydeder kaydetmez fark fişleri Vega'ya kesiliyor; ayrıca
-// Vega'nın sayım ekranına girmesi gerekmiyor. Yazma kilidi kapalıysa sayım
-// yalnızca panelde durur, listede "Yazılmadı" görünür ve sonra tek tuşla
-// yazılabilir.
-kayitEt('sayim:kaydet', async (g, k) => {
+// Körleme sayım. Sayan kişi Vega'daki miktarı görürse çoğu zaman aynı sayıyı
+// yazar ve sayım anlamını kaybeder. Bu yüzden teorik miktar ve birim maliyet
+// yalnızca yönetici girişi yapılmışsa arayüze gönderilir; yoksa alanlar
+// nesneden tamamen çıkarılır (gizlemek değil, göndermemek).
+//
+// Kapsam (hangi sınıflar sayılabilir) ARAYÜZDEN GELMEZ, oturumdan okunur.
+// Aksi hâlde bar sayma yetkisi olan kişi isteği kurcalayıp mutfağı da
+// listeleyebilirdi.
+kayitEt('sayim:ekran', async (g, k, o) => {
+  const yoneticiMi = o.rol === oturum.YONETICI;
+  const tur = String(g.tur || 'ara') === 'tam' ? 'tam' : 'ara';
+  if (tur === 'tam' && !yoneticiMi && !(o.yetkiler && o.yetkiler.tamSayim)) {
+    const e = new Error('Tam sayım yetkiniz yok. Ara sayım yapabilirsiniz.');
+    e.kod = 'YETKISIZ';
+    throw e;
+  }
+
+  const siniflar = await oturum.kapsamAl();
+  const liste = await sayim.sayimEkraniGetir(Object.assign({}, g, { tur, siniflar }));
+  if (yoneticiMi) return liste;
+  return liste.map((s) => ({
+    stokNo: s.stokNo,
+    stokAdi: s.stokAdi,
+    stokKodu: s.stokKodu,
+    sinif: s.sinif,
+    birim: s.birim
+  }));
+});
+// Sayım kaydedilir kaydedilmez Vega'ya YAZILMAZ.
+//
+// Müşterinin isteği: sayımı çalışan yapar, yönetici bakar, doğruysa onaylar
+// ve ancak o zaman fiş kesilir. Yanlış sayılmış bir kalem böylece Vega'nın
+// stok zincirine hiç dokunmadan düzeltilebiliyor.
+//
+// Onaylama ucu: sayim:onayla (yalnızca yönetici).
+kayitEt('sayim:kaydet', async (g, k, o) => {
+  const yoneticiMi = o.rol === oturum.YONETICI;
+  const tur = String(g.tur || 'ara') === 'tam' ? 'tam' : 'ara';
+  if (tur === 'tam' && !yoneticiMi && !(o.yetkiler && o.yetkiler.tamSayim)) {
+    const e = new Error('Tam sayım yetkiniz yok.');
+    e.kod = 'YETKISIZ';
+    throw e;
+  }
+
+  const siniflar = await oturum.kapsamAl();
   const sonuc = await sayim.sayimKaydet(
-    Object.assign({}, g, { sayan: g.sayan || k.kullanici })
+    Object.assign({}, g, { tur, siniflar, sayan: g.sayan || k.kullanici })
   );
 
+  // Kayıttan SONRA çıkan fark özeti de sayımcıya gitmiyor; yoksa sayımcı
+  // rastgele bir sayı yazıp "fark kaç çıktı" diye deneyerek teorik miktarı
+  // aramalı olarak bulabilir.
+  if (yoneticiMi) return sonuc;
+  const suzulmus = Object.assign({}, sonuc);
+  for (const alan of ['artan', 'azalan', 'farkliSatir', 'farkTutari']) {
+    delete suzulmus[alan];
+  }
+  return suzulmus;
+});
+
+// Onay. Sayımı Vega'ya işleyen tek yer burası.
+kayitEt('sayim:bekleyenler', async (g) => sayim.bekleyenler(g));
+kayitEt('sayim:reddet', async (g, k) =>
+  sayim.sayimReddet(Object.assign({}, g, { onaylayan: k.kullanici }))
+);
+kayitEt('sayim:onayla', async (g, k) => {
+  await sayim.onayIsaretle({ sayimId: g.sayimId, onaylayan: k.kullanici });
+
   if (g.vegayaYaz === false || !yazma.yazmaAcikMi()) {
-    return Object.assign({}, sonuc, { vegayaYazildi: false });
+    return { tamam: true, onaylandi: true, vegayaYazildi: false };
   }
 
   try {
     const fis = await yazma.sayimFisiYaz({
       firma: g.firma,
       donem: g.donem,
-      sayimId: sonuc.sayimId,
+      sayimId: g.sayimId,
       kullanici: k.kullanici
     });
-    return Object.assign({}, sonuc, {
+    return {
+      tamam: true,
+      onaylandi: true,
       vegayaYazildi: !fis.yazilmadi,
       farkYok: !!fis.yazilmadi,
       belgeNo: fis.belgeNo || null,
@@ -349,13 +583,16 @@ kayitEt('sayim:kaydet', async (g, k) => {
       cikisBelgeNo: fis.cikisBelgeNo || null,
       artan: fis.artan || 0,
       azalan: fis.azalan || 0
-    });
+    };
   } catch (e) {
-    // Sayım kaydı duruyor; yalnızca Vega'ya yazılamadı.
-    return Object.assign({}, sonuc, {
+    // Onay duruyor, yalnızca fiş kesilemedi; yönetici listeden tekrar
+    // deneyebilsin diye hata yutulmuyor.
+    return {
+      tamam: true,
+      onaylandi: true,
       vegayaYazildi: false,
       yazmaHatasi: e.message || String(e)
-    });
+    };
   }
 });
 kayitEt('sayim:vegayaYaz', async (g, k) =>
@@ -468,6 +705,22 @@ kayitEt('vegaprogram:ac', async (g, k) => vegaprogram.ac(g.program, k));
 // Güncelleme
 kayitEt('guncelleme:kontrol', async () => guncelleme.simdiKontrolEt());
 kayitEt('guncelleme:durum', async () => guncelleme.durumAl());
+
+// Oturum / yetki
+//
+// Giriş yalnızca PIN'le: kullanıcı isim seçmez, PIN'i kimse o kişi olarak
+// girer. Windows kullanıcı adı sadece kayıt tutmak için kullanılıyor.
+kayitEt('oturum:durum', async (g, k) => oturum.durumAl(k));
+kayitEt('oturum:giris', async (g, k) => oturum.giris(g, k));
+kayitEt('oturum:cikis', async (g, k) => oturum.cikis(g, k));
+// Aşağıdakiler yönetici kanalı listesinde; yalnızca yönetici çağırabilir.
+kayitEt('oturum:pinBelirle', async (g, k) => oturum.pinBelirle(g, k));
+kayitEt('oturum:pinKaldir', async (g, k) => oturum.pinKaldir(g, k));
+
+// Kullanıcı yönetimi (yönetici paneli)
+kayitEt('kullanici:liste', async () => oturum.kullaniciListesi());
+kayitEt('kullanici:kaydet', async (g, k) => oturum.kullaniciKaydet(g, k));
+kayitEt('kullanici:sil', async (g, k) => oturum.kullaniciSil(g, k));
 
 // Yardımcılar
 kayitEt('sistem:kullanici', async () => kim);

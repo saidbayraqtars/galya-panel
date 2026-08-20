@@ -346,7 +346,8 @@ POS satışlarının reçete düşümlerini de üretim sanır.
 
 ```
 node kurulum/test-yazma.js --kur     # test veritabanını hazırlar/tamamlar
-node kurulum/test-yazma.js           # 79 sınama
+node kurulum/test-yazma.js           # 106 sınama
+node kurulum/test-yetki.js           #  41 sınama (kullanıcı, kapsam, onay)
 ```
 
 Sınama müşteri veritabanına dokunmaz: yapısı VEGADB'den kopyalanmış boş bir
@@ -358,9 +359,17 @@ yetmiyor.
 
 Kapsam: yazma kilidi, tutanak fiş çifti, reçete, alış faturası (beş tablo +
 GK + stok kartı alış fiyatı), üretim fişi (altı tablo + iki depo transferi
-+ 96/97 hareketleri) ve sayım fişi (giriş + çıkış çifti, stoğun sayılan
-miktara oturması, çift yazma engeli, fark yokken fiş kesilmemesi); hepsinin
-geri alınması.
++ 96/97 hareketleri), sayım fişi (giriş + çıkış çifti, stoğun sayılan
+miktara oturması, çift yazma engeli, fark yokken fiş kesilmemesi), **zayi
+fişi** (beş tablo + cari borç hareketi, fiyatsız ve maliyetli kip) ve
+**pasife alma**; hepsinin geri alınması.
+
+`test-yetki.js` ayrı duruyor çünkü VEGADB'ye hiç yazmıyor: kullanıcı
+tanımlama, PIN'le giriş, PIN benzersizliği, son yöneticinin korunması, sayım
+kapsamı (KOD2) ve onay akışını sınıyor. Panel tablolarını `GALYA_TEST`
+içinde açıyor; canlı `GALYA_PANEL`e yönelirse kendini durduruyor — sınama
+kullanıcı tablosunu boşaltıyor ve canlıda çalışsaydı programı bilinmeyen bir
+PIN'le kilitlerdi.
 
 ## Sayım fişi
 
@@ -438,6 +447,132 @@ kesilmez.
 Geri alma dört tablodaki satırları da siler; stok fiş öncesine döner.
 Kesilen fişlerin kimlikleri `GALYA_PANEL.dbo.AraSayim.VegaFisler` alanında
 saklanır.
+
+## Zayi / personel çıkışı
+
+`F0102`/`D0002` içindeki **37 gerçek ZAYİ fişi** okunarak çıkarıldı. Panel bu
+deseni `db/yazma.js` → `zayiFisiYaz()` içinde uyguluyor.
+
+Belge tipi **33** — yani tutanağın kullandığı stok çıkış fişinin aynısı.
+İki farkı var:
+
+1. `FIRMANO` bir **cariyi** gösterir: `ZAYİ` (F0102'de IND 158), `FİRE`
+   (157), ya da malın üstünde kaldığı personelin kartı (`ÇAĞLA TARHAN`,
+   `ULAŞ HİNDİSTAN`…). Ekranda "Firma Kodu" diye görünen alan bu.
+2. `CARIHAREKETEYAZ = 1` ve `TBLCARIHAREKETLERI`'ne **BORÇ** satırı düşer.
+   37 fişin 37'sinde de böyle.
+
+```
+TBLSTKCIKBASLIK
+   IND ──────────────────────────┐  IDENTITY
+   BELGENO = 'A0000404'          │  A serisi, elle girilen fiş
+   FIRMANO = 158                 │  ZAYİ carisi
+   OZELKOD4 = 'ZAYİ'             │  ekrandaki "Alt Hesap"
+   OZELKOD1 = OZELKOD2 = MERKEZ  │  şube / kasa
+   DEPO = NULL, HAREKETDEPOSU=1  │  !!! DEPO boş bırakılıyor
+   BELGETIPI = 33, GIRIS = 0     │
+   TUTAR = KDV dahil             │  ARATOPLAM = KDV hariç
+   STOKHAREKETEYAZ = CARIHAREKETEYAZ = 1
+                                 │
+TBLSTKCIKHAREKET                 │
+   EVRAKNO ←─────────────────────┘  başlık IND
+   IND ──────────────────────────┐  satır IND
+   FIRMANO = 158                 │  satırda da cari tekrarlanıyor
+   AFIYATI = kart maliyeti       │  FIYATI = satış fiyatı
+   KDV = oran (1, 10, 20)        │  GK = rastgele int32
+                                 │
+TBLSTOKHAREKETLERI               │
+   BELGENO ←── başlık IND        │  LN ←─────────┘
+   EVRAKNO ←── belge numarası metni, IZAHAT = 33
+   CIKAN = miktar, GIREN = 0
+   BIRIMFIYAT = BIRIMMALIYET = FIYATI (AFIYATI değil)
+
+TBLDEPOENVANTER
+   BELGEIND / HAREKETIND ←── başlık ve satır IND, ENVANTER = −miktar
+
+TBLCARIHAREKETLERI
+   LN      ←── başlık IND
+   EVRAKNO ←── belge numarası metni
+   IZAHAT  = '33'
+   BORC    ←── başlıktaki TUTAR   (ALACAK boş)
+   OZELKOD ←── alt hesap ('ZAYİ')
+```
+
+### Birim fiyat: sıfır mı, maliyet mi
+
+Gerçek veride **945 zayi satırının 801'i sıfır fiyatlı** (%85). Yani firma
+zayii çoğunlukla tutarsız giriyor: yalnızca miktar düşüyor, cari borcu 0
+oluyor. Kalan 144 satırda fiyat girilmiş ve tutar cariye borç yazılmış.
+
+Panel ikisini de yapıyor; hangisi olacağına kullanıcı zayi ekranındaki
+**"Maliyetle yaz"** kutusundan karar veriyor (varsayılan: kapalı, yani
+Vega'daki norm). Kutu işaretlenirse `AFIYATI = FIYATI = kart maliyeti`
+olur ve KDV dahil toplam cariye borç yazılır.
+
+> **KDV oranı stok kartında yazmıyor.** Kartta `KDVGRUBU` var; oran
+> `TBLKDVGRUPLARI` tablosunda (IND 1 → %20, 100 → %10, 101 → %1, 102 → %0).
+> Satırdaki `KDV` alanı bu tablodan geliyor. `TBLSTOKLAR.KDV` diye bir alan
+> **yok**; bir kez bu varsayımla yazıldı ve `Invalid column name 'KDV'`
+> hatası alındı.
+
+Geri alma beş tablodaki satırları da siler; stok ve cari bakiye fiş
+öncesine döner.
+
+## Zayiatlı üretim
+
+Belgede yeni bir tip yok: **zayi fişi + üretim fişi** ardarda kesiliyor.
+Desen `galya döküman/zaiyatlı manuel üretim .md` izleyici kaydından
+çıkarıldı — kullanıcı Vega'da önce `StkÇık\A0000499\ZAYİ` fişini kesiyor,
+sonra üretim fişini yazıp doğan `38+38+97+96` belgelerini oluşturuyor.
+
+Panel ikisini `db/uretim.js` → `zayiatliUret()` içinde tek işlem gibi
+yapıyor:
+
+1. Zayi fişi kesilir, ürünün stoğu düşer.
+2. Kalan **yeniden okunur** (Şefim aradaki saniyelerde satış işleyebilir).
+3. Kalan eksiyse eksik miktar kadar üretim fişi yazılır.
+4. Üretim yazılamazsa **zayi fişi geri alınır** — stoktan düşmüş ama
+   üretilmemiş ürün bırakılmaz. Geri alma da başarısız olursa hata mesajı
+   belge numarasını söyler, elle silinmesi gerekir.
+
+Zayi sonrası stok eksiye düşmezse üretim yapılmaz; fiş kesilmiş olarak
+kalır (kullanıcının girdiği zayi gerçekten oldu).
+
+### Üretim fişine eklenen tablo: TBLUREURETIMARAC
+
+İzleyici kaydındaki 23. ifade, Vega'nın üretim araçlarını reçeteden olduğu
+gibi kopyaladığını gösterdi:
+
+```sql
+INSERT INTO F0102D0002TBLUREURETIMARAC (EVRAKNO,ARACNO,ARACKODU,CALISMAUSULU,
+       POZISYONNO,MIKTAR,BIRIMMIKTAR,SIRANO)
+SELECT 1405 AS EVRAKNO, ARACNO, ARACKODU, CALISMAUSULU, POZISYONNO, MIKTAR,
+       BIRIMMIKTAR, SIRANO
+FROM F0102TBLURERECETEARAC WHERE EVRAKNO=4499
+```
+
+(1405 = üretim başlığının IND'i, 4499 = reçete IND'i.) Panel aynısını
+yazıyor; reçetede araç tanımlı değilse hiç satır oluşmuyor. Geri alma bu
+tabloyu da siliyor.
+
+## Stok kartını pasife alma
+
+Belge yazılmıyor; tek alanlık güncelleme:
+
+```
+TBLSTOKLAR.KOD8   ←   'PASİF'
+```
+
+Firma kullanmadığı **373 kartı** zaten böyle işaretlemiş. Panel yeni bir
+alan uydurmak yerine aynısını kullanıyor; böylece Vega'nın kendi
+raporlarında da pasif görünüyor.
+
+Pasiften çıkarırken **yalnızca `PASİF` yazan kartlar** temizleniyor; `KOD8`
+alanında başka bir değer varsa ona dokunulmuyor.
+
+Pasif kartlar stok listelerinde ve sayım föylerinde görünmez (`pasifDahil`
+süzgeciyle geri getirilebilir). Hareketleri, geçmişi ve envanteri olduğu
+gibi durur — kart silinmiyor, yalnızca listelerden çekiliyor.
 
 ## Maliyetlendirme
 

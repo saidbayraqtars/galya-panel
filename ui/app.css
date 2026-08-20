@@ -460,3 +460,48 @@ input.miktar {
   th { position: static; }
   tbody tr:hover { background: transparent; }
 }
+
+/* Sınıflandırma süzgeçleri.
+   On kod alanının kutucukları birden açık dursaydı ekran süzgeçten
+   görünmezdi; her alan kendi <details> kutusunda kapalı başlıyor ve
+   seçim yapılmışsa açık geliyor. */
+.kod-suzgec {
+  border: 1px solid var(--cizgi);
+  border-radius: 6px;
+  background: var(--yuzey);
+  padding: 6px 10px;
+  min-width: 190px;
+}
+.kod-suzgec > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--yazi2);
+  list-style-position: inside;
+  user-select: none;
+}
+.kod-suzgec[open] > summary {
+  color: var(--vurgu);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.kod-govde {
+  max-height: 260px;
+  overflow-y: auto;
+  padding-top: 4px;
+  border-top: 1px solid var(--cizgi);
+}
+.kod-satir {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-bottom: 6px;
+}
+.kod-secim {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--yazi2);
+  white-space: nowrap;
+  cursor: pointer;
+}

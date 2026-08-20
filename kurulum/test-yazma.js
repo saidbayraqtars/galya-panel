@@ -87,7 +87,8 @@ async function kalan(stokNo) {
 
 const KART_TABLOLARI = [
   'TBLSTOKLAR', 'TBLBIRIMLEREX', 'TBLCARI',
-  'TBLURERECETELIST', 'TBLURERECETE', 'TBLURERECETEPOZ'
+  'TBLURERECETELIST', 'TBLURERECETE', 'TBLURERECETEPOZ', 'TBLURERECETEARAC',
+  'TBLKDVGRUPLARI'
 ];
 const DONEM_TABLOLARI = [
   'TBLSTOKHAREKETLERI', 'TBLDEPOENVANTER', 'TBLCARIHAREKETLERI',
@@ -95,6 +96,7 @@ const DONEM_TABLOLARI = [
   'TBLALFATBASLIK', 'TBLALFATHAREKET',
   'TBLDEPOHARBASLIK', 'TBLDEPOHARHAREKET',
   'TBLUREURETIMLIST', 'TBLUREURETIM', 'TBLUREURETIMCIKTI', 'TBLUREURETIMPOZ',
+  'TBLUREURETIMARAC',
   'TBLUREBELGE',
   'TBLSAYIMGIRISBASLIK', 'TBLSAYIMGIRISHAREKET',
   'TBLSAYIMCIKISBASLIK', 'TBLSAYIMCIKISHAREKET'
@@ -705,6 +707,202 @@ if (process.argv.includes('--kur')) {
 
   await sql.calistir(`DELETE FROM [${pAd}].dbo.AraSayimSatir WHERE SayimId = @i`, { i: sayimId });
   await sql.calistir(`DELETE FROM [${pAd}].dbo.AraSayim WHERE Id = @i`, { i: sayimId });
+  // --- Zayi / personel çıkışı ---------------------------------------------
+  //
+  // Vega'nın kendi zayi fişlerinden çıkarılan desen: stok çıkış fişi (33) +
+  // seçilen carinin BORÇ hareketi. Fiyat sıfırken de cari hareketi oluşur.
+  console.log('\n== Zayi fişi ==');
+  const zayiCariler = await sql.sorgu(`
+    SELECT TOP 1 IND AS cariNo, FIRMAADI AS ad
+    FROM [GALYA_TEST].dbo.F0103TBLCARI ORDER BY IND
+  `);
+  if (!zayiCariler.length) {
+    kontrol('Zayi carisi bulundu', false, 'F0103TBLCARI boş, --kur çalıştırın');
+  } else {
+    const zCari = zayiCariler[0];
+    const zOncekiKalan = await kalan(stoklar[0].stokNo);
+
+    const zayiFis = await yazma.zayiFisiYaz(Object.assign({}, SECIM, {
+      cariNo: zCari.cariNo,
+      cariAdi: zCari.ad,
+      altHesap: 'ZAYİ',
+      sebep: 'Sınama: kırılan mal',
+      maliyetliMi: false,
+      satirlar: [
+        { stokNo: stoklar[0].stokNo, stokAdi: stoklar[0].ad, miktar: 4 },
+        { stokNo: stoklar[1].stokNo, stokAdi: stoklar[1].ad, miktar: 1.5 }
+      ],
+      kullanici: 'test'
+    }));
+    console.log(`  Zayi fişi: ${zayiFis.belgeNo} (IND ${zayiFis.baslikInd})`);
+
+    kontrol('Zayi başlığı yazıldı',
+      (await say('F0103D0015TBLSTKCIKBASLIK', 'IND = @i AND BELGETIPI = 33',
+        { i: zayiFis.baslikInd })) === 1);
+
+    const zBaslik = await sql.sorgu(
+      `SELECT FIRMANO, OZELKOD4, STOKHAREKETEYAZ, CARIHAREKETEYAZ, HAREKETDEPOSU, GIRIS
+       FROM [GALYA_TEST].dbo.F0103D0015TBLSTKCIKBASLIK WHERE IND = @i`,
+      { i: zayiFis.baslikInd }
+    );
+    kontrol('Başlıkta cari ZAYİ kartını gösteriyor',
+      Number(zBaslik[0].FIRMANO) === Number(zCari.cariNo));
+    kontrol('Alt hesap OZELKOD4 alanına yazıldı', zBaslik[0].OZELKOD4 === 'ZAYİ');
+    kontrol('Cari hareketine yaz bayrağı açık', zBaslik[0].CARIHAREKETEYAZ === true);
+    kontrol('Stok hareketine yaz bayrağı açık', zBaslik[0].STOKHAREKETEYAZ === true);
+    kontrol('Çıkış fişi (GIRIS = 0)', zBaslik[0].GIRIS === false);
+
+    kontrol('İki hareket satırı yazıldı',
+      (await say('F0103D0015TBLSTKCIKHAREKET', 'EVRAKNO = @i', { i: zayiFis.baslikInd })) === 2);
+    kontrol('İki stok hareketi yazıldı',
+      (await say('F0103D0015TBLSTOKHAREKETLERI', 'BELGENO = @i AND IZAHAT = 33',
+        { i: zayiFis.baslikInd })) === 2);
+    kontrol('İki envanter satırı yazıldı',
+      (await say('F0103D0015TBLDEPOENVANTER', 'BELGEIND = @i AND BELGETIPI = 33',
+        { i: zayiFis.baslikInd })) === 2);
+    kontrol('Cari borç hareketi yazıldı',
+      (await say('F0103D0015TBLCARIHAREKETLERI', 'LN = @i AND IZAHAT = 33',
+        { i: zayiFis.baslikInd })) === 1);
+
+    const zStokHar = await sql.sorgu(
+      `SELECT GIREN, CIKAN FROM [GALYA_TEST].dbo.F0103D0015TBLSTOKHAREKETLERI
+       WHERE BELGENO = @i AND IZAHAT = 33 AND STOKNO = @s`,
+      { i: zayiFis.baslikInd, s: stoklar[0].stokNo }
+    );
+    kontrol('Zayi ÇIKAN sütununa yazıldı',
+      Number(zStokHar[0].CIKAN) === 4 && Number(zStokHar[0].GIREN) === 0);
+
+    kontrol('Zayi stoğu düşürdü',
+      Math.abs((await kalan(stoklar[0].stokNo)) - (zOncekiKalan - 4)) < 0.0001);
+
+    // Fiyatsız zayide cari borcu sıfır olmalı (Vega'nın normu).
+    const zCariHar = await sql.sorgu(
+      `SELECT BORC, ALACAK, OZELKOD FROM [GALYA_TEST].dbo.F0103D0015TBLCARIHAREKETLERI
+       WHERE LN = @i AND IZAHAT = 33`,
+      { i: zayiFis.baslikInd }
+    );
+    kontrol('Fiyatsız zayide cari borcu 0', Number(zCariHar[0].BORC) === 0);
+    kontrol('Cari hareketinde alt hesap var', zCariHar[0].OZELKOD === 'ZAYİ');
+
+    await yazma.zayiFisiGeriAl(Object.assign({}, SECIM, {
+      baslikInd: zayiFis.baslikInd, kullanici: 'test'
+    }));
+    kontrol('Geri almada zayi başlığı silindi',
+      (await say('F0103D0015TBLSTKCIKBASLIK', 'IND = @i', { i: zayiFis.baslikInd })) === 0);
+    kontrol('Geri almada hareket satırları silindi',
+      (await say('F0103D0015TBLSTKCIKHAREKET', 'EVRAKNO = @i', { i: zayiFis.baslikInd })) === 0);
+    kontrol('Geri almada cari hareketi silindi',
+      (await say('F0103D0015TBLCARIHAREKETLERI', 'LN = @i AND IZAHAT = 33',
+        { i: zayiFis.baslikInd })) === 0);
+    kontrol('Geri almada stok eski hâline döndü',
+      Math.abs((await kalan(stoklar[0].stokNo)) - zOncekiKalan) < 0.0001);
+
+    // Maliyetle yazınca tutar cari borcuna düşmeli.
+    await sql.calistir(
+      `UPDATE [GALYA_TEST].dbo.F0103TBLSTOKLAR SET MALIYET = 20 WHERE IND = @s`,
+      { s: stoklar[0].stokNo }
+    );
+    const zMaliyetli = await yazma.zayiFisiYaz(Object.assign({}, SECIM, {
+      cariNo: zCari.cariNo, cariAdi: zCari.ad, altHesap: 'ZAYİ',
+      maliyetliMi: true,
+      satirlar: [{ stokNo: stoklar[0].stokNo, stokAdi: stoklar[0].ad, miktar: 3 }],
+      kullanici: 'test'
+    }));
+    const zMalCari = await sql.sorgu(
+      `SELECT BORC FROM [GALYA_TEST].dbo.F0103D0015TBLCARIHAREKETLERI
+       WHERE LN = @i AND IZAHAT = 33`,
+      { i: zMaliyetli.baslikInd }
+    );
+    kontrol('Maliyetli zayide cari borcu tutarı taşıyor', Number(zMalCari[0].BORC) > 0,
+      'borç=' + (zMalCari[0] && zMalCari[0].BORC));
+    await yazma.zayiFisiGeriAl(Object.assign({}, SECIM, {
+      baslikInd: zMaliyetli.baslikInd, kullanici: 'test'
+    }));
+    kontrol('Maliyetli zayi geri alındı',
+      (await say('F0103D0015TBLSTKCIKBASLIK', 'IND = @i', { i: zMaliyetli.baslikInd })) === 0);
+
+    // Boş satır / eksik cari reddedilmeli.
+    let zHata = null;
+    try {
+      await yazma.zayiFisiYaz(Object.assign({}, SECIM, {
+        cariNo: zCari.cariNo, satirlar: [], kullanici: 'test'
+      }));
+    } catch (e) { zHata = e; }
+    kontrol('Satırsız zayi reddediliyor', zHata !== null);
+
+    zHata = null;
+    try {
+      await yazma.zayiFisiYaz(Object.assign({}, SECIM, {
+        cariNo: 0,
+        satirlar: [{ stokNo: stoklar[0].stokNo, miktar: 1 }],
+        kullanici: 'test'
+      }));
+    } catch (e) { zHata = e; }
+    kontrol('Carisiz zayi reddediliyor', zHata !== null);
+  }
+
+  // --- Stok kartını pasife alma -------------------------------------------
+  console.log('\n== Pasife alma ==');
+  const pOnceki = await sql.sorgu(
+    `SELECT ISNULL(KOD8, '') AS k FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
+    { s: stoklar[1].stokNo }
+  );
+  await yazma.stokPasifYap(Object.assign({}, SECIM, {
+    stokNolar: [stoklar[1].stokNo], pasif: true, kullanici: 'test'
+  }));
+  const pSonra = await sql.sorgu(
+    `SELECT ISNULL(KOD8, '') AS k FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
+    { s: stoklar[1].stokNo }
+  );
+  kontrol('Kart KOD8 alanına PASİF yazıldı', pSonra[0].k === 'PASİF');
+
+  await yazma.stokPasifYap(Object.assign({}, SECIM, {
+    stokNolar: [stoklar[1].stokNo], pasif: false, kullanici: 'test'
+  }));
+  const pGeri = await sql.sorgu(
+    `SELECT ISNULL(KOD8, '') AS k FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
+    { s: stoklar[1].stokNo }
+  );
+  kontrol('Pasiften çıkarınca işaret silindi', pGeri[0].k === '');
+
+  // Bizim yazmadığımız bir KOD8 değeri pasiften çıkarmada korunmalı.
+  await sql.calistir(
+    `UPDATE [GALYA_TEST].dbo.F0103TBLSTOKLAR SET KOD8 = 'BASKA' WHERE IND = @s`,
+    { s: stoklar[1].stokNo }
+  );
+  await yazma.stokPasifYap(Object.assign({}, SECIM, {
+    stokNolar: [stoklar[1].stokNo], pasif: false, kullanici: 'test'
+  }));
+  const pKorunan = await sql.sorgu(
+    `SELECT ISNULL(KOD8, '') AS k FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
+    { s: stoklar[1].stokNo }
+  );
+  kontrol('Başka KOD8 değerine dokunulmuyor', pKorunan[0].k === 'BASKA');
+  await sql.calistir(
+    `UPDATE [GALYA_TEST].dbo.F0103TBLSTOKLAR SET KOD8 = @k WHERE IND = @s`,
+    { s: stoklar[1].stokNo, k: pOnceki[0].k }
+  );
+
+  // Kilit kapalıyken pasife alma da çalışmamalı.
+  ayar.ayarYaz({ vegayaYazmaAktif: false });
+  let pKilit = null;
+  try {
+    await yazma.stokPasifYap(Object.assign({}, SECIM, {
+      stokNolar: [stoklar[1].stokNo], pasif: true, kullanici: 'test'
+    }));
+  } catch (e) { pKilit = e; }
+  kontrol('Kilit kapalıyken pasife alma engelleniyor',
+    pKilit && pKilit.kod === 'YAZMA_KAPALI');
+  let zKilit = null;
+  try {
+    await yazma.zayiFisiYaz(Object.assign({}, SECIM, {
+      cariNo: 1, satirlar: [{ stokNo: stoklar[0].stokNo, miktar: 1 }], kullanici: 'test'
+    }));
+  } catch (e) { zKilit = e; }
+  kontrol('Kilit kapalıyken zayi engelleniyor', zKilit && zKilit.kod === 'YAZMA_KAPALI');
+  ayar.ayarYaz({ vegayaYazmaAktif: true });
+
+
   console.log(`\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı\n`);
   await sql.havuzKapat();
   process.exit(basarisiz ? 1 : 0);

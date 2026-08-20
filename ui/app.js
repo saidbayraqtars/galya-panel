@@ -10,7 +10,14 @@ const durum = {
   firmalar: [],
   depolar: [],
   ekran: 'ana',
-  yazmaAcik: false
+  yazmaAcik: false,
+  // Yetki. Asıl engel ana süreçte; buradaki değerler yalnızca hangi düğmeyi
+  // çizeceğimizi belirler. Hiç kullanıcı tanımlı değilse herkes yöneticidir.
+  rol: 'yonetici',
+  pinVar: false,
+  kullaniciAdi: null,
+  yetkiler: {},
+  yetkiTanimlari: []
 };
 
 const icerik = document.getElementById('icerik');
@@ -243,6 +250,106 @@ function disaAktarDugmeleri(raporUret) {
   return [excel, pdf, yazdir];
 }
 
+// ---------- Yetki ----------
+//
+// Giriş yalnızca PIN'le: kullanıcı listeden isim seçmez, PIN'ini yazar ve
+// program PIN'in kime ait olduğunu bulur. Depoda tabletle çalışan için en
+// hızlı yol bu.
+
+function yonetici() {
+  return durum.rol === 'yonetici';
+}
+
+// Ekranı çizmeden önce "bu düğmeyi göstereyim mi" sorusuna cevap.
+// Asıl engel ana süreçte; burası sadece görünürlük.
+function yetkiVar(anahtar) {
+  if (yonetici()) return true;
+  return !!(durum.yetkiler && durum.yetkiler[anahtar]);
+}
+
+async function oturumDurumuOku() {
+  try {
+    const o = await window.galya.cagir('oturum:durum');
+    if (o && o.tamam) {
+      durum.rol = o.veri.rol;
+      durum.pinVar = !!o.veri.pinVar;
+      durum.kullaniciAdi = o.veri.kullaniciAdi || null;
+      durum.yetkiler = o.veri.yetkiler || {};
+      durum.yetkiTanimlari = o.veri.yetkiTanimlari || [];
+    }
+  } catch (e) { /* okunamazsa yönetici varsayılır; kanal süzgeci yine çalışır */ }
+  girisDugmesiniYaz();
+}
+
+function girisDugmesiniYaz() {
+  const d = document.getElementById('girisDugme');
+  // Kullanıcı tanımlanmamışsa kilit yoktur; düğmeyi göstermeye gerek yok.
+  d.classList.toggle('hidden', !durum.pinVar);
+  d.textContent = durum.kullaniciAdi ? `Çıkış (${durum.kullaniciAdi})` : 'Giriş';
+  d.title = durum.kullaniciAdi
+    ? `${durum.kullaniciAdi} olarak giriş yapıldı. Tıklayınca oturum kapanır.`
+    : 'PIN ile giriş yapın';
+}
+
+async function oturumdanCik() {
+  try {
+    await window.galya.cagir('oturum:cikis');
+    await oturumDurumuOku();
+    bildir('Oturum kapatıldı.', 'iyi');
+    await ekranAc('ana');
+  } catch (e) { hataGoster(e); }
+}
+
+function girisPenceresi() {
+  const kutu = el('input', { type: 'password', placeholder: 'PIN' });
+  const uyari = el('div', { sinif: 'aciklama-kutu kritik hidden' });
+
+  async function dene() {
+    const cevap = await window.galya.cagir('oturum:giris', { pin: kutu.value });
+    if (!cevap.tamam) {
+      uyari.textContent = cevap.mesaj || 'PIN yanlış.';
+      uyari.classList.remove('hidden');
+      kutu.value = '';
+      kutu.focus();
+      return;
+    }
+    durum.rol = cevap.veri.rol;
+    durum.pinVar = !!cevap.veri.pinVar;
+    durum.kullaniciAdi = cevap.veri.kullaniciAdi || null;
+    durum.yetkiler = cevap.veri.yetkiler || {};
+    durum.yetkiTanimlari = cevap.veri.yetkiTanimlari || [];
+    girisDugmesiniYaz();
+    katmanKapat();
+    bildir(
+      (durum.kullaniciAdi ? durum.kullaniciAdi : 'Kullanıcı') + ' olarak giriş yapıldı.',
+      'iyi'
+    );
+    await ekranAc('ana');
+  }
+
+  kutu.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') dene();
+  });
+
+  const kap = el('div', null, [
+    el('div', { sinif: 'aciklama-kutu' }, [
+      'PIN\'inizi yazın. Kullanıcı adı seçmenize gerek yok — program PIN\'in ' +
+      'kime ait olduğunu kendisi bulur. Yaptığınız her iş adınıza kaydedilir.'
+    ]),
+    uyari,
+    el('div', { sinif: 'form-satir' }, [
+      el('div', null, [el('label', { metin: 'PIN' }), kutu])
+    ]),
+    el('div', { sinif: 'form-satir', style: 'margin-top:14px' }, [
+      el('button', { sinif: 'dugme-ana', metin: 'Giriş yap', tikla: dene }),
+      el('button', { sinif: 'dugme-sade', metin: 'Vazgeç', tikla: katmanKapat })
+    ])
+  ]);
+
+  katmanAc('Giriş', kap);
+  setTimeout(() => kutu.focus(), 50);
+}
+
 // ---------- Ekran yönlendirme ----------
 
 const ekranlar = {};
@@ -283,16 +390,21 @@ ekranlar.ana = async function () {
   icerik.appendChild(kutular);
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Diğer işlemler' }));
+  // Yetkisi olmayan kullanıcıya düğme hiç çizilmiyor. Asıl engel ana
+  // süreçte; buradaki gizleme sadece boşuna tıklamayı önlüyor.
   const islemler = el('div', { sinif: 'islem-dugmeleri' }, [
-    islemDugmesi('Sayım', "Say, farkı gör, Vega'ya işle", 'sayim'),
+    yetkiVar('sayim') && islemDugmesi('Sayım', 'Ara ve tam sayım, onaya gönder', 'sayim'),
+    yonetici() && islemDugmesi('Sayım onayı', "Bekleyen sayımları Vega'ya işle", 'sayimOnay'),
+    yetkiVar('zayi') && islemDugmesi('Zayi / personel çıkışı', 'Bozulan ya da elde kalan malı düş', 'zayi'),
+    yetkiVar('uretim') && islemDugmesi('Üretim', 'Zayiatlı, manuel ve otomatik üretim', 'uretim'),
     islemDugmesi('Reçete ağacı', 'Mamulün altındaki her şeyi gör', 'recete'),
     islemDugmesi('THIRD listesi', 'Üretim gerektiren stokları işaretle', 'third'),
     islemDugmesi('Ürün değişim tutanağı', 'Bir stoktan düş, diğerine ekle', 'tutanak'),
     islemDugmesi('Gider / hizmet stokları', 'Elektrik, su, nakliye kartlarını sıfırla', 'gider'),
-    islemDugmesi('Cari bakiye', 'Kime ne kadar borç var', 'cari'),
+    yetkiVar('stok') && islemDugmesi('Cari bakiye', 'Kime ne kadar borç var', 'cari'),
     islemDugmesi('Alış faturası', 'Gelen malı faturasıyla stoğa gir', 'alisFatura'),
     islemDugmesi('Maliyetlendirme', 'Son alış fiyatından maliyet hesapla', 'maliyetlendirme'),
-    islemDugmesi('Üretim', 'Stoğu eksiye düşenleri sıfıra çek', 'uretim')
+    yonetici() && islemDugmesi('Kullanıcılar', 'Kim neyi yapabilir, kim neyi sayabilir', 'kullanicilar')
   ]);
   icerik.appendChild(islemler);
 
@@ -379,11 +491,19 @@ ekranlar.stok = async function (parametre) {
   const elleAralik = elleAlt !== undefined || elleUst !== undefined;
 
   // Firmanın kendi sınıflandırma kodları süzgeç olarak kullanılıyor.
-  // Alan karşılıkları KOD_ETIKETLERI'nde.
-  const kodSecimi = {};
+  // Alan karşılıkları KOD_ETIKETLERI'nde. Bir alanda birden çok değer
+  // seçilebiliyor (virgülle saklanıyor) ve "…Haric" bayrağı seçimi tersine
+  // çeviriyor: işaretliyken seçilenler DIŞINDAKİLER gelir.
+  const kodSecimi = {};   // { kod2: ['BAR', 'MUTFAK'] }
+  const kodIstegi = {};   // { kod2: 'BAR,MUTFAK', kod2Haric: 1 }
   for (const n of KOD_NUMARALARI) {
-    const d = parametre['kod' + n];
-    if (d) kodSecimi['kod' + n] = d;
+    const ham = parametre['kod' + n];
+    if (!ham) continue;
+    const degerler = String(ham).split(',').map((d) => d.trim()).filter(Boolean);
+    if (!degerler.length) continue;
+    kodSecimi['kod' + n] = degerler;
+    kodIstegi['kod' + n] = degerler.join(',');
+    if (parametre['kod' + n + 'Haric']) kodIstegi['kod' + n + 'Haric'] = 1;
   }
 
   const istek = Object.assign(
@@ -396,7 +516,8 @@ ekranlar.stok = async function (parametre) {
           tumKartlar: secili.tumKartlar ? 1 : 0,
           giderDahil: secili.giderDahil ? 1 : 0
         },
-    kodSecimi
+    { pasifDahil: parametre.pasifDahil ? 1 : 0 },
+    kodIstegi
   );
 
   const [tumSatirlar, kodListeleri] = await Promise.all([
@@ -519,43 +640,101 @@ ekranlar.stok = async function (parametre) {
   // geliyor. Kartlara tanım tablosundan geçmeden yazılmış kodlar da var —
   // bunların büyük kısmı Şefim'den sızmış adisyon notu ("ULAŞ BEY", "S-15")
   // olduğu için ayrı bir grupta, en altta duruyor.
+  // Her alan ÇOKLU seçim ve "hariç tut" kipini destekliyor. Müşterinin
+  // istediği "bar-mutfak dışındakileri getirme" işi bu ikisiyle çıkıyor:
+  // Sınıf alanında BAR ve MUTFAK'ı işaretleyip "hariç" kutusunu BOŞ
+  // bırakınca yalnızca onlar gelir. Kutu işaretlenirse tam tersi olur.
+  //
+  // Kutucuk listesi <details> içinde duruyor; on alanın hepsi birden açık
+  // olsaydı ekran süzgeçten görünmezdi.
   const kodKutulari = [];
   for (const bilgi of KOD_ETIKETLERI) {
     const secenekler = (kodListeleri && kodListeleri[bilgi.alan]) || [];
     if (!secenekler.length) continue;
-    const tanimli = secenekler.filter((o) => o.tanimli);
-    const serbest = secenekler.filter((o) => !o.tanimli);
-    const secenekYap = (o) =>
-      el('option', { value: o.deger, metin: `${o.deger} (${sayiYaz(o.adet)})` });
-    const cocuklar = [el('option', { value: '', metin: bilgi.ad + ' — hepsi' })];
-    if (tanimli.length && serbest.length) {
-      cocuklar.push(el('optgroup', { label: 'Tanımlı kodlar' }, tanimli.map(secenekYap)));
-      cocuklar.push(el('optgroup', { label: 'Kartlarda geçen diğer' }, serbest.map(secenekYap)));
-    } else {
-      cocuklar.push.apply(cocuklar, secenekler.map(secenekYap));
-    }
-    const kutu = el('select', { sinif: 'form' }, cocuklar);
-    kutu.value = parametre[bilgi.alan] || '';
-    kutu.addEventListener('change', () => {
+
+    const secili = new Set(kodSecimi[bilgi.alan] || []);
+    const haric = !!parametre[bilgi.alan + 'Haric'];
+
+    function uygula(yeniSecili, yeniHaric) {
       const yeniParametre = Object.assign({}, parametre);
-      yeniParametre[bilgi.alan] = kutu.value || undefined;
+      const liste = Array.from(yeniSecili);
+      yeniParametre[bilgi.alan] = liste.length ? liste.join(',') : undefined;
+      yeniParametre[bilgi.alan + 'Haric'] = liste.length && yeniHaric ? 1 : undefined;
       ekranAc('stok', yeniParametre);
-    });
-    kodKutulari.push(el('div', null, [el('label', { metin: bilgi.ad }), kutu]));
+    }
+
+    const kutucukYap = (o) => {
+      const kutu = el('input', { type: 'checkbox' });
+      kutu.checked = secili.has(o.deger);
+      kutu.addEventListener('change', () => {
+        const yeni = new Set(secili);
+        if (kutu.checked) yeni.add(o.deger);
+        else yeni.delete(o.deger);
+        uygula(yeni, haric);
+      });
+      return el('label', { sinif: 'kod-secim' }, [kutu, ` ${o.deger} (${sayiYaz(o.adet)})`]);
+    };
+
+    const haricKutu = el('input', { type: 'checkbox' });
+    haricKutu.checked = haric;
+    haricKutu.disabled = !secili.size;
+    haricKutu.addEventListener('change', () => uygula(secili, haricKutu.checked));
+
+    const govde = el('div', { sinif: 'kod-govde' }, [
+      el('div', { sinif: 'kod-satir' }, [
+        el('label', { sinif: 'kod-secim' }, [
+          haricKutu,
+          ' Seçilenleri HARİÇ tut (işaretsizken: yalnızca seçilenler gelir)'
+        ])
+      ]),
+      el('div', { sinif: 'kod-satir' },
+        secenekler.filter((o) => o.tanimli).map(kutucukYap))
+    ]);
+    const serbest = secenekler.filter((o) => !o.tanimli);
+    if (serbest.length) {
+      govde.appendChild(el('div', { sinif: 'alt-not', metin: 'Kartlarda geçen diğer' }));
+      govde.appendChild(el('div', { sinif: 'kod-satir' }, serbest.map(kutucukYap)));
+    }
+
+    const ozet = secili.size
+      ? `${bilgi.ad}: ${haric ? 'hariç ' : ''}${Array.from(secili).join(', ')}`
+      : `${bilgi.ad} — hepsi`;
+    const kap = el('details', { sinif: 'kod-suzgec' }, [
+      el('summary', { metin: ozet }),
+      govde
+    ]);
+    if (secili.size) kap.open = true;
+    kodKutulari.push(kap);
   }
-  if (kodKutulari.length) {
-    const secili = KOD_ETIKETLERI.filter((b) => parametre[b.alan]);
-    kodKutulari.push(el('button', {
-      sinif: 'dugme-sade',
-      metin: 'Sınıf süzgeçlerini temizle',
-      disabled: !secili.length,
-      tikla: () => {
-        const temiz = Object.assign({}, parametre);
-        for (const b of KOD_ETIKETLERI) delete temiz[b.alan];
-        ekranAc('stok', temiz);
-      }
+
+  // Pasif kartlar (KOD8 = PASİF) varsayılan olarak listede yok.
+  const pasifKutu = el('input', { type: 'checkbox' });
+  pasifKutu.checked = !!parametre.pasifDahil;
+  pasifKutu.addEventListener('change', () => {
+    ekranAc('stok', Object.assign({}, parametre, {
+      pasifDahil: pasifKutu.checked ? 1 : undefined
     }));
+  });
+
+  if (kodKutulari.length) {
+    const seciliAlan = KOD_ETIKETLERI.filter((b) => parametre[b.alan]);
     icerik.appendChild(el('div', { sinif: 'form-satir' }, kodKutulari));
+    icerik.appendChild(el('div', { sinif: 'form-satir' }, [
+      el('label', { sinif: 'kod-secim' }, [pasifKutu, ' Pasife alınmış kartları da göster']),
+      el('button', {
+        sinif: 'dugme-sade',
+        metin: 'Sınıf süzgeçlerini temizle',
+        disabled: !seciliAlan.length,
+        tikla: () => {
+          const temiz = Object.assign({}, parametre);
+          for (const b of KOD_ETIKETLERI) {
+            delete temiz[b.alan];
+            delete temiz[b.alan + 'Haric'];
+          }
+          ekranAc('stok', temiz);
+        }
+      })
+    ]));
   }
 
   icerik.appendChild(el('div', { sinif: 'ozet-serit' }, [
@@ -579,6 +758,7 @@ ekranlar.stok = async function (parametre) {
         el('td', null, [el('span', { sinif: 'etiket ' + e.sinif, metin: e.metin })]),
         el('td', null, [
           el('div', { sinif: 'ad-satir', metin: s.ad }),
+          s.pasif ? el('span', { sinif: 'etiket gri', metin: 'Pasif' }) : null,
           s.sayimTarihi
             ? el('div', { sinif: 'alt-not', metin: 'Sayım: ' + tarihYaz(s.sayimTarihi) + (s.sayan ? ' · ' + s.sayan : '') })
             : null
@@ -598,11 +778,26 @@ ekranlar.stok = async function (parametre) {
           'sayi ' + (s.fark < 0 ? 'eksi' : s.fark > 0 ? 'arti' : '')
         ),
         hucre(paraYaz(s.deger), 'sayi'),
-        el('td', null, [el('button', {
-          sinif: 'dugme-kucuk',
-          metin: 'Hareketler',
-          tikla: () => stokHareketiGoster(s)
-        })])
+        el('td', null, [
+          el('button', {
+            sinif: 'dugme-kucuk',
+            metin: 'Hareketler',
+            tikla: () => stokHareketiGoster(s)
+          }),
+          // Pasife alma yalnızca yöneticide; kart Vega'da da pasif görünür.
+          yonetici()
+            ? el('button', {
+                sinif: 'dugme-kucuk',
+                style: 'margin-left:6px',
+                metin: s.pasif ? 'Pasiften çıkar' : 'Pasife al',
+                disabled: !durum.yazmaAcik,
+                title: durum.yazmaAcik
+                  ? ''
+                  : "Vega'ya yazma kapalı olduğu için değiştirilemez",
+                tikla: () => stokPasifDegistir(s, parametre)
+              })
+            : null
+        ])
       ]);
     },
     // Komple stok listesi istendiğinde ekran sınırı yükseliyor; kullanıcı
@@ -633,6 +828,32 @@ async function sayimListesiOlustur(satirlar, kaynakAdi) {
       kaynak: kaynakAdi
     });
     bildir(`${sayiYaz(sonuc.eklenen)} ürün sayım listesine eklendi.`, 'iyi');
+  } catch (e) { hataGoster(e); }
+}
+
+// Stok kartını pasife alır / pasiften çıkarır.
+//
+// İşaret Vega'nın kendi alanına (KOD8 = PASİF) yazılıyor; firma zaten 373
+// kartı böyle işaretlemiş. Pasif kartlar stok listelerinde ve sayım
+// föylerinde görünmez, ama hareketleri ve geçmişi olduğu gibi durur.
+async function stokPasifDegistir(stok, parametre) {
+  const pasifYap = !stok.pasif;
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: pasifYap ? 'Ürünü pasife al' : 'Ürünü pasiften çıkar',
+    mesaj: `"${stok.ad}" ${pasifYap ? 'pasife alınacak' : 'yeniden aktif olacak'}.`,
+    detay: pasifYap
+      ? "Stok kartının PASİF alanı işaretlenir. Ürün stok listelerinde ve sayım " +
+        'föylerinde görünmez olur; hareketleri ve geçmişi silinmez. Vega da ' +
+        'kartı pasif görür. İstediğiniz zaman geri alabilirsiniz.'
+      : 'Ürün yeniden listelerde ve sayım föylerinde görünür.',
+    evet: pasifYap ? 'Pasife al' : 'Aktif et',
+    hayir: 'Vazgeç'
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    await cagir('stok:pasifYap', { stokNolar: [stok.stokNo], pasif: pasifYap });
+    bildir(pasifYap ? 'Ürün pasife alındı.' : 'Ürün aktif edildi.', 'iyi');
+    ekranAc('stok', parametre);
   } catch (e) { hataGoster(e); }
 }
 
@@ -883,52 +1104,132 @@ async function eslestirmeKaydet(satir, stok, yoksay) {
 // aktarılmadığı sürece o ekran gerçek durumu göstermiyordu; aktarım
 // durumu "Satış aktarımı" ekranında zaten duruyor.
 
-// ---------- ARA SAYIM ----------
+// ---------- SAYIM ----------
+//
+// İki tür: ara sayım (sayım listesindeki ürünler) ve tam sayım (kapsamdaki
+// bütün kartlar). İkisinde de miktar yazılmayan satır sayıma girmez.
+//
+// Sayım kaydedilince Vega'ya YAZILMAZ; yönetici onayına düşer. Onay ekranı
+// ayrı (ekranlar.sayimOnay).
 
-ekranlar.sayim = async function () {
+ekranlar.sayim = async function (parametre) {
+  const yetkili = yonetici();
+  const tur = parametre && parametre.tur === 'tam' ? 'tam' : 'ara';
+  const tamYetkisi = yetkiVar('tamSayim');
+
   const [liste, gecmis] = await Promise.all([
-    cagir('sayim:ekran'),
-    cagir('sayim:gecmis')
+    cagir('sayim:ekran', { tur }),
+    yetkili ? cagir('sayim:gecmis') : Promise.resolve([])
   ]);
   bosalt(icerik);
-  const durum = await cagir('yazma:durum').catch(() => ({ yazmaAcik: false }));
+  // Not: burada eskiden "const durum" tanımlıydı ve genel durum nesnesini
+  // gölgeliyordu; yazma açıkken bile ekran kapalı gibi davranıyordu.
+  const yazmaDurum = await cagir('yazma:durum').catch(() => ({ acik: durum.yazmaAcik }));
+  durum.yazmaAcik = !!yazmaDurum.acik;
+
   icerik.appendChild(ekranBasligi('Sayım', [
-    el('button', { sinif: 'dugme-sade', metin: 'Sayılacak ürünleri düzenle', tikla: sayimListesiDuzenle })
-  ]));
+    tur === 'ara'
+      ? el('button', {
+          sinif: 'dugme-sade',
+          metin: 'Sayılacak ürünleri düzenle',
+          tikla: sayimListesiDuzenle
+        })
+      : null
+  ].filter(Boolean)));
+
+  // Tür şeridi. Tam sayım ayrı bir yetki; yoksa düğme çizilmiyor.
+  const turSerit = el('div', { sinif: 'suzgec-serit' }, [
+    el('button', {
+      sinif: 'suzgec' + (tur === 'ara' ? ' etkin' : ''),
+      title: 'Yalnızca sayım listesine konmuş ürünler',
+      tikla: () => ekranAc('sayim', { tur: 'ara' })
+    }, [el('span', { sinif: 'suzgec-ad', metin: 'Ara sayım' })]),
+    tamYetkisi
+      ? el('button', {
+          sinif: 'suzgec' + (tur === 'tam' ? ' etkin' : ''),
+          title: 'Kapsamınızdaki bütün stok kartları',
+          tikla: () => ekranAc('sayim', { tur: 'tam' })
+        }, [el('span', { sinif: 'suzgec-ad', metin: 'Tam sayım' })])
+      : null
+  ].filter(Boolean));
+  icerik.appendChild(turSerit);
+
+  // Kapsam bilgisi: kullanıcıya hangi sınıfı sayabildiğini söylüyoruz,
+  // yoksa listede beklediği ürünü bulamayınca program bozuk sanılır.
+  const siniflar = (durum.yetkiler && durum.yetkiler.siniflar) || [];
+  if (!yetkili && siniflar.length) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      `Sayım kapsamınız: ${siniflar.join(', ')}. Listede yalnızca bu sınıftaki ` +
+      'ürünler var; başka sınıftan ürün sayamazsınız.'
+    ]));
+  }
 
   if (!liste.length) {
     icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
-      'Sayım listesi boş. Önce "Sayılacak ürünleri düzenle" düğmesinden ürün ekleyin ' +
-      '(örneğin Kızartmalık Yağ ve Çay).'
+      tur === 'tam'
+        ? 'Kapsamınızda sayılacak stok kartı bulunamadı.'
+        : 'Sayım listesi boş. Önce "Sayılacak ürünleri düzenle" düğmesinden ürün ekleyin ' +
+          '(örneğin Kızartmalık Yağ ve Çay).'
     ]));
   } else {
     const girdiler = {};
+    const satirDugumleri = [];
     const gövde = el('tbody', null, liste.map((s) => {
       const kutu = el('input', { type: 'number', sinif: 'miktar', step: '0.01', min: '0' });
       girdiler[s.stokNo] = kutu;
-      return el('tr', null, [
-        hucre(s.stokAdi),
+      const satir = el('tr', null, [
+        el('td', null, [
+          el('div', { sinif: 'ad-satir', metin: s.stokAdi }),
+          s.stokKodu ? el('div', { sinif: 'alt-not', metin: s.stokKodu }) : null
+        ]),
+        hucre(s.sinif || '—'),
         hucre(s.birim || '—'),
-        hucre(sayiYaz(s.teorik, 2), 'sayi'),
+        // Teorik miktar yalnızca yönetici girişinden sonra geliyor.
+        yetkili ? hucre(sayiYaz(s.teorik, 2), 'sayi') : null,
         el('td', null, [kutu])
       ]);
+      satirDugumleri.push({ satir, ad: (s.stokAdi || '').toLocaleLowerCase('tr'),
+                            kod: (s.stokKodu || '').toLocaleLowerCase('tr') });
+      return satir;
     }));
 
+    // Körleme sayım: yönetici girişi yapılmadıkça Vega'daki miktar ekranda
+    // yok. Görünseydi sayan kişi çoğu zaman aynı sayıyı yazar, sayım
+    // anlamını kaybederdi.
     icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-      durum.yazmaAcik
-        ? 'Her ürünün sayılan miktarını yazın, sonra tek düğmeye basın. Program ' +
-          "farkı kendisi hesaplayıp Vega'ya sayım fişini keser — Vega'nın sayım " +
-          'ekranına girmenize gerek yok. Miktar yazılmayan ürünler sayıma girmez.'
-        : 'Her ürünün sayılan miktarını yazın, sonra tek düğmeye basın. ' +
-          "Vega'ya yazma şu anda kapalı olduğu için sayım yalnızca panele " +
-          "kaydedilir; listeden sonradan tek tuşla Vega'ya yazabilirsiniz."
+      (tur === 'tam'
+        ? `Tam sayım: kapsamdaki ${sayiYaz(liste.length)} kartın hepsi listede. `
+        : 'Ara sayım: yalnızca sayım listesindeki ürünler. ') +
+      'Her ürünü sayın ve bulduğunuz miktarı yazın, sonra tek düğmeye basın. ' +
+      (yetkili
+        ? "Vega'daki miktar yanında yazıyor. "
+        : "Vega'daki miktar gösterilmiyor; ne saydıysanız onu yazın. ") +
+      'Miktar yazılmayan ürünler sayıma HİÇ girmez, stokları değişmez. ' +
+      "Kaydettiğinizde sayım Vega'ya yazılmaz; yönetici onayına düşer."
     ]));
+
+    // Tam sayımda liste uzun; ürün aramadan bulmak zor.
+    if (liste.length > 30) {
+      const araKutu = el('input', { type: 'text', placeholder: 'Listede ara: ürün adı veya kodu…' });
+      araKutu.addEventListener('input', () => {
+        const aranan = araKutu.value.trim().toLocaleLowerCase('tr');
+        for (const d of satirDugumleri) {
+          const uyar = !aranan || d.ad.includes(aranan) || d.kod.includes(aranan);
+          d.satir.classList.toggle('hidden', !uyar);
+        }
+      });
+      icerik.appendChild(el('div', { sinif: 'form-satir' }, [
+        el('div', { style: 'flex:1' }, [el('label', { metin: 'Ara' }), araKutu])
+      ]));
+    }
+
     icerik.appendChild(el('div', { sinif: 'tablo-sarmal' }, [
       el('table', null, [
         el('thead', null, [el('tr', null, [
           el('th', { metin: 'Ürün' }),
+          el('th', { metin: 'Sınıf' }),
           el('th', { metin: 'Birim' }),
-          el('th', { metin: 'Vega\'da görünen' }),
+          yetkili ? el('th', { metin: 'Vega\'da görünen' }) : null,
           el('th', { metin: 'Sayılan miktar' })
         ])]),
         gövde
@@ -941,50 +1242,51 @@ ekranlar.sayim = async function () {
       for (const s of liste) {
         const deger = girdiler[s.stokNo].value;
         if (deger === '') continue;
+        // Teorik miktar ve maliyet arayüzde yok; kaydetme anında ana süreç
+        // Vega'dan yeniden okuyor.
         satirlar.push({
           stokNo: s.stokNo,
           stokAdi: s.stokAdi,
           birim: s.birim,
-          teorik: s.teorik,
-          sayilan: Number(deger),
-          birimMaliyet: s.birimMaliyet
+          sayilan: Number(deger)
         });
       }
       if (!satirlar.length) {
         bildir('En az bir ürüne miktar yazın.', 'kotu');
         return;
       }
-      // Fark önizlemesi: kullanıcı neyi onayladığını görsün.
-      const farkli = satirlar.filter((s) => Math.abs(s.sayilan - s.teorik) >= 0.0001);
-      const artan = farkli.filter((s) => s.sayilan > s.teorik).length;
-      const azalan = farkli.length - artan;
+
+      // Fark önizlemesi ancak teorik miktar elimizdeyse (yönetici) yapılabilir.
+      let mesaj = `${satirlar.length} ürünün sayımı kaydedilecek.`;
+      if (yetkili) {
+        const teorikler = new Map(liste.map((s) => [Number(s.stokNo), Number(s.teorik || 0)]));
+        const farkli = satirlar.filter(
+          (s) => Math.abs(s.sayilan - teorikler.get(Number(s.stokNo))) >= 0.0001
+        );
+        mesaj = `${satirlar.length} ürün sayıldı, ${farkli.length} üründe fark var.`;
+      }
 
       const onay = await window.galya.cagir('sistem:onay', {
-        baslik: 'Sayımı kaydet',
-        mesaj: `${satirlar.length} ürün sayıldı, ${farkli.length} üründe fark var.`,
-        detay: durum.yazmaAcik
-          ? `Vega'ya ${artan} ürün için sayım giriş fişi, ${azalan} ürün için sayım ` +
-            'çıkış fişi kesilecek ve stok sayılan miktara oturacak. Yanlışlık olursa ' +
-            'geçmiş listesinden geri alınabilir.'
-          : "Kayıt yalnızca panele yazılır, Vega değişmez.",
-        evet: durum.yazmaAcik ? "Kaydet ve Vega'ya yaz" : 'Kaydet',
+        baslik: (tur === 'tam' ? 'Tam' : 'Ara') + ' sayımı kaydet',
+        mesaj,
+        detay:
+          'Sayım kaydedilip YÖNETİCİ ONAYINA gönderilecek. Vega\'ya ancak ' +
+          'yönetici onayladıktan sonra işlenir; o zamana kadar stok değişmez. ' +
+          'Miktar yazılmayan ürünler sayıma girmez.',
+        evet: 'Kaydet ve onaya gönder',
         hayir: 'Vazgeç'
       });
       if (!onay.veri || !onay.veri.onay) return;
       try {
         kaydetDugme.disabled = true;
-        const sonuc = await cagir('sayim:kaydet', { satirlar });
-        if (sonuc.yazmaHatasi) {
-          bildir("Sayım kaydedildi ama Vega'ya yazılamadı: " + sonuc.yazmaHatasi, 'kotu');
-        } else if (sonuc.farkYok) {
-          bildir('Sayım kaydedildi. Fark çıkmadığı için fiş kesilmedi.', 'iyi');
-        } else if (sonuc.vegayaYazildi) {
-          bildir("Sayım kaydedildi ve Vega'ya yazıldı. Belge: " + sonuc.belgeNo, 'iyi');
-        } else {
-          bildir('Sayım kaydedildi.', 'iyi');
-        }
-        sayimDetayGoster(sonuc.sayimId);
-        ekranAc('sayim');
+        const sonuc = await cagir('sayim:kaydet', { satirlar, tur });
+        bildir(
+          `Sayım kaydedildi (${satirlar.length} ürün) ve yönetici onayına gönderildi.`,
+          'iyi'
+        );
+        // Fark dökümü yalnızca yöneticiye açılır.
+        if (yetkili) sayimDetayGoster(sonuc.sayimId);
+        ekranAc('sayim', { tur });
       } catch (e) {
         hataGoster(e);
         kaydetDugme.disabled = false;
@@ -993,16 +1295,35 @@ ekranlar.sayim = async function () {
     icerik.appendChild(el('div', { sinif: 'form-satir', style: 'margin-top:18px' }, [kaydetDugme]));
   }
 
+  // Geçmiş sayımlar fark tutarını ve teorik miktarı içerir; yönetici girişi
+  // yapılmadan gösterilmez, yoksa sayan kişi kaydedip farkı okuyarak Vega'daki
+  // miktarı geri hesaplayabilir.
+  if (!yetkili) {
+    icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Geçmiş sayımlar' }));
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      'Geçmiş sayımlar ve farklar için yöneticiye başvurun.'
+    ]));
+    return;
+  }
+
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Geçmiş sayımlar' }));
   icerik.appendChild(tabloYap(
-    ['Tarih', 'Sayan', 'Ürün', 'Farklı', 'Fark tutarı', 'Vega', ''],
+    ['Tarih', 'Tür', 'Sayan', 'Ürün', 'Farklı', 'Fark tutarı', 'Durum', 'Vega', ''],
     gecmis,
     (g) => {
       const dugmeler = [
         el('button', { sinif: 'dugme-kucuk', metin: 'Farkları gör', tikla: () => sayimDetayGoster(g.id) })
       ];
-      // Vega'ya yazılmamışsa yazma, yazılmışsa geri alma düğmesi çıkar.
-      if (durum.yazmaAcik && !g.vegayaYazildi) {
+      if (g.durum === 'bekliyor') {
+        dugmeler.push(el('button', {
+          sinif: 'dugme-kucuk tehlike',
+          metin: 'Onayla',
+          style: 'margin-left:6px',
+          tikla: () => sayimOnayla(g)
+        }));
+      }
+      // Onaylanmış ama yazılamamışsa tekrar yazma, yazılmışsa geri alma.
+      if (durum.yazmaAcik && g.durum === 'onaylandi' && !g.vegayaYazildi) {
         dugmeler.push(el('button', {
           sinif: 'dugme-kucuk',
           metin: "Vega'ya yaz",
@@ -1024,18 +1345,166 @@ ekranlar.sayim = async function () {
         style: 'margin-left:6px',
         tikla: () => sayimGeriAl(g.id)
       }));
+      const d = SAYIM_DURUMU[g.durum] || SAYIM_DURUMU.bekliyor;
       return el('tr', null, [
         hucre(saatliTarih(g.tarih)),
+        el('td', null, [
+          el('div', { metin: g.tur === 'tam' ? 'Tam' : 'Ara' }),
+          g.kapsam ? el('div', { sinif: 'alt-not', metin: g.kapsam }) : null
+        ]),
         hucre(g.sayan || '—'),
         hucre(sayiYaz(g.satirSayisi), 'sayi'),
         hucre(sayiYaz(g.farkliSatir), 'sayi ' + (g.farkliSatir ? 'eksi' : '')),
         hucre(paraYaz(g.farkTutari), 'sayi'),
+        el('td', null, [
+          el('span', { sinif: 'etiket ' + d.sinif, metin: d.metin }),
+          g.onaylayan
+            ? el('div', { sinif: 'alt-not', metin: g.onaylayan })
+            : null,
+          g.redSebebi ? el('div', { sinif: 'alt-not', metin: g.redSebebi }) : null
+        ]),
         hucre(g.vegayaYazildi ? (g.vegaBelgeNo || 'Yazıldı') : 'Yazılmadı'),
         el('td', null, dugmeler)
       ]);
     }
   ));
 };
+
+const SAYIM_DURUMU = {
+  bekliyor: { sinif: 'turuncu', metin: 'Onay bekliyor' },
+  onaylandi: { sinif: 'yesil', metin: 'Onaylandı' },
+  reddedildi: { sinif: 'kirmizi', metin: 'Reddedildi' }
+};
+
+// ---------- SAYIM ONAYI (yönetici) ----------
+//
+// Bekleyen sayımların kuyruğu. Onaylandığı anda Vega'ya sayım fişi kesilir;
+// bu, sayımın stoğu değiştirdiği tek nokta.
+
+ekranlar.sayimOnay = async function () {
+  const [bekleyen, yazmaDurum] = await Promise.all([
+    cagir('sayim:bekleyenler'),
+    cagir('yazma:durum').catch(() => ({ acik: durum.yazmaAcik }))
+  ]);
+  durum.yazmaAcik = !!yazmaDurum.acik;
+
+  bosalt(icerik);
+  icerik.appendChild(ekranBasligi('Sayım onayı', null, true));
+
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Çalışanların kaydettiği sayımlar burada bekler. "Farkları gör" ile ne ' +
+    "sayıldığını inceleyin; onaylayınca program farkı hesaplayıp Vega'ya sayım " +
+    'fişini keser ve stok sayılan miktara oturur. Fark, fişin kesildiği andaki ' +
+    'güncel stoğa göre yeniden hesaplanır.'
+  ]));
+
+  if (!durum.yazmaAcik) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      "Vega'ya yazma kapalı. Onaylayabilirsiniz ama fiş kesilmez; yazma " +
+      'açıldığında geçmiş listesinden yazabilirsiniz.'
+    ]));
+  }
+
+  if (!bekleyen.length) {
+    icerik.appendChild(el('div', { sinif: 'bos-mesaj', metin: 'Onay bekleyen sayım yok.' }));
+    return;
+  }
+
+  icerik.appendChild(tabloYap(
+    ['Tarih', 'Sayan', 'Tür / Kapsam', 'Ürün', 'Farklı', 'Fark tutarı', ''],
+    bekleyen,
+    (b) => el('tr', null, [
+      hucre(saatliTarih(b.tarih)),
+      hucre(b.sayan || '—'),
+      el('td', null, [
+        el('div', { metin: b.tur === 'tam' ? 'Tam sayım' : 'Ara sayım' }),
+        b.kapsam ? el('div', { sinif: 'alt-not', metin: b.kapsam }) : null
+      ]),
+      hucre(sayiYaz(b.satirSayisi), 'sayi'),
+      hucre(sayiYaz(b.farkliSatir), 'sayi ' + (b.farkliSatir ? 'eksi' : '')),
+      hucre(paraYaz(b.farkTutari), 'sayi'),
+      el('td', null, [
+        el('button', {
+          sinif: 'dugme-kucuk',
+          metin: 'Farkları gör',
+          tikla: () => sayimDetayGoster(b.id)
+        }),
+        el('button', {
+          sinif: 'dugme-kucuk tehlike',
+          metin: 'Onayla',
+          style: 'margin-left:6px',
+          tikla: () => sayimOnayla(b, 'sayimOnay')
+        }),
+        el('button', {
+          sinif: 'dugme-kucuk',
+          metin: 'Reddet',
+          style: 'margin-left:6px',
+          tikla: () => sayimReddet(b, 'sayimOnay')
+        })
+      ])
+    ])
+  ));
+};
+
+// Onay: sayımın Vega'ya işlendiği tek yer.
+async function sayimOnayla(g, donulecekEkran) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: 'Sayımı onayla',
+    mesaj:
+      `${saatliTarih(g.tarih)} tarihli sayım (${g.sayan || 'bilinmiyor'}) onaylanacak.`,
+    detay: durum.yazmaAcik
+      ? "Onaylanınca Vega'ya sayım fişi kesilir ve stok sayılan miktara oturur. " +
+        'Artı farklar için sayım giriş, eksi farklar için sayım çıkış fişi yazılır. ' +
+        'Yanlışlık olursa geçmiş listesinden geri alabilirsiniz.'
+      : "Vega'ya yazma kapalı; sayım yalnızca onaylı işaretlenir, fiş kesilmez.",
+    evet: durum.yazmaAcik ? "Onayla ve Vega'ya yaz" : 'Onayla',
+    hayir: 'Vazgeç'
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    const s = await cagir('sayim:onayla', { sayimId: g.id });
+    if (s.yazmaHatasi) {
+      bildir("Sayım onaylandı ama Vega'ya yazılamadı: " + s.yazmaHatasi, 'kotu');
+    } else if (s.farkYok) {
+      bildir('Sayım onaylandı. Fark çıkmadığı için fiş kesilmedi.', 'iyi');
+    } else if (s.vegayaYazildi) {
+      bildir("Sayım onaylandı ve Vega'ya yazıldı. Belge: " + s.belgeNo, 'iyi');
+    } else {
+      bildir('Sayım onaylandı.', 'iyi');
+    }
+    ekranAc(donulecekEkran || 'sayim');
+  } catch (e) { hataGoster(e); }
+}
+
+async function sayimReddet(g, donulecekEkran) {
+  const sebepKutu = el('input', { type: 'text', placeholder: 'Örn. Bar rafı sayılmamış' });
+  const kap = el('div', null, [
+    el('div', { sinif: 'aciklama-kutu' }, [
+      `${saatliTarih(g.tarih)} tarihli sayım reddedilecek. Vega'ya hiçbir şey ` +
+      'yazılmaz; sayan kişi yeniden sayıp kaydedebilir.'
+    ]),
+    el('div', { sinif: 'form-satir' }, [
+      el('div', { style: 'flex:1' }, [el('label', { metin: 'Red sebebi' }), sebepKutu])
+    ]),
+    el('div', { sinif: 'form-satir', style: 'margin-top:14px' }, [
+      el('button', {
+        sinif: 'dugme-ana',
+        metin: 'Reddet',
+        tikla: async () => {
+          try {
+            await cagir('sayim:reddet', { sayimId: g.id, sebep: sebepKutu.value });
+            katmanKapat();
+            bildir('Sayım reddedildi.', 'iyi');
+            ekranAc(donulecekEkran || 'sayim');
+          } catch (e) { hataGoster(e); }
+        }
+      }),
+      el('button', { sinif: 'dugme-sade', metin: 'Vazgeç', tikla: katmanKapat })
+    ])
+  ]);
+  katmanAc('Sayımı reddet', kap);
+  setTimeout(() => sebepKutu.focus(), 50);
+}
 
 // Panelde duran bir sayımı sonradan Vega'ya işler.
 async function sayimVegayaYaz(g) {
@@ -2333,31 +2802,602 @@ async function alisFaturaPenceresi(faturaId) {
   } catch (e) { hataGoster(e); }
 }
 
+// ---------- ZAYİ / PERSONEL ÇIKIŞI ----------
+//
+// Bozulan, kırılan, dökülen mal ile çalışanın elinde kalan mal aynı belgeyle
+// düşülüyor: stok çıkış fişi (belge tipi 33). Aradaki tek fark seçilen cari —
+// gerçek zayide ZAYİ kartı, personelde kalan malda kişinin kendi cari kartı.
+// Vega'da elle yapılırken de aynı ekran kullanılıyor.
+//
+// Fatura gibi önce panelde taslak durur; "Vega'ya yaz" ayrı bir onaydır.
+
+ekranlar.zayi = async function () {
+  const liste = await cagir('zayi:liste');
+  bosalt(icerik);
+  icerik.appendChild(ekranBasligi('Zayi / personel çıkışı', [
+    el('button', { sinif: 'dugme-ana', metin: 'Yeni zayi', tikla: () => zayiPenceresi(null) })
+  ]));
+
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Bozulan, kırılan ya da çalışanın elinde kalan malı buradan düşün. ' +
+    'Kayıt önce taslak olarak durur; ' +
+    (durum.yazmaAcik
+      ? "\"Vega'ya yaz\" dediğinizde stok düşer ve seçtiğiniz cariye borç yazılır."
+      : "Vega'ya yazma kapalı olduğu için şimdilik yalnızca taslak tutulabilir.")
+  ]));
+
+  if (!durum.depo) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      'Zayi girmek için üst çubuktan tek bir depo seçmelisiniz.'
+    ]));
+  }
+
+  icerik.appendChild(tabloYap(
+    ['Tarih', 'Cari', 'Alt hesap', 'Sebep', 'Satır', 'Tutar', 'Giren', 'Vega', ''],
+    liste,
+    (z) => el('tr', null, [
+      hucre(tarihYaz(z.tarih)),
+      hucre(z.cariAdi),
+      hucre(z.altHesap || '—'),
+      hucre(z.sebep || '—'),
+      hucre(sayiYaz(z.satirSayisi), 'sayi'),
+      hucre(z.maliyetliMi ? paraYaz(z.toplam) : 'Tutarsız', 'sayi'),
+      hucre(z.duzenleyen || '—'),
+      el('td', null, [
+        z.vegayaYazildi
+          ? el('span', { sinif: 'etiket yesil', metin: z.vegaBelgeNo || 'Yazıldı' })
+          : el('span', { sinif: 'etiket gri', metin: 'Taslak' })
+      ]),
+      el('td', null, zayiDugmeleri(z))
+    ])
+  ));
+};
+
+function zayiDugmeleri(z) {
+  const dugmeler = [];
+
+  if (!z.vegayaYazildi) {
+    dugmeler.push(el('button', {
+      sinif: 'dugme-kucuk',
+      metin: 'Düzenle',
+      tikla: () => zayiPenceresi(z.id)
+    }));
+  }
+
+  if (durum.yazmaAcik && !z.vegayaYazildi) {
+    dugmeler.push(el('button', {
+      sinif: 'dugme-kucuk tehlike',
+      style: 'margin-left:6px',
+      metin: "Vega'ya yaz",
+      tikla: async () => {
+        const onay = await window.galya.cagir('sistem:onay', {
+          baslik: "Zayi fişini Vega'ya yaz",
+          mesaj: `${z.cariAdi} — ${sayiYaz(z.satirSayisi)} satırlık zayi fişi yazılacak.`,
+          detay:
+            'Ürünler stoktan düşer ve seçilen cariye ' +
+            (z.maliyetliMi ? paraYaz(z.toplam) + ' TL borç yazılır.' : 'tutarsız borç satırı düşer.') +
+            ' İşlem tek seferde yapılır ve buradan geri alınabilir.',
+          evet: 'Yaz', hayir: 'Vazgeç'
+        });
+        if (!onay.veri || !onay.veri.onay) return;
+        try {
+          const s = await cagir('zayi:vegayaYaz', { id: z.id });
+          bildir(`Zayi fişi Vega'ya yazıldı. Belge no ${s.belgeNo}.`, 'iyi');
+          ekranAc('zayi');
+        } catch (e) { hataGoster(e); }
+      }
+    }));
+  }
+
+  if (durum.yazmaAcik && z.vegayaYazildi) {
+    dugmeler.push(el('button', {
+      sinif: 'dugme-kucuk',
+      metin: "Vega'dan sil",
+      tikla: async () => {
+        const onay = await window.galya.cagir('sistem:onay', {
+          baslik: "Vega'daki zayi fişini sil",
+          mesaj: (z.vegaBelgeNo || 'Zayi fişi') + " Vega'dan silinecek.",
+          detay:
+            'Stok miktarı ve cari bakiye fiş kesilmeden önceki hâline döner. ' +
+            'Taslak panelde kalır.',
+          evet: 'Sil', hayir: 'Vazgeç'
+        });
+        if (!onay.veri || !onay.veri.onay) return;
+        try {
+          await cagir('zayi:vegadanGeriAl', { id: z.id });
+          bildir("Vega'daki zayi fişi silindi.", 'iyi');
+          ekranAc('zayi');
+        } catch (e) { hataGoster(e); }
+      }
+    }));
+  }
+
+  if (!z.vegayaYazildi) {
+    dugmeler.push(el('button', {
+      sinif: 'dugme-kucuk',
+      style: 'margin-left:6px',
+      metin: 'Sil',
+      tikla: async () => {
+        const onay = await window.galya.cagir('sistem:onay', {
+          baslik: 'Taslağı sil',
+          mesaj: 'Bu zayi taslağı silinecek.',
+          evet: 'Sil', hayir: 'Vazgeç'
+        });
+        if (!onay.veri || !onay.veri.onay) return;
+        try {
+          await cagir('zayi:sil', { id: z.id });
+          bildir('Taslak silindi.', 'iyi');
+          ekranAc('zayi');
+        } catch (e) { hataGoster(e); }
+      }
+    }));
+  }
+
+  return dugmeler;
+}
+
+// Zayi carisi seçici. Liste geçmiş çıkış fişlerinde kullanılmış carilerden
+// geliyor (ZAYİ, FİRE, personel kartları); aranınca bütün cariler taranır.
+function zayiCariSecici(baslangic, secildi) {
+  const kap = el('div');
+  const secilenYazi = el('div', {
+    sinif: 'aciklama-kutu',
+    metin: baslangic ? 'Cari: ' + baslangic.ad : 'Cari: henüz seçilmedi'
+  });
+  const sonuc = el('div');
+  const arama = el('input', { type: 'text', placeholder: 'Başka bir cari ara…' });
+
+  function listeCiz(cariler) {
+    bosalt(sonuc);
+    sonuc.appendChild(tabloYap(['Cari', 'Kod', 'Kullanım', ''], cariler, (c) => el('tr', null, [
+      hucre(c.ad),
+      hucre(c.kod || '—'),
+      hucre(c.kullanim ? sayiYaz(c.kullanim) + ' fiş' : '—', 'sayi'),
+      el('td', null, [el('button', {
+        sinif: 'dugme-kucuk',
+        metin: 'Seç',
+        tikla: () => {
+          secilenYazi.textContent = 'Cari: ' + c.ad;
+          secildi({ cariNo: c.cariNo, ad: c.ad, kod: c.kod });
+        }
+      })])
+    ])));
+  }
+
+  cagir('zayi:cariler', {}).then(listeCiz).catch(hataGoster);
+
+  let zaman = null;
+  arama.addEventListener('input', () => {
+    clearTimeout(zaman);
+    zaman = setTimeout(async () => {
+      try {
+        listeCiz(await cagir('zayi:cariler', { arama: arama.value.trim() }));
+      } catch (e) { hataGoster(e); }
+    }, 300);
+  });
+
+  kap.appendChild(secilenYazi);
+  kap.appendChild(el('div', { sinif: 'form-satir' }, [arama]));
+  kap.appendChild(sonuc);
+  return kap;
+}
+
+async function zayiPenceresi(zayiId) {
+  try {
+    const mevcut = zayiId ? await cagir('zayi:getir', { id: zayiId }) : null;
+
+    let cari = mevcut ? { cariNo: mevcut.cariNo, ad: mevcut.cariAdi } : null;
+    const satirlar = mevcut ? mevcut.satirlar.map((s) => Object.assign({}, s)) : [];
+
+    const kap = el('div');
+    const bugun = new Date().toISOString().slice(0, 10);
+
+    const tarihKutu = el('input', {
+      type: 'date',
+      value: mevcut && mevcut.tarih ? String(mevcut.tarih).slice(0, 10) : bugun
+    });
+    const altHesapKutu = el('input', {
+      type: 'text',
+      placeholder: 'ZAYİ',
+      value: mevcut && mevcut.altHesap ? mevcut.altHesap : 'ZAYİ'
+    });
+    const sebepKutu = el('input', {
+      type: 'text',
+      placeholder: 'Örn. buzdolabı bozuldu, ürünler döküldü',
+      value: mevcut && mevcut.sebep ? mevcut.sebep : ''
+    });
+    // Vega'nın kendi zayi fişlerinde 945 satırın 801'i sıfır fiyatlı; bu
+    // yüzden varsayılan kapalı. İşaretlenirse tutar cari borcuna yazılır.
+    const maliyetKutu = el('input', { type: 'checkbox' });
+    maliyetKutu.checked = !!(mevcut && mevcut.maliyetliMi);
+
+    const satirKap = el('div');
+    const toplamYazi = el('div', { sinif: 'aciklama-kutu' });
+
+    function toplamlariYaz() {
+      const toplam = satirlar.reduce(
+        (t, s) => t + Number(s.miktar || 0) * Number(s.birimMaliyet || 0),
+        0
+      );
+      toplamYazi.textContent = maliyetKutu.checked
+        ? `${satirlar.length} satır · Maliyet toplamı ${paraYaz(toplam)} TL — bu tutar cariye borç yazılır.`
+        : `${satirlar.length} satır · Tutarsız zayi: yalnızca miktar düşer, cari borcu 0 olur ` +
+          `(maliyet karşılığı ${paraYaz(toplam)} TL).`;
+    }
+    maliyetKutu.addEventListener('change', toplamlariYaz);
+
+    function satirlariCiz() {
+      bosalt(satirKap);
+      if (!satirlar.length) {
+        satirKap.appendChild(el('div', { sinif: 'bos-mesaj', metin: 'Henüz ürün eklenmedi.' }));
+        toplamlariYaz();
+        return;
+      }
+      satirKap.appendChild(tabloYap(
+        ['Ürün', 'Miktar', 'Birim', 'Birim maliyet', 'Karşılığı', ''],
+        satirlar,
+        (s) => {
+          const miktarKutu = el('input', {
+            type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: String(s.miktar)
+          });
+          const tutarHucresi = hucre(
+            paraYaz(Number(s.miktar) * Number(s.birimMaliyet || 0)), 'sayi'
+          );
+          miktarKutu.addEventListener('input', () => {
+            s.miktar = Number(miktarKutu.value) || 0;
+            tutarHucresi.textContent = paraYaz(s.miktar * Number(s.birimMaliyet || 0));
+            toplamlariYaz();
+          });
+          return el('tr', null, [
+            el('td', null, [
+              el('div', { sinif: 'ad-satir', metin: s.stokAdi }),
+              s.stokKodu ? el('div', { sinif: 'alt-not', metin: s.stokKodu }) : null
+            ]),
+            el('td', null, [miktarKutu]),
+            hucre(s.birim || '—'),
+            hucre(paraYaz(s.birimMaliyet), 'sayi'),
+            tutarHucresi,
+            el('td', null, [el('button', {
+              sinif: 'dugme-kucuk',
+              metin: 'Çıkar',
+              tikla: () => {
+                const yeri = satirlar.indexOf(s);
+                if (yeri >= 0) satirlar.splice(yeri, 1);
+                satirlariCiz();
+              }
+            })])
+          ]);
+        }
+      ));
+      toplamlariYaz();
+    }
+
+    kap.appendChild(el('div', { sinif: 'bolum-basligi', metin: '1. Kime yazılacak' }));
+    kap.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      'Gerçek zayi için ZAYİ kartını, malın üstünde kaldığı çalışan için o ' +
+      'kişinin cari kartını seçin. Listede en çok kullanılan cariler üstte.'
+    ]));
+    kap.appendChild(zayiCariSecici(cari, (c) => { cari = c; }));
+
+    kap.appendChild(el('div', { sinif: 'bolum-basligi', metin: '2. Fiş bilgisi' }));
+    kap.appendChild(el('div', { sinif: 'form-satir' }, [
+      el('div', null, [el('label', { metin: 'Tarih' }), tarihKutu]),
+      el('div', null, [el('label', { metin: 'Alt hesap' }), altHesapKutu]),
+      el('div', { style: 'flex:1' }, [el('label', { metin: 'Sebep' }), sebepKutu])
+    ]));
+    kap.appendChild(el('div', { sinif: 'form-satir' }, [
+      el('label', null, [maliyetKutu, ' Maliyetle yaz (cariye tutar borcu çıksın)'])
+    ]));
+
+    kap.appendChild(el('div', { sinif: 'bolum-basligi', metin: '3. Ürünler' }));
+    kap.appendChild(satirKap);
+    kap.appendChild(toplamYazi);
+
+    kap.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Ürün ekle' }));
+    const yeniMiktar = el('input', {
+      type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: '1'
+    });
+    let secilenUrun = null;
+    kap.appendChild(urunSecici('Eklenecek ürün', (b) => { secilenUrun = b; }));
+    kap.appendChild(el('div', { sinif: 'form-satir' }, [
+      el('div', null, [el('label', { metin: 'Miktar' }), yeniMiktar]),
+      el('button', {
+        sinif: 'dugme-sade',
+        metin: 'Fişe ekle',
+        tikla: () => {
+          if (!secilenUrun) { bildir('Önce ürün seçin.', 'kotu'); return; }
+          if (!(Number(yeniMiktar.value) > 0)) { bildir('Miktar sıfırdan büyük olmalı.', 'kotu'); return; }
+          satirlar.push({
+            stokNo: secilenUrun.stokNo,
+            stokAdi: secilenUrun.ad,
+            stokKodu: secilenUrun.kod,
+            birim: secilenUrun.birim,
+            miktar: Number(yeniMiktar.value),
+            // Gerçek maliyet kaydetme anında karttan okunuyor; buradaki
+            // değer yalnızca ekrandaki önizleme için (stok:ara "maliyet"
+            // adıyla döndürüyor).
+            birimMaliyet: Number(secilenUrun.maliyet || 0)
+          });
+          secilenUrun = null;
+          yeniMiktar.value = '1';
+          satirlariCiz();
+        }
+      })
+    ]));
+
+    const kaydet = el('button', { sinif: 'dugme-ana', metin: 'Taslağı kaydet' });
+    kaydet.addEventListener('click', async () => {
+      if (!cari) { bildir('Cari seçin (ZAYİ, FİRE ya da personel).', 'kotu'); return; }
+      if (!satirlar.length) { bildir('En az bir ürün ekleyin.', 'kotu'); return; }
+      if (!durum.depo) { bildir('Üst çubuktan bir depo seçin.', 'kotu'); return; }
+      try {
+        await cagir('zayi:kaydet', {
+          id: zayiId || 0,
+          cariNo: cari.cariNo,
+          cariAdi: cari.ad,
+          altHesap: altHesapKutu.value.trim(),
+          sebep: sebepKutu.value.trim(),
+          tarih: tarihKutu.value,
+          maliyetliMi: maliyetKutu.checked,
+          satirlar
+        });
+        katmanKapat();
+        bildir('Zayi taslağı kaydedildi.', 'iyi');
+        ekranAc('zayi');
+      } catch (e) { hataGoster(e); }
+    });
+
+    kap.appendChild(el('div', { sinif: 'form-satir', style: 'margin-top:16px' }, [
+      kaydet,
+      el('button', { sinif: 'dugme-sade', metin: 'Vazgeç', tikla: katmanKapat })
+    ]));
+
+    satirlariCiz();
+    katmanAc(zayiId ? 'Zayi kaydını düzenle' : 'Yeni zayi', kap);
+  } catch (e) { hataGoster(e); }
+}
+
 // ---------- ÜRETİM ----------
 //
-// Stoğu eksiye düşen THIRD ürünlerini sıfıra çeken üretim fişi. Zayiat
-// girildikten sonra Vega'da elle yapılan işin aynısı.
+// Üç yol, üçü de aynı üretim fişini yazar:
+//
+//   Zayiatlı — Vega'da elle yapılan işin tamamı: önce zayi çıkış fişi
+//              (cari ZAYİ), stok eksiye düşer, sonra eksik kadar üretim.
+//              Belge deseni `galya döküman/zaiyatlı manuel üretim .md`
+//              izleyici kaydından çıkarıldı.
+//   Manuel   — reçetesi olan herhangi bir ürün, istenen miktarda.
+//   Otomatik — THIRD işaretli, stoğu eksiye düşmüş bütün ürünleri tek
+//              tuşla sıfıra çeker.
 
-ekranlar.uretim = async function () {
-  const [adaylar, gecmis] = await Promise.all([
-    cagir('uretim:adaylar'),
-    cagir('uretim:gecmis')
-  ]);
+// Zayiatlı üretim zayi fişi de kesiyor; "zayi" yetkisi olmayana o şerit
+// hiç çizilmiyor (ana süreç de ayrıca reddediyor).
+const URETIM_KIPLERI = [
+  {
+    anahtar: 'zayiatli',
+    ad: 'Zayiatlı üretim',
+    not: 'Zayi fişi + üretim, tek işlemde',
+    yetki: 'zayi'
+  },
+  { anahtar: 'manuel', ad: 'Manuel üretim', not: 'İstediğin ürünü istediğin kadar üret' },
+  { anahtar: 'otomatik', ad: 'Otomatik üretim', not: 'Eksiye düşenleri sıfıra çek' }
+];
+
+ekranlar.uretim = async function (parametre) {
+  const kipler = URETIM_KIPLERI.filter((k) => !k.yetki || yetkiVar(k.yetki));
+  const istenen = (parametre && parametre.kip) || kipler[0].anahtar;
+  const kip = kipler.some((k) => k.anahtar === istenen) ? istenen : kipler[0].anahtar;
 
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Üretim', disaAktarDugmeleri(() => ({
-    baslik: 'Stoğu eksiye düşen üretilecek ürünler',
-    sayfaAdi: 'Üretim',
-    sutunlar: [
-      { ad: 'Ürün', alan: 'ad', tur: 'metin', genislik: 44 },
-      { ad: 'Stok kodu', alan: 'kod', tur: 'metin', genislik: 16 },
-      { ad: 'Birim', alan: 'birim', tur: 'metin', genislik: 10 },
-      { ad: 'Kalan', alan: 'kalan', tur: 'sayi', genislik: 13 },
-      { ad: 'Üretilecek', alan: 'uretilecek', tur: 'sayi', genislik: 13 },
-      { ad: 'Reçete satırı', alan: 'receteSatiri', tur: 'sayi', genislik: 14 }
-    ],
-    satirlar: adaylar
-  }))));
+  icerik.appendChild(ekranBasligi('Üretim', null, true));
+
+  const serit = el('div', { sinif: 'suzgec-serit' });
+  for (const k of kipler) {
+    serit.appendChild(el('button', {
+      sinif: 'suzgec' + (k.anahtar === kip ? ' etkin' : ''),
+      title: k.not,
+      tikla: () => ekranAc('uretim', { kip: k.anahtar })
+    }, [el('span', { sinif: 'suzgec-ad', metin: k.ad })]));
+  }
+  icerik.appendChild(serit);
+
+  if (!durum.yazmaAcik) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      "Vega'ya yazma kapalı olduğu için üretim düğmeleri çalışmaz."
+    ]));
+  }
+
+  if (kip === 'zayiatli') await uretimZayiatliBolumu();
+  else if (kip === 'manuel') await uretimManuelBolumu();
+  else await uretimOtomatikBolumu();
+
+  await uretimGecmisiBolumu();
+};
+
+// --- Zayiatlı üretim -------------------------------------------------------
+//
+// Kullanıcı ürünü ve zayi miktarını yazıyor; program zayi fişini kesiyor,
+// ardından stoğu sıfıra çekecek kadar üretim yapıyor. Üretim yazılamazsa
+// zayi fişi geri alınıyor (ana süreçte), yarım iş kalmıyor.
+async function uretimZayiatliBolumu() {
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Vega\'da elle yaptığınız işin aynısı: önce zayi çıkış fişi kesilir ' +
+    '(seçtiğiniz cariye, genelde ZAYİ), ürünün stoğu düşer; stok eksiye ' +
+    'düşerse eksik miktar kadar üretim fişi yazılıp stok sıfıra çekilir. ' +
+    'İki adım tek işlemdir — üretim yazılamazsa zayi fişi de geri alınır.'
+  ]));
+
+  const [urunler, cariler] = await Promise.all([
+    cagir('uretim:uretilebilirler'),
+    cagir('zayi:cariler').catch(() => [])
+  ]);
+
+  if (!urunler.length) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      'Reçetesi olan ürün bulunamadı. Zayiatlı üretim için ürünün reçetesi olmalı.'
+    ]));
+    return;
+  }
+
+  let secilen = null;
+  const secilenYazi = el('div', { sinif: 'aciklama-kutu', metin: 'Ürün: henüz seçilmedi' });
+  const miktarKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: '1' });
+  const sebepKutu = el('input', { type: 'text', placeholder: 'Örn. dökülme, bozulma' });
+  const altHesapKutu = el('input', { type: 'text', value: 'ZAYİ' });
+  const maliyetKutu = el('input', { type: 'checkbox' });
+
+  // Cari kutusu: varsayılan olarak adı ZAYİ olan kart seçili gelsin.
+  const cariKutu = el('select', { sinif: 'form' },
+    cariler.map((c) => el('option', { value: String(c.cariNo), metin: `${c.kod || c.ad}` }))
+  );
+  const zayiKarti = cariler.find((c) => /^ZAY/i.test(c.kod || '') || /^ZAY/i.test(c.ad || ''));
+  if (zayiKarti) cariKutu.value = String(zayiKarti.cariNo);
+
+  const uretDugme = el('button', { sinif: 'dugme-ana tehlike', metin: 'Zayi yaz ve üret' });
+  uretDugme.disabled = !durum.yazmaAcik;
+
+  uretDugme.addEventListener('click', async () => {
+    if (!secilen) { bildir('Önce ürün seçin.', 'kotu'); return; }
+    const miktar = Number(miktarKutu.value);
+    if (!(miktar > 0)) { bildir('Zayi miktarı sıfırdan büyük olmalı.', 'kotu'); return; }
+    if (!cariKutu.value) { bildir('Zayi carisi seçin.', 'kotu'); return; }
+
+    const secilenCari = cariler.find((c) => String(c.cariNo) === cariKutu.value);
+    const onay = await window.galya.cagir('sistem:onay', {
+      baslik: 'Zayiatlı üretim',
+      mesaj:
+        `"${secilen.ad}" için ${sayiYaz(miktar, 3)} ${secilen.birim || ''} zayi yazılacak, ` +
+        'ardından stok sıfıra çekilene kadar üretim yapılacak.',
+      detay:
+        `Zayi ${(secilenCari && (secilenCari.kod || secilenCari.ad)) || 'seçilen cari'} kartına ` +
+        'stok çıkış fişiyle işlenir. Sonra reçetedeki bileşenler stoktan düşer, ' +
+        'mamul stoğa girer. İki adım da geri alınabilir.',
+      evet: 'Yaz ve üret',
+      hayir: 'Vazgeç'
+    });
+    if (!onay.veri || !onay.veri.onay) return;
+
+    try {
+      uretDugme.disabled = true;
+      const s = await cagir('uretim:zayiatli', {
+        stokNo: secilen.stokNo,
+        zayiMiktar: miktar,
+        cariNo: Number(cariKutu.value),
+        cariAdi: secilenCari ? secilenCari.ad : null,
+        altHesap: altHesapKutu.value.trim(),
+        sebep: sebepKutu.value.trim(),
+        maliyetliMi: maliyetKutu.checked
+      });
+      if (s.uretildi) {
+        bildir(
+          `Zayi fişi ${s.zayiBelgeNo} kesildi, ${sayiYaz(s.uretilenMiktar, 3)} ` +
+          `${secilen.birim || ''} üretildi (fiş ${s.fisNo}).`,
+          'iyi'
+        );
+      } else {
+        bildir(s.mesaj || `Zayi fişi ${s.zayiBelgeNo} kesildi.`, 'iyi');
+      }
+      ekranAc('uretim', { kip: 'zayiatli' });
+    } catch (e) {
+      hataGoster(e);
+      uretDugme.disabled = false;
+    }
+  });
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '1. Zayi olan ürün' }));
+  icerik.appendChild(secilenYazi);
+  icerik.appendChild(uretilebilirSecici(urunler, (u) => {
+    secilen = u;
+    secilenYazi.textContent =
+      `Ürün: ${u.ad} · şu anki kalan ${sayiYaz(u.kalan, 2)} ${u.birim || ''}`;
+  }));
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '2. Zayi bilgisi' }));
+  icerik.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('div', null, [el('label', { metin: 'Zayi miktarı' }), miktarKutu]),
+    el('div', null, [el('label', { metin: 'Cari' }), cariKutu]),
+    el('div', null, [el('label', { metin: 'Alt hesap' }), altHesapKutu]),
+    el('div', { style: 'flex:1' }, [el('label', { metin: 'Sebep' }), sebepKutu])
+  ]));
+  icerik.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('label', null, [maliyetKutu, ' Maliyetle yaz (cariye tutar borcu çıksın)'])
+  ]));
+  icerik.appendChild(el('div', { sinif: 'form-satir', style: 'margin-top:16px' }, [uretDugme]));
+}
+
+// --- Manuel üretim ---------------------------------------------------------
+async function uretimManuelBolumu() {
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Reçetesi olan herhangi bir ürünü istediğiniz miktarda üretin. Reçetedeki ' +
+    'bileşenler stoktan düşer, mamul stoğa girer. Miktarı boş bırakırsanız ' +
+    'stoğu sıfıra getirecek kadar üretilir (stok eksideyse).'
+  ]));
+
+  const urunler = await cagir('uretim:uretilebilirler');
+  if (!urunler.length) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      'Reçetesi olan ürün bulunamadı.'
+    ]));
+    return;
+  }
+
+  let secilen = null;
+  const secilenYazi = el('div', { sinif: 'aciklama-kutu', metin: 'Ürün: henüz seçilmedi' });
+  const miktarKutu = el('input', {
+    type: 'number', sinif: 'miktar', step: '0.001', min: '0',
+    placeholder: 'Boş = sıfıra kadar'
+  });
+  const uretDugme = el('button', { sinif: 'dugme-ana tehlike', metin: 'Üret' });
+  uretDugme.disabled = !durum.yazmaAcik;
+
+  uretDugme.addEventListener('click', async () => {
+    if (!secilen) { bildir('Önce ürün seçin.', 'kotu'); return; }
+    const miktar = miktarKutu.value === '' ? 0 : Number(miktarKutu.value);
+    if (miktarKutu.value !== '' && !(miktar > 0)) {
+      bildir('Miktar sıfırdan büyük olmalı.', 'kotu');
+      return;
+    }
+    const onay = await window.galya.cagir('sistem:onay', {
+      baslik: 'Üretim fişi yaz',
+      mesaj: miktar
+        ? `"${secilen.ad}" için ${sayiYaz(miktar, 3)} ${secilen.birim || ''} üretim fişi yazılacak.`
+        : `"${secilen.ad}" stoğu sıfıra gelene kadar üretilecek (şu an ${sayiYaz(secilen.kalan, 2)}).`,
+      detay:
+        "Reçetedeki bileşenler stoktan düşer, mamul stoğa girer. Vega'da bir " +
+        'üretim fişi ve buna bağlı belgeler oluşur. İşlem geri alınabilir.',
+      evet: 'Üret',
+      hayir: 'Vazgeç'
+    });
+    if (!onay.veri || !onay.veri.onay) return;
+    try {
+      uretDugme.disabled = true;
+      const s = await cagir('uretim:uret', { stokNo: secilen.stokNo, miktar });
+      bildir(`Üretim fişi yazıldı: ${s.fisNo} · ${s.mamulAdi} ${sayiYaz(s.miktar, 3)}`, 'iyi');
+      ekranAc('uretim', { kip: 'manuel' });
+    } catch (e) {
+      hataGoster(e);
+      uretDugme.disabled = false;
+    }
+  });
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '1. Üretilecek ürün' }));
+  icerik.appendChild(secilenYazi);
+  icerik.appendChild(uretilebilirSecici(urunler, (u) => {
+    secilen = u;
+    secilenYazi.textContent =
+      `Ürün: ${u.ad} · şu anki kalan ${sayiYaz(u.kalan, 2)} ${u.birim || ''} · ` +
+      `${sayiYaz(u.receteSatiri)} bileşen`;
+  }));
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '2. Miktar' }));
+  icerik.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('div', null, [el('label', { metin: 'Üretilecek miktar' }), miktarKutu]),
+    uretDugme
+  ]));
+}
+
+// --- Otomatik üretim -------------------------------------------------------
+async function uretimOtomatikBolumu() {
+  const adaylar = await cagir('uretim:adaylar');
 
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
     'THIRD işaretli, reçetesi olan ve stoğu eksiye düşmüş ürünler. Üretim ' +
@@ -2365,13 +3405,9 @@ ekranlar.uretim = async function () {
     've kalan sıfıra gelir.'
   ]));
 
-  if (!durum.yazmaAcik) {
-    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
-      "Vega'ya yazma kapalı olduğu için üretim düğmeleri çalışmaz."
-    ]));
-  } else {
+  if (durum.yazmaAcik) {
     icerik.appendChild(el('div', { sinif: 'aciklama-kutu kritik' }, [
-      'Üretim fişi Vega\'da altı tabloya birden yazar (üretim fişi, iki depo ' +
+      "Üretim fişi Vega'da altı tabloya birden yazar (üretim fişi, iki depo " +
       'transferi, tüketim ve çıktı hareketleri). Üretim belge numarası Şefim ' +
       'entegrasyonuyla paylaşılan bir sayaçtan alınır; numara işlem içinde ' +
       'kilitlenerek verilir. Yoğun saatlerde tek tek üretmek daha güvenlidir.'
@@ -2408,7 +3444,10 @@ ekranlar.uretim = async function () {
       })])
     ])
   ));
+}
 
+async function uretimGecmisiBolumu() {
+  const gecmis = await cagir('uretim:gecmis');
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Yazılan üretim fişleri' }));
   icerik.appendChild(tabloYap(
     ['Tarih', 'Mamul', 'Miktar', 'Fiş no', 'Yapan', 'Durum', ''],
@@ -2435,14 +3474,65 @@ ekranlar.uretim = async function () {
       ])
     ])
   ));
-};
+}
+
+// Reçeteli ürünler arasından seçim. Liste 500 satıra kadar çıkabildiği için
+// arama kutusundan süzülüyor.
+function uretilebilirSecici(urunler, secildi) {
+  const kap = el('div');
+  const arama = el('input', { type: 'text', placeholder: 'Ürün adı veya kodu…' });
+  const sonuc = el('div');
+
+  function ciz(liste) {
+    bosalt(sonuc);
+    sonuc.appendChild(tabloYap(
+      ['Ürün', 'Sınıf', 'Kalan', 'Bileşen', ''],
+      liste,
+      (u) => el('tr', null, [
+        el('td', null, [
+          el('div', { sinif: 'ad-satir', metin: u.ad }),
+          u.kod ? el('div', { sinif: 'alt-not', metin: u.kod }) : null
+        ]),
+        hucre(u.sinif || '—'),
+        hucre(sayiYaz(u.kalan, 2), 'sayi ' + (u.kalan < 0 ? 'eksi' : '')),
+        hucre(sayiYaz(u.receteSatiri), 'sayi'),
+        el('td', null, [el('button', {
+          sinif: 'dugme-kucuk',
+          metin: 'Seç',
+          tikla: () => secildi(u)
+        })])
+      ]),
+      50
+    ));
+  }
+
+  arama.addEventListener('input', () => {
+    const aranan = arama.value.trim().toLocaleLowerCase('tr');
+    ciz(
+      aranan
+        ? urunler.filter(
+            (u) =>
+              (u.ad || '').toLocaleLowerCase('tr').includes(aranan) ||
+              (u.kod || '').toLocaleLowerCase('tr').includes(aranan)
+          )
+        : urunler
+    );
+  });
+
+  kap.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('div', { style: 'flex:1' }, [el('label', { metin: 'Ürün ara' }), arama])
+  ]));
+  kap.appendChild(sonuc);
+  ciz(urunler);
+  return kap;
+}
 
 async function tekUret(aday) {
   const onay = await window.galya.cagir('sistem:onay', {
     baslik: 'Stoğu sıfıra kadar üret',
     mesaj: `"${aday.ad}" için ${sayiYaz(aday.uretilecek, 2)} ${aday.birim || ''} üretim fişi yazılacak.`,
     detay:
-      'Reçetedeki bileşenler stoktan düşer, mamul stoğa girer. Vega\'da bir ' +
+      "Reçetedeki bileşenler stoktan düşer, mamul stoğa girer. Vega'da bir " +
       'üretim fişi ve buna bağlı belgeler oluşur. İşlem geri alınabilir.',
     evet: 'Üret',
     hayir: 'Vazgeç'
@@ -2451,7 +3541,7 @@ async function tekUret(aday) {
   try {
     const s = await cagir('uretim:uret', { stokNo: aday.stokNo });
     bildir(`Üretim fişi yazıldı: ${s.fisNo} · ${s.mamulAdi} ${sayiYaz(s.miktar, 2)}`, 'iyi');
-    ekranAc('uretim');
+    ekranAc('uretim', { kip: 'otomatik' });
   } catch (e) { hataGoster(e); }
 }
 
@@ -2485,7 +3575,7 @@ async function hepsiniUret(adaylar) {
         ])
       ));
     } else {
-      ekranAc('uretim');
+      ekranAc('uretim', { kip: 'otomatik' });
     }
   } catch (e) { hataGoster(e); }
 }
@@ -2505,6 +3595,7 @@ async function uretimGeriAl(kayit) {
     ekranAc('uretim');
   } catch (e) { hataGoster(e); }
 }
+
 
 // ---------- MALİYETLENDİRME ----------
 //
@@ -2787,12 +3878,344 @@ ekranlar.cari = async function (parametre) {
   ));
 };
 
+// ---------- KULLANICILAR (yönetici paneli) ----------
+//
+// Giriş yalnızca PIN'le olduğu için PIN'ler benzersiz olmak zorunda; aynı
+// PIN'i ikinci bir kullanıcıya verirseniz ana süreç reddeder.
+//
+// Sayım kapsamı stok kartındaki Sınıf (KOD2) alanına dayanıyor: "BAR"
+// seçilen kullanıcı yalnızca bar ürünlerini görür ve sayabilir. Kapsam boş
+// bırakılırsa sınırsızdır.
+
+ekranlar.kullanicilar = async function () {
+  const [liste, kodListeleri] = await Promise.all([
+    cagir('kullanici:liste'),
+    cagir('stok:kodListeleri').catch(() => ({}))
+  ]);
+  const siniflar = ((kodListeleri && kodListeleri.kod2) || []).filter((s) => s.adet > 0);
+
+  bosalt(icerik);
+  icerik.appendChild(ekranBasligi('Kullanıcılar', [
+    el('button', {
+      sinif: 'dugme-ana',
+      metin: 'Yeni kullanıcı',
+      tikla: () => kullaniciPenceresi(null, siniflar)
+    })
+  ], true));
+
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Çalışan PIN\'ini yazarak giriş yapar; kullanıcı adı seçmesi gerekmez. ' +
+    'Her PIN farklı olmalı. Yaptığı her iş adına kaydedilir. ' +
+    'Sayım kapsamı verirseniz kullanıcı yalnızca o sınıftaki ürünleri görür ' +
+    've sayabilir.'
+  ]));
+
+  if (!liste.length) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      'Henüz kullanıcı tanımlanmamış. Kullanıcı yokken program eskisi gibi ' +
+      'herkese açıktır: giriş sorulmaz, her ekran görünür. İlk kullanıcıyı ' +
+      'YÖNETİCİ olarak ekleyin, yoksa kendinizi dışarıda bırakırsınız.'
+    ]));
+  }
+
+  icerik.appendChild(tabloYap(
+    ['Ad', 'Rol', 'Yetkiler', 'Sayım kapsamı', 'Durum', ''],
+    liste,
+    (k) => el('tr', null, [
+      el('td', null, [
+        el('div', { sinif: 'ad-satir', metin: k.ad }),
+        k.acikOturum ? el('div', { sinif: 'alt-not', metin: 'Bu bilgisayarda açık' }) : null
+      ]),
+      el('td', null, [
+        el('span', {
+          sinif: 'etiket ' + (k.rol === 'yonetici' ? 'mavi' : 'gri'),
+          metin: k.rol === 'yonetici' ? 'Yönetici' : 'Kullanıcı'
+        })
+      ]),
+      hucre(
+        k.rol === 'yonetici'
+          ? 'Hepsi'
+          : (durum.yetkiTanimlari || [])
+              .filter((y) => k.yetkiler[y.anahtar])
+              .map((y) => y.ad)
+              .join(', ') || '—'
+      ),
+      hucre(
+        k.rol === 'yonetici'
+          ? 'Sınırsız'
+          : (k.yetkiler.siniflar || []).join(', ') || 'Sınırsız'
+      ),
+      el('td', null, [
+        k.aktif
+          ? el('span', { sinif: 'etiket yesil', metin: 'Aktif' })
+          : el('span', { sinif: 'etiket gri', metin: 'Kapalı' })
+      ]),
+      el('td', null, [
+        el('button', {
+          sinif: 'dugme-kucuk',
+          metin: 'Düzenle',
+          tikla: () => kullaniciPenceresi(k, siniflar)
+        }),
+        el('button', {
+          sinif: 'dugme-kucuk',
+          style: 'margin-left:6px',
+          metin: 'Sil',
+          tikla: () => kullaniciSil(k)
+        })
+      ])
+    ])
+  ));
+
+  if (liste.length) {
+    icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Kilidi kaldır' }));
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      'Bütün kullanıcıları silip programı herkese açık hâline döndürür. ' +
+      'Giriş sorulmaz, her ekran görünür, sayımda Vega miktarı herkese açılır.'
+    ]));
+    icerik.appendChild(el('div', { sinif: 'form-satir' }, [
+      el('button', {
+        sinif: 'dugme-sade',
+        metin: 'Kullanıcı sistemini tamamen kaldır',
+        tikla: async () => {
+          const onay = await window.galya.cagir('sistem:onay', {
+            baslik: 'Kullanıcı sistemini kaldır',
+            mesaj: `${liste.length} kullanıcının hepsi silinecek.`,
+            detay:
+              'Program giriş sormayan eski hâline döner ve sayımda Vega\'daki ' +
+              'miktar herkese görünür. Geri almak için kullanıcıları yeniden ' +
+              'tanımlamanız gerekir.',
+            evet: 'Kaldır',
+            hayir: 'Vazgeç'
+          });
+          if (!onay.veri || !onay.veri.onay) return;
+          try {
+            await cagir('oturum:pinKaldir', {});
+            await oturumDurumuOku();
+            bildir('Kullanıcı sistemi kaldırıldı.', 'iyi');
+            ekranAc('ana');
+          } catch (e) { hataGoster(e); }
+        }
+      })
+    ]));
+  }
+};
+
+async function kullaniciSil(k) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: 'Kullanıcıyı sil',
+    mesaj: `"${k.ad}" silinecek.`,
+    detay:
+      'Geçmiş kayıtlarda adı durmaya devam eder; yalnızca bundan sonra giriş ' +
+      'yapamaz. Son yöneticiyi silemezsiniz.',
+    evet: 'Sil',
+    hayir: 'Vazgeç'
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    await cagir('kullanici:sil', { id: k.id });
+    bildir('Kullanıcı silindi.', 'iyi');
+    await oturumDurumuOku();
+    ekranAc('kullanicilar');
+  } catch (e) { hataGoster(e); }
+}
+
+function kullaniciPenceresi(mevcut, siniflar) {
+  const kap = el('div');
+  const adKutu = el('input', { type: 'text', value: mevcut ? mevcut.ad : '' });
+  const pinKutu = el('input', {
+    type: 'password',
+    placeholder: mevcut ? 'Değiştirmek istemiyorsanız boş bırakın' : 'PIN'
+  });
+  const rolKutu = el('select', { sinif: 'form' }, [
+    el('option', { value: 'kullanici', metin: 'Kullanıcı — yalnızca verilen yetkiler' }),
+    el('option', { value: 'yonetici', metin: 'Yönetici — her şey, onay ve kullanıcı yönetimi' })
+  ]);
+  rolKutu.value = mevcut ? mevcut.rol : 'kullanici';
+
+  const aktifKutu = el('input', { type: 'checkbox' });
+  aktifKutu.checked = mevcut ? !!mevcut.aktif : true;
+
+  // Yetki kutuları
+  const yetkiKutulari = {};
+  const yetkiSatirlari = (durum.yetkiTanimlari || []).map((y) => {
+    const kutu = el('input', { type: 'checkbox' });
+    kutu.checked = !!(mevcut && mevcut.yetkiler && mevcut.yetkiler[y.anahtar]);
+    yetkiKutulari[y.anahtar] = kutu;
+    return el('div', null, [el('label', null, [kutu, ' ' + y.ad])]);
+  });
+
+  // Sayım kapsamı: stok kartındaki Sınıf (KOD2) değerleri.
+  const secilenSiniflar = new Set(
+    (mevcut && mevcut.yetkiler && mevcut.yetkiler.siniflar) || []
+  );
+  const sinifKutulari = {};
+  const sinifSatirlari = siniflar.map((s) => {
+    const kutu = el('input', { type: 'checkbox' });
+    kutu.checked = secilenSiniflar.has(s.deger);
+    sinifKutulari[s.deger] = kutu;
+    return el('div', null, [
+      el('label', null, [kutu, ` ${s.deger} (${sayiYaz(s.adet)} ürün)`])
+    ]);
+  });
+
+  // Rol yönetici seçilince yetki ve kapsam kutuları anlamsızlaşıyor.
+  const yetkiBolumu = el('div');
+  const kapsamBolumu = el('div');
+  function rolDegisti() {
+    const yoneticiMi = rolKutu.value === 'yonetici';
+    yetkiBolumu.classList.toggle('hidden', yoneticiMi);
+    kapsamBolumu.classList.toggle('hidden', yoneticiMi);
+  }
+  rolKutu.addEventListener('change', rolDegisti);
+
+  kap.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('div', { style: 'flex:1' }, [el('label', { metin: 'Ad' }), adKutu]),
+    el('div', null, [el('label', { metin: 'PIN' }), pinKutu])
+  ]));
+  kap.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('div', { style: 'flex:1' }, [el('label', { metin: 'Rol' }), rolKutu]),
+    el('label', null, [aktifKutu, ' Aktif'])
+  ]));
+
+  yetkiBolumu.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Yetkiler' }));
+  yetkiBolumu.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'İşaretlenmeyen iş için kullanıcı düğmeyi göremez; görse de ana süreç ' +
+    'isteği reddeder.'
+  ]));
+  yetkiBolumu.appendChild(el('div', { sinif: 'form-satir' }, yetkiSatirlari));
+  kap.appendChild(yetkiBolumu);
+
+  kapsamBolumu.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Sayım kapsamı' }));
+  kapsamBolumu.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Stok kartındaki Sınıf alanı. Örneğin yalnızca BAR işaretlerseniz, bu ' +
+    'kullanıcı sayım ekranında sadece bar ürünlerini görür ve yalnızca ' +
+    'onları sayabilir. Hiçbiri işaretlenmezse kapsam sınırsızdır.'
+  ]));
+  kapsamBolumu.appendChild(
+    sinifSatirlari.length
+      ? el('div', { sinif: 'form-satir' }, sinifSatirlari)
+      : el('div', { sinif: 'bos-mesaj', metin: 'Stok kartlarında sınıf tanımlı değil.' })
+  );
+  kap.appendChild(kapsamBolumu);
+
+  const kaydet = el('button', { sinif: 'dugme-ana', metin: 'Kaydet' });
+  kaydet.addEventListener('click', async () => {
+    const ad = adKutu.value.trim();
+    if (!ad) { bildir('Ad boş olamaz.', 'kotu'); return; }
+    if (!mevcut && !pinKutu.value.trim()) {
+      bildir('Yeni kullanıcı için PIN belirleyin.', 'kotu');
+      return;
+    }
+    const yetkiler = { siniflar: [] };
+    for (const anahtar of Object.keys(yetkiKutulari)) {
+      yetkiler[anahtar] = yetkiKutulari[anahtar].checked;
+    }
+    for (const deger of Object.keys(sinifKutulari)) {
+      if (sinifKutulari[deger].checked) yetkiler.siniflar.push(deger);
+    }
+    try {
+      await cagir('kullanici:kaydet', {
+        id: mevcut ? mevcut.id : 0,
+        ad,
+        pin: pinKutu.value.trim(),
+        rol: rolKutu.value,
+        aktif: aktifKutu.checked,
+        yetkiler
+      });
+      katmanKapat();
+      bildir(mevcut ? 'Kullanıcı güncellendi.' : 'Kullanıcı eklendi.', 'iyi');
+      await oturumDurumuOku();
+      ekranAc('kullanicilar');
+    } catch (e) { hataGoster(e); }
+  });
+
+  kap.appendChild(el('div', { sinif: 'form-satir', style: 'margin-top:16px' }, [
+    kaydet,
+    el('button', { sinif: 'dugme-sade', metin: 'Vazgeç', tikla: katmanKapat })
+  ]));
+
+  rolDegisti();
+  katmanAc(mevcut ? 'Kullanıcıyı düzenle' : 'Yeni kullanıcı', kap);
+  setTimeout(() => adKutu.focus(), 50);
+}
+
 // ---------- AYARLAR ----------
+
+// Ayarlar ekranındaki PIN bölümü.
+//
+// PIN yalnızca SAYIM ekranındaki teorik miktarı, farkı ve geçmiş sayımları
+// kilitler. Programın geri kalanı eskisi gibi herkese açıktır.
+function pinBolumu() {
+  const kap = el('div');
+  const yeni = el('input', { type: 'password', placeholder: 'PIN' });
+
+  // Tek yönetici PIN'i yerini kullanıcı listesine bıraktı. Bu bölüm artık
+  // yalnızca İLK yöneticiyi açmak için duruyor; gerisi Kullanıcılar ekranında.
+  if (durum.pinVar) {
+    kap.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      'Kullanıcı sistemi açık. Kim neyi yapabilir, kim neyi sayabilir — hepsi ' +
+      '"Kullanıcılar" ekranından yönetiliyor. Program kapanınca oturum ' +
+      'kendiliğinden kapanır.'
+    ]));
+    kap.appendChild(el('div', { sinif: 'form-satir' }, [
+      el('button', {
+        sinif: 'dugme-ana',
+        metin: 'Kullanıcılar ekranını aç',
+        tikla: () => ekranAc('kullanicilar')
+      })
+    ]));
+    kap.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      "PIN uzunluk sınırı yoktur; tek hane de yazılabilir. Kısa PIN'de art arda " +
+      'beş yanlış denemeden sonra program 30 saniye bekletir. Not: PIN ekranı ' +
+      'kilitler, veritabanını kilitlemez — bilgisayara erişimi olan biri ayar ' +
+      'dosyasındaki SQL şifresiyle veriye başka programlardan ulaşabilir.'
+    ]));
+    return kap;
+  }
+
+  kap.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+    'Kullanıcı tanımlı DEĞİL. Program şu anda herkese açık: giriş sorulmuyor, ' +
+    "sayım ekranını açan herkes Vega'daki miktarı görüyor. Aşağıdan bir " +
+    "yönetici PIN'i belirleyin; sonrasında alt kullanıcıları \"Kullanıcılar\" " +
+    'ekranından ekleyebilirsiniz.'
+  ]));
+
+  kap.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('div', null, [el('label', { metin: "Yönetici PIN'i" }), yeni])
+  ]));
+
+  const kaydet = el('button', { sinif: 'dugme-ana', metin: 'Yöneticiyi oluştur' });
+  kaydet.addEventListener('click', async () => {
+    const deger = yeni.value.trim();
+    if (!deger) {
+      bildir('PIN boş olamaz.', 'kotu');
+      return;
+    }
+    try {
+      await cagir('oturum:pinBelirle', { pin: deger });
+      await oturumDurumuOku();
+      bildir('Yönetici oluşturuldu. Alt kullanıcıları Kullanıcılar ekranından ekleyin.', 'iyi');
+      ekranAc('kullanicilar');
+    } catch (e) { hataGoster(e); }
+  });
+
+  kap.appendChild(el('div', { sinif: 'form-satir' }, [kaydet]));
+  return kap;
+}
 
 ekranlar.ayarlar = async function () {
   const a = await cagir('ayar:oku');
   bosalt(icerik);
   icerik.appendChild(ekranBasligi('Ayarlar'));
+
+  // Ayar yazma yönetici kanalı. Düğmeler duruyor ama basılınca ana süreç
+  // reddeder; kullanıcı sebebini baştan bilsin.
+  if (!yonetici()) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      'Ayarları yalnızca yönetici değiştirebilir. Buradaki bilgileri ' +
+      'görebilirsiniz ama kaydedemezsiniz.'
+    ]));
+  }
 
   const sunucu = el('input', { type: 'text', value: a.sunucu || '' });
   const port = el('input', { type: 'number', value: a.port || 1433 });
@@ -2821,6 +4244,9 @@ ekranlar.ayarlar = async function () {
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [
     el('div', null, [el('label', { metin: 'Kaç adedin altı "azalan" sayılsın' }), kritikUst])
   ]));
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Yönetici PIN\'i' }));
+  icerik.appendChild(pinBolumu());
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: "Vega'ya yazma" }));
   icerik.appendChild(el('div', {
@@ -2986,6 +4412,9 @@ async function baslat() {
     bildir('Panel veritabanı hazırlanamadı: ' + e.message, 'kotu');
   }
 
+  // Rol, firma/depo listelerinden ÖNCE okunmalı: ekranlar buna göre çiziliyor.
+  await oturumDurumuOku();
+
   try {
     const [firmalar, depolar, ayar, yazmaDurum] = await Promise.all([
       cagir('firma:liste', { yenile: true }),
@@ -3044,6 +4473,12 @@ window.galya.dinle('guncelleme:durum', guncellemeRozetiYaz);
 
 document.getElementById('yenileDugme').addEventListener('click', () => ekranAc(durum.ekran));
 document.getElementById('ayarDugme').addEventListener('click', () => ekranAc('ayarlar'));
+document.getElementById('girisDugme').addEventListener('click', () => {
+  // Giriş yapılmışsa çıkış, yapılmamışsa giriş. Kullanıcı tanımlı değilken
+  // düğme zaten gizli.
+  if (durum.kullaniciAdi) oturumdanCik();
+  else girisPenceresi();
+});
 document.getElementById('katmanKapat').addEventListener('click', katmanKapat);
 document.getElementById('kutuKatman').addEventListener('click', (e) => {
   if (e.target.id === 'kutuKatman') katmanKapat();

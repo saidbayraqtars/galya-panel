@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 17.08.2026 · Sürüm 1.4.0
+Son güncelleme: 19.08.2026 · Sürüm 1.5.0
 
 ---
 
@@ -74,10 +74,12 @@ rapor programı (galya)/
     yazma.js         VEGADB'ye yazan HER ŞEY (kilitli)
     panel.js         GALYA_PANEL şeması (kendi veritabanımız)
     tutanak.js       Ürün değişim tutanakları
-    sayim.js         Ara sayım
+    sayim.js         Ara ve tam sayım, kapsam süzgeci, onay akışı
+    oturum.js        Kullanıcılar, PIN'le giriş, roller ve yetkiler
+    zayi.js          Zayi / personel çıkışı taslağı (panel veritabanında)
     maliyet.js       Maliyet hesabı (son alış fiyatı + reçete)
     fatura.js        Alış faturası taslağı (panel veritabanında)
-    uretim.js        "Stoğu sıfıra kadar üret" iş akışı
+    uretim.js        Üretim: zayiatlı, manuel, otomatik
     rapor.js         Rapor üretimi
     disaaktar.js     Excel / PDF dışa aktarma
     guncelleme.js    electron-updater sarmalayıcı
@@ -89,8 +91,10 @@ rapor programı (galya)/
     sql-kullanici-olustur.sql
     sql-yetki-tazele.sql     restore sonrası okuma yetkisini geri verir
     sql-yazma-yetkisi-ver.sql  VEGADB'ye yazma yetkisi (ikinci kilit)
-    test-sorgular.js         91 okuma sınaması
-    test-yazma.js            79 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
+    test-sorgular.js         98 okuma sınaması
+    test-yazma.js           106 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
+    test-yetki.js            41 kullanıcı / kapsam / onay sınaması
+    test-arayuz.js           29 arayüz duman sınaması (Electron ile)
     izleyici-kur.sql / izleyici-kapat.sql / izleyici-oku.js   (eski, elle sürüm)
 ```
 
@@ -160,9 +164,13 @@ VEGADB'ye tek satır gitmez.
 
 Yazan işler: THIRD özel kod 11, gider/hizmet stok sıfırlama, reçete
 oluştur/güncelle/sil, tutanak fişi, alış faturası, üretim fişi,
-maliyetlendirme. Her biri geri alınabilir. Her yazma
-`GALYA_PANEL.dbo.Islem` tablosuna kullanıcı + bilgisayar + satır kimlikleriyle
-loglanır.
+maliyetlendirme, sayım fişi, **zayi fişi** ve **stok kartını pasife alma**.
+Her biri geri alınabilir. Her yazma `GALYA_PANEL.dbo.Islem` tablosuna
+kullanıcı + bilgisayar + satır kimlikleriyle loglanır.
+
+> Günlükteki "kullanıcı", giriş yapılmışsa **panel kullanıcısının adı**,
+> yapılmamışsa Windows oturum adıdır (`main.js` → `kayitEt`). Windows adı
+> giriş yapılmışken de `windows` alanında duruyor.
 
 `kurulum/sql-kullanici-olustur.sql` dosyasındaki `galya_panel` kullanıcısı
 VEGADB ve sefim üzerinde **salt okunur**; yalnızca GALYA_PANEL'de `db_owner`.
@@ -172,6 +180,173 @@ Yani yazma açılsa bile SQL tarafında ayrıca yetki verilmesi gerekir.
 > gerçek şifre depoya girdi; şifre değiştirildi ve dosya yer tutucuya
 > çevrildi. Gerçek şifre yalnızca `.gitignore`'daki `ayarlar.json` içinde
 > durur. Depoya bir daha şifre yazmayın.
+
+---
+
+## 5b. Kullanıcılar, yetki ve körleme sayım (19.08.2026'da genişletildi)
+
+Müşterinin isteği iki aşamada geldi:
+
+1. **18.08.2026** — sayımı yapan çalışan Vega'daki teorik miktarı görmesin;
+   yetkili kişi PIN girince görsün. (Tek yönetici PIN'i.)
+2. **19.08.2026** — "yönetici paneli ve alt kullanıcılar sistemi getirmeliyiz,
+   kullanıcıya barı sayma yetkisi verince sadece barı sayabilmeli."
+
+İkincisi birincinin yerine geçti; tek PIN yerine **kullanıcı listesi** var.
+
+### Giriş: yalnızca PIN
+
+Kullanıcı listeden isim SEÇMEZ. PIN'ini yazar, program PIN'in kime ait
+olduğunu bulur. Depoda tabletle çalışan için en hızlı yol bu; müşterinin
+kararı da böyleydi.
+
+Zorunlu sonucu: **PIN'ler benzersiz olmak zorunda.** Aynı PIN iki kişide
+olsaydı hangisinin girdiği belirsizleşirdi. `oturum.kullaniciKaydet()` yeni
+PIN'i mevcutların hepsiyle karşılaştırıp çakışmayı reddediyor.
+
+Her kullanıcının kendi tuzu olduğu için giriş, PIN'i bütün kullanıcılarla
+tek tek deniyor. Eşleşme bulunsa bile döngü kırılmıyor — geçen süre PIN'in
+listenin başında mı sonunda mı olduğunu ele vermesin diye.
+
+### Roller ve yetkiler
+
+| Rol | Ne yapabilir |
+|---|---|
+| `yonetici` | Her şey: onay, kullanıcı yönetimi, ayarlar, pasife alma |
+| `kullanici` | Yalnızca işaretlenen yetkiler, sayımda yalnızca kendi kapsamı |
+
+Yetkiler `GALYA_PANEL.dbo.Kullanici.Yetkiler` alanında **tek bir JSON**
+olarak duruyor:
+
+```json
+{ "sayim": true, "tamSayim": false, "zayi": true, "uretim": false,
+  "stok": false, "siniflar": ["BAR"] }
+```
+
+Ayrı bir yetki tablosu açılmadı; bu boyuttaki bir küme için hem kodu hem
+ekranı gereksiz büyütürdü.
+
+### Sayım kapsamı — "barı sayma yetkisi"
+
+`siniflar` dizisi stok kartındaki **`KOD2` (Sınıf)** alanına bakıyor.
+F0102'de gerçek değerler: `MUTFAK` (497 kart), `BAR` (405), `GİDER` (15) ve
+Şefim'den sızmış otuz küsur adisyon notu.
+
+Depo yerine sınıf seçildi çünkü müşteri isteği aynı cümlede "bar mutfak
+**sınıfı**" diyordu. Vega'da `BAR` (101) ve `MUTFAK` (100) diye **depo** da
+var; ikisi karıştırılmamalı.
+
+Kapsam **iki yerde** uygulanıyor:
+
+- `sayim:ekran` listeyi süzüyor — kullanıcı kapsamı dışındaki ürünü hiç
+  görmüyor.
+- `sayim.sayimKaydet()` kaydetme anında listeyi yeniden okuyup gelen her
+  satırın kapsamda olduğunu doğruluyor; değilse sayımın tamamını reddediyor.
+
+İkincisi şart: kapsam arayüzden değil **oturumdan** okunuyor
+(`oturum.kapsamAl()`), yani DevTools'tan istek kurcalansa bile bar yetkisi
+olan kişi mutfağı sayamıyor.
+
+### Onay akışı — sayım artık doğrudan Vega'ya gitmiyor
+
+18.08'de sayım kaydedilir kaydedilmez fiş kesiliyordu. Müşteri bunu
+değiştirdi: "sayım direkt Vega'ya aktarılmamalı, önce yönetici onaylayınca
+aktarılabilmeli."
+
+```
+sayim:kaydet   → AraSayim.Durum = 'bekliyor'   (Vega'ya hiçbir şey yazılmaz)
+sayim:onayla   → yazma.sayimFisiYaz()          (93/94 fiş çifti kesilir)
+sayim:reddet   → Durum = 'reddedildi'          (sebep saklanır)
+```
+
+`sayim:onayla` **yönetici kanalı** ve sayımın Vega'ya işlendiği tek yer.
+Fark, fişin kesildiği andaki güncel stoğa göre yeniden hesaplanıyor —
+sayım ile onay arasında Şefim satış işlemeye devam ettiği için.
+
+Ana ekranda "Onay bekleyen sayım" kutusu var; oradan onay ekranına gidiliyor.
+
+### Ara sayım / tam sayım
+
+| Tür | Liste |
+|---|---|
+| `ara` | `SayimListesi` tablosuna konmuş ürünler (günlük "şu iki kalemi say") |
+| `tam` | Kapsamdaki BÜTÜN stok kartları, pasifler hariç (dönem sonu envanteri) |
+
+**Miktar yazılmayan satır ikisinde de sayıma girmez.** Tam sayımda da boş
+bırakılan ürünün stoğu sıfırlanmaz. Kullanıcının kararı buydu: tam sayım
+listeyi genişletir, davranışı değiştirmez. Gerçek envanter sayımı isteniyorsa
+bu ayrı bir karar — sayılmayan ürünün stoğunu silmek geri dönüşü zor bir iş.
+
+Tam sayım ayrı bir yetki (`tamSayim`); ara sayım yetkisi olan herkes tam
+sayım yapamıyor.
+
+### Körleme sayım (18.08'den beri aynı)
+
+`sayim:ekran` kanalı, yönetici değilse `teorik` ve `birimMaliyet` alanlarını
+nesneden **çıkarır** — CSS ile gizlemez, göndermez. Bunun zorunlu sonucu:
+`sayim.sayimKaydet` teorik miktarı arayüzden almıyor, kaydetme anında
+Vega'dan yeniden okuyor. Yan faydası, arayüz kurcalansa bile uydurma fark
+yazılamaması.
+
+`sayim:gecmis`, `sayim:detay` ve `sayim:bekleyenler` yönetici ister. Açık
+bırakılsaydı sayan kişi rastgele bir miktar kaydedip farkı okur ve teorik
+miktarı geri hesaplardı. Aynı sebeple `sayim:kaydet` yanıtındaki `artan` /
+`azalan` / `farkliSatir` / `farkTutari` alanları yönetici değilse yanıttan
+çıkarılır.
+
+### Süzgeç nerede
+
+`main.js` içinde üç katman var:
+
+1. `YONETICI_KANALLARI` — yalnızca yönetici çağırabilir (onay, kullanıcı
+   yönetimi, `ayar:yaz`, `stok:pasifYap`, sayım geçmişi).
+2. `YETKI_KANALLARI` — kanal → gereken yetki anahtarı eşlemesi. Yönetici
+   hepsini geçer.
+3. Yanıt süzme — `sayim:ekran` ve `sayim:kaydet` engellenmez, **yanıtları
+   role göre süzülür**.
+
+Üçü de `kayitEt()` içinde, her IPC çağrısında. Arayüzdeki `yetkiVar()`
+yalnızca düğmeyi çizip çizmeyeceğini belirler; DevTools açılsa bile yasak
+kanal cevap vermez.
+
+### Hiç kullanıcı yoksa kilit yok
+
+Kullanıcı tablosu boşsa (ya da hepsi pasifse) program **bugüne kadar nasıl
+çalışıyorsa öyle** çalışır: giriş sorulmaz, herkes yöneticidir, sağ üstteki
+düğme hiç görünmez. Güncelleme kimseyi şaşırtmasın diye böyle.
+
+İlk yönetici Ayarlar ekranından açılıyor; sonrası Kullanıcılar ekranından.
+Eski tek PIN'i olan kurulumlar için `panel.kur()` içinde bir kereye mahsus
+geçiş var: `Guvenlik` tablosundaki PIN, "Yönetici" adlı kullanıcıya aynı
+özetle taşınıyor. Kullanan kişi güncellemeden sonra da eski PIN'iyle giriyor.
+
+Son yönetici silinemiyor — silinseydi kimse onay veremez, kullanıcı yönetimi
+de açılmazdı.
+
+### 18.08'deki "bilinen boşluk" kapandı (kısmen)
+
+O gün şu yazılmıştı: *"Stok ekranı envanter miktarını herkese gösteriyor.
+Sayım ekranında gizli olan sayı, Stok ekranındaki süzgeçte aynen duruyor."*
+
+Artık `stok:kontrol`, `stok:durum`, `stok:ara`, `stok:hareket` ve cari uçları
+`stok` yetkisine bağlı. Bu yetki verilmeyen sayımcı stok ekranını açamıyor.
+Ama **yetki verilirse miktar yine görünür** — o ekrandaki sayı süzülmüyor.
+Sayımcıya stok yetkisi vermeyin.
+
+### Bunun sınırı (değişmedi)
+
+PIN **ekranı** kilitler, **veritabanını** kilitlemez. `ayarlar.json`
+(`%APPDATA%\Galya Panel\`) içinde SQL şifresi düz metindir. Bilgisayara
+erişimi olan çalışan o dosyayı Not Defteri'yle açıp SSMS veya Excel'den
+VEGADB'yi okuyabilir. Bu katman kazara görmeyi ve merakı keser, niyetli
+birini durdurmaz.
+
+Gerçek sınır isteniyorsa yapılacak iş ayrıdır: ikinci bir SQL girişi
+(`galya_sayimci`) açmak, VEGADB'de `db_datareader` vermemek, sayım için
+gereken birkaç view/procedure üzerinde yalnızca `EXECUTE` tanımlamak ve
+yönetici şifresini ayar dosyasına hiç yazmamak (girişte elle alınır).
+`db/sql.js` iki havuz tutacak şekilde değişir. Müşteri karar vermeden
+başlamayın.
 
 ---
 
@@ -191,12 +366,60 @@ Yani yazma açılsa bile SQL tarafında ayrıca yetki verilmesi gerekir.
 | Üretim fişi ("sıfıra kadar üret") | Çalışıyor — tam desen (38+38+97+96) |
 | Alış faturası girişi | Çalışıyor — taslak, sonra tek onayla Vega'ya |
 | Tutanak belgesi (imzalı çıktı) | Çalışıyor — PDF ve yazıcı |
-| Sınıflandırma süzgeçleri (10 kod alanı) | Çalışıyor |
+| Sınıflandırma süzgeçleri (10 kod alanı) | Çalışıyor — çoklu seçim + "hariç tut" |
 | Sayım fişini Vega'ya yazma | Çalışıyor — canlıda denendi ve geri alındı |
+| Zayi / personel çıkışı | Çalışıyor — 33 fiş + cari borç, canlıda DENENMEDİ |
+| Zayiatlı üretim | Çalışıyor — zayi + üretim tek işlem, canlıda DENENMEDİ |
+| Manuel / otomatik üretim | Çalışıyor |
+| Kullanıcılar ve yetkiler | Çalışıyor — PIN'le giriş, sınıf kapsamı |
+| Sayım onay akışı | Çalışıyor — onaysız Vega'ya yazılmıyor |
+| Tam sayım | Çalışıyor — kapsamdaki bütün kartlar |
+| Stok kartını pasife alma | Çalışıyor — `KOD8 = PASİF` |
 
 Belgedeki maddelerin tamamı bitti. Panelin yazdığı her belge tipi gerçek
 Vega fişlerinden çıkarıldı, `GALYA_TEST` üzerinde sınandı ve canlı firmada
-tek örnekle doğrulanıp geri alındı.
+tek örnekle doğrulanıp geri alındı — zayi ve zayiatlı üretim hariç, onlar
+henüz yalnızca `GALYA_TEST` üzerinde denendi (bkz. 11. Sıradaki işler).
+
+### 19.08.2026'da eklenenler
+
+Müşterinin aynı gün ilettiği yedi istek karşılandı:
+
+- **Zayi / personel çıkışı** (`db/zayi.js`, `yazma.zayiFisiYaz`). Bozulan mal
+  ile çalışanın elinde kalan mal aynı belgeyle düşülüyor: stok çıkış fişi
+  (33) + seçilen carinin borç hareketi. Aradaki tek fark cari — gerçek zayide
+  `ZAYİ` kartı, personelde kalanda kişinin kendi kartı. Fatura gibi önce
+  taslak durur, `Vega'ya yaz` ayrı bir onaydır. Desen 37 gerçek ZAYİ
+  fişinden çıkarıldı; ayrıntısı `BELGE-DESENI.md` → "Zayi / personel çıkışı".
+- **Zayiatlı üretim** (`uretim.zayiatliUret`). İzleyici kaydındaki
+  (`galya döküman/zaiyatlı manuel üretim .md`) elle yapılan işin tamamı tek
+  düğmede: zayi fişi kesilir, kalan yeniden okunur, eksik kadar üretim
+  yapılır. Üretim yazılamazsa zayi fişi geri alınır — stoktan düşmüş ama
+  üretilmemiş ürün bırakılmaz.
+- **Manuel üretim.** Reçetesi olan herhangi bir ürün, istenen miktarda.
+  Eskiden yalnızca "THIRD işaretli + stoğu eksi" ürünler üretilebiliyordu.
+  Üretim ekranı üç şeride ayrıldı: zayiatlı / manuel / otomatik.
+- **Kullanıcılar ve yetkiler** (`db/oturum.js`, "Kullanıcılar" ekranı).
+  Ayrıntısı 5b bölümünde.
+- **Sayım onayı.** Sayım artık kaydedilir kaydedilmez Vega'ya gitmiyor;
+  yönetici onaylayınca fiş kesiliyor. Ana ekranda "Onay bekleyen sayım"
+  kutusu var.
+- **Tam sayım.** Ara sayımın yanına kapsamdaki bütün kartları listeleyen
+  ikinci tür eklendi. Miktar yazılmayan satır ikisinde de sayıma girmez.
+- **Sınıf süzgeci çoklu seçim ve "hariç tut" kipi kazandı.** Müşterinin
+  istediği "bar-mutfak dışındakileri getirme" işi bununla çıkıyor: Sınıf
+  alanında BAR ve MUTFAK işaretlenir, "hariç" kutusu boş bırakılırsa
+  yalnızca onlar gelir. `KOD2`'de bu ikisinin yanında Şefim'den sızmış otuz
+  küsur adisyon notu duruyor ve listeyi kirletiyordu.
+- **Stok kartını pasife alma.** Firma kullanmadığı 373 kartı zaten
+  `KOD8 = PASİF` diye işaretlemiş; panel aynı alanı kullanıyor. Pasif
+  kartlar stok listelerinde ve sayım föylerinde görünmüyor.
+- **Üretim fişine `TBLUREURETIMARAC` eklendi.** İzleyici kaydı Vega'nın
+  üretim araçlarını reçeteden kopyaladığını gösterdi; panel de kopyalıyor.
+
+> **KDV tuzağı.** Zayi fişi yazılırken `TBLSTOKLAR.KDV` diye bir alan
+> varsayıldı; öyle bir alan yok. Kartta `KDVGRUBU` var, oran
+> `TBLKDVGRUPLARI` tablosunda (1 → %20, 100 → %10, 101 → %1, 102 → %0).
 
 ### 18.08.2026'da eklenenler
 - **Sayım artık panelden yapılıyor.** Kullanıcı sayılan miktarları yazıp
@@ -319,10 +542,12 @@ sürümüdür. Kalsın; sunucuda exe çalıştırılamayan durumlarda işe yarar
 ## 8. Sınama
 
 ```
-node kurulum/test-sorgular.js     # 91 okuma sınaması
-node kurulum/test-yazma.js --kur  # test veritabanını hazırla/tamamla
-node kurulum/test-yazma.js        # 79 yazma sınaması
-node izleyici/test-izleyici.js …  #  6 izleyici sınaması
+node kurulum/test-sorgular.js       #  98 okuma sınaması
+node kurulum/test-yazma.js --kur    # test veritabanını hazırla/tamamla
+node kurulum/test-yazma.js          # 106 yazma sınaması
+node kurulum/test-yetki.js          #  41 kullanıcı / kapsam / onay sınaması
+npx electron kurulum/test-arayuz.js #  29 arayüz duman sınaması
+node izleyici/test-izleyici.js …    #   6 izleyici sınaması
 ```
 
 Yazma sınamaları müşteri verisine dokunmaz: yapısı VEGADB'den
@@ -330,6 +555,30 @@ Yazma sınamaları müşteri verisine dokunmaz: yapısı VEGADB'den
 veritabanında çalışır. Bu kalıp IDENTITY özelliğini korur, bu yüzden seçildi.
 Sınama `GALYA_AYAR_DOSYASI` ortam değişkeniyle geçici bir ayar dosyasına
 yönlendirir.
+
+`test-yetki.js` VEGADB'ye hiç yazmaz (stok kartlarını yalnızca okur) ama
+panel tablolarını da **`GALYA_TEST` içinde** açar. Sebep: sınama kullanıcı
+tablosunu boşaltıyor; canlı `GALYA_PANEL` üzerinde çalışsaydı müşterinin
+tanımladığı bütün kullanıcılar silinir ve program bilinmeyen bir PIN'le
+kilitlenirdi. Betik canlı panel veritabanına yönelirse kendini durduruyor.
+
+> Bu tuzağa bir kez düşüldü: geliştirme sırasında canlı `GALYA_PANEL`
+> içinde iki test kullanıcısı kaldı. Kullanıcı tanımlıyken program giriş
+> istediği için, PIN'i bilmeyen biri paneli kullanamaz hâle gelir. Temizlendi;
+> `test-yetki.js` artık aynı hatayı yapamıyor.
+
+`test-arayuz.js` gerçek arayüzü görünmez bir pencerede açar, her ekranı
+sırayla çizer ve hata çıkıp çıkmadığına bakar; kaydet/yaz düğmelerine
+basmaz, yani VEGADB'ye dokunmaz. Tanımsız değişkeni, yanlış kanal adını ve
+çizim sırasında patlayan kodu yakalar — yerleşim/görünüm hatalarını
+yakalamaz. **Electron ile** çalıştırılır (`npx electron …`), düz `node` ile
+değil.
+
+> Ekran görüntüsü alıp fareyle tıklayarak sınamaya çalışmayın — denendi.
+> Electron penceresi arka plandayken `mouse_event` tıklamaları pencereye
+> geçmiyor; ekran görüntüsü doğru çıksa bile tıklama hiç işlenmiyor ve
+> sonuç yanıltıcı oluyor. `executeJavaScript` ile `ekranAc()` çağırmak hem
+> güvenilir hem de hata metnini doğrudan veriyor.
 
 > Sahte sınama tuzağı: ilk yazılan kilit sınaması `kontrol(..., true, ...)`
 > şeklindeydi, yani koşulu ne olursa olsun geçiyordu. Şimdiki hâli
@@ -401,8 +650,28 @@ tablo tutuyor ve firmalar şöyle:
    96/97 sayacını Şefim entegrasyonu günde 250–600 belge hızında
    ilerlettiği için yoğun saatlerde toplu üretimden kaçınılmalı.
 3. **Alış faturasının canlıda ilk denemesi.** Cari borç oluşturduğu için
-   muhasebe zincirine dokunan tek yazma işlemi. İlk faturanın Vega'da
-   doğru göründüğü ve cari ekstresine düştüğü teyit edilmeli.
+   muhasebe zincirine dokunan yazma işlemlerinden biri. İlk faturanın
+   Vega'da doğru göründüğü ve cari ekstresine düştüğü teyit edilmeli.
+4. **Zayi fişinin canlıda ilk denemesi.** 19.08.2026'da yazıldı, yalnızca
+   `GALYA_TEST` üzerinde denendi (19 sınama). Alış faturası gibi cari
+   hareketi oluşturuyor, yani muhasebe zincirine dokunuyor. İlk fişte tek
+   kalemle başlanmalı; Vega'nın Stok Çıkış Fişi ekranında belgenin ve ZAYİ
+   carisinin ekstresinde borcun göründüğü kontrol edilmeli. Fiyatsız kip
+   (varsayılan) cari borcunu 0 yazar — muhasebenin bunu beklediği teyit
+   edilmeli.
+5. **Zayiatlı üretimin canlıda ilk denemesi.** İki belge birden kesiyor
+   (zayi + üretim). Üretim tarafı 96/97 sayacını kullandığı için yoğun
+   saatlerden kaçınılmalı. Üretim adımı hata verirse zayi fişinin gerçekten
+   geri alındığı gözle doğrulanmalı.
+6. **Müşteriye sorulacak: tam sayımda girilmeyen ürün.** Şu an atlanıyor
+   (stok değişmiyor). Gerçek dönem sonu envanterinde sayılmayan ürünün
+   stoğunun sıfırlanması beklenir. Bu geri dönüşü zor bir davranış
+   olduğu için kullanıcının kararıyla "atla" seçildi; envanter kapanışında
+   yeterli olup olmadığı müşteriyle netleşmeli.
+7. **Müşteriye sorulacak: sayımcıya stok yetkisi.** `stok` yetkisi verilen
+   kullanıcı stok ekranında envanter miktarını görür — körleme sayım o kişi
+   için anlamını yitirir. Sayım yapan kullanıcılara bu yetki verilmemeli;
+   gerekiyorsa `stok:kontrol` yanıtındaki miktarın da süzülmesi ayrı bir iş.
 
 ---
 

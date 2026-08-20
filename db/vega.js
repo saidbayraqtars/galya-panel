@@ -125,6 +125,47 @@ const KOD_ALANLARI = [
   { no: 10, ad: '10. Kod' }
 ];
 
+// Pasif kart işareti. Firma kullanmadığı 373 kartı KOD8 alanına "PASİF"
+// yazarak işaretlemiş; panel de aynı alanı kullanıyor (db/yazma.js →
+// stokPasifYap). Pasifler listelerde varsayılan olarak GÖRÜNMEZ.
+const PASIF_KODU = 'PASİF';
+const PASIF_ALANI = 'KOD8';
+
+// Sınıflandırma süzgeci.
+//
+// İki kip var: seçilenleri getir, ya da seçilenler HARİÇ getir. İkincisi
+// müşterinin istediği "bar-mutfak dışındakileri getirme" işi için: sınıf
+// alanında BAR ve MUTFAK'ın yanında Şefim'den sızmış otuz küsur adisyon
+// notu duruyor (`x`, `Kahvesi Sade`, `MARLBORO TOUCH BLUE`…) ve bunlar
+// listeyi kirletiyor.
+//
+// Değer birden çok olabilir: arayüz virgülle ayrılmış gönderir
+// ("BAR,MUTFAK") ya da dizi verir.
+function kodDegerleri(ham) {
+  if (ham == null || ham === '') return [];
+  const liste = Array.isArray(ham) ? ham : String(ham).split(',');
+  return liste.map((d) => String(d).trim()).filter(Boolean);
+}
+
+function kodSuzgeciKur(secim) {
+  const kosullar = [];
+  const parametreler = {};
+  for (const k of KOD_ALANLARI) {
+    const degerler = kodDegerleri(secim['kod' + k.no]);
+    if (!degerler.length) continue;
+    const haric = !!secim['kod' + k.no + 'Haric'];
+    const adlar = degerler.map((deger, i) => {
+      const ad = `kod${k.no}_${i}`;
+      parametreler[ad] = deger;
+      return '@' + ad;
+    });
+    kosullar.push(
+      `LTRIM(RTRIM(ISNULL(S.KOD${k.no}, ''))) ${haric ? 'NOT IN' : 'IN'} (${adlar.join(', ')})`
+    );
+  }
+  return { kosullar, parametreler };
+}
+
 async function stokKontrolListesi(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const a = ayarOku();
@@ -142,14 +183,15 @@ async function stokKontrolListesi(secim) {
   const ustSinir = secim.ust != null && secim.ust !== '' ? Number(secim.ust) : null;
 
   // Firmanın sınıflandırması. Alan karşılıkları KOD_ALANLARI'nda; hangi
-  // kodun kullanıldığını firma TBLSTOKKODTAN'da tanımlıyor.
-  const kodSuzgecleri = [];
-  for (const k of KOD_ALANLARI) {
-    const deger = secim['kod' + k.no];
-    if (deger != null && deger !== '') {
-      kodSuzgecleri.push(`ISNULL(S.KOD${k.no}, '') = @kod${k.no}`);
-    }
-  }
+  // kodun kullanıldığını firma TBLSTOKKODTAN'da tanımlıyor. Her alan çoklu
+  // seçim ve "hariç tut" kipini destekliyor (bkz. kodSuzgeciKur).
+  const kod = kodSuzgeciKur(secim);
+
+  // Pasif kartlar varsayılan olarak listeye girmez; "pasifleri de göster"
+  // kutusu işaretlenince gelir. KOD8'e elle süzgeç konmuşsa kullanıcının
+  // dediği geçerlidir, üstüne ikinci bir koşul eklenmez.
+  const pasifSecili = kodDegerleri(secim.kod8).length > 0;
+  const pasifGizle = !secim.pasifDahil && !pasifSecili;
 
   // Eşik: karta özel kritik seviye varsa o, yoksa ayarlardaki genel üst sınır.
   const esik = `CASE WHEN ISNULL(S.KRITIKSEVIYE,0) > 0 THEN S.KRITIKSEVIYE ELSE @ust END`;
@@ -195,6 +237,8 @@ async function stokKontrolListesi(secim) {
       ISNULL(S.KRITIKSEVIYE, 0) AS kritikSeviye,
       ISNULL(S.MALIYET, 0)      AS birimMaliyet,
       ${kalan} * ISNULL(S.MALIYET, 0) AS deger,
+      CASE WHEN LTRIM(RTRIM(ISNULL(S.${PASIF_ALANI}, ''))) = N'${PASIF_KODU}'
+           THEN 1 ELSE 0 END AS pasif,
       CASE
         WHEN ${kalan} < 0 THEN 'eksi'
         WHEN ${kalan} = 0 THEN 'sifir'
@@ -210,16 +254,13 @@ async function stokKontrolListesi(secim) {
       AND S.IND >= 100
       AND S.STOKTIPI NOT IN (${giderDahil ? '7, 9' : '3, 7, 9'})
       AND (${suzgecler[suzgec] || suzgecler.sorunlu})
-      ${kodSuzgecleri.length ? 'AND ' + kodSuzgecleri.join(' AND ') : ''}
+      ${pasifGizle ? `AND LTRIM(RTRIM(ISNULL(S.${PASIF_ALANI}, ''))) <> N'${PASIF_KODU}'` : ''}
+      ${kod.kosullar.length ? 'AND ' + kod.kosullar.join(' AND ') : ''}
     ORDER BY ${kalan} ASC, S.MALINCINSI ASC
   `,
     Object.assign(
       { depo, ust, aktifGun, alt: alt != null ? alt : 0, ustSinir: ustSinir != null ? ustSinir : 0 },
-      KOD_ALANLARI.reduce((p, k) => {
-        const d = secim['kod' + k.no];
-        if (d != null && d !== '') p['kod' + k.no] = String(d);
-        return p;
-      }, {})
+      kod.parametreler
     )
   );
 }
@@ -745,5 +786,8 @@ module.exports = {
   faturaUrunEslesmeleri,
   gunlukHareket,
   sonHareketTarihi,
-  IZAHAT_ADLARI
+  IZAHAT_ADLARI,
+  KOD_ALANLARI,
+  PASIF_KODU,
+  PASIF_ALANI
 };
