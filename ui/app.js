@@ -78,6 +78,24 @@ function sayiYaz(deger, basamak) {
   });
 }
 
+// Miktar yazımı. sayiYaz(28, 3) Türkçe biçimde "28,000" veriyor; virgül
+// ondalık ayracı olsa da kullanıcı bunu "28 bin" diye okuyor (bir kez
+// "neden 28 yazınca 28000 alıyor" diye soruldu). Burada gereksiz sıfırlar
+// yazılmıyor: 28 → "28", 20,8599 → "20,86", 0,16935 → "0,169".
+//
+// Çok küçük miktarlarda (reçete bileşenleri 0,00000332'ye kadar iniyor) üç
+// basamak sayıyı yuvarlayıp kırpardı — 0,0083 "0,008" görünüyordu. Bir
+// yüzdelikten küçük değerlerde basamak sayısı artıyor.
+function miktarYaz(deger) {
+  if (deger == null || isNaN(deger)) return '—';
+  const s = Number(deger);
+  const basamak = s !== 0 && Math.abs(s) < 0.01 ? 8 : 3;
+  return s.toLocaleString('tr-TR', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: basamak
+  });
+}
+
 function paraYaz(deger) {
   if (deger == null) return '—';
   return Number(deger).toLocaleString('tr-TR', {
@@ -2421,7 +2439,7 @@ function agacSatirlariYaz(kutu, satirlar, maliyetHaritasi, tazele) {
       el('span', {
         sinif: 'mik',
         metin:
-          sayiYaz(s.miktar, 3) + ' ' + (s.birim || '') +
+          miktarYaz(s.miktar) + ' ' + (s.birim || '') +
           (s.fireOrani ? '  (fire %' + sayiYaz(s.fireOrani, 1) + ')' : '') +
           (m && m.tutar != null ? '   ' + paraYaz(m.tutar) + ' TL' : '')
       })
@@ -3903,7 +3921,7 @@ async function uretimSifirlamaBolumu(p) {
     const secilenler = adaylar.filter((a) => secililer.has(Number(a.stokNo)) && !a.uretilemez);
     const toplam = secilenler.reduce((t, a) => t + Number(a.uretilecek || 0), 0);
     secimYazi.textContent = secilenler.length
-      ? `${secilenler.length} ürün seçildi, toplam ${sayiYaz(toplam, 3)} birim üretilecek.`
+      ? `${secilenler.length} ürün seçildi, toplam ${miktarYaz(toplam)} birim üretilecek.`
       : 'Hiç ürün seçilmedi. Satırdaki kutucuklardan seçin ya da tek tek "Üret" deyin.';
     topluDugme.disabled = !durum.yazmaAcik || !secilenler.length;
   }
@@ -3948,7 +3966,7 @@ async function uretimSifirlamaBolumu(p) {
         hucre(sayiYaz(a.kalan, 2), 'sayi eksi'),
         a.uretilemez
           ? hucre('Sıfıra çekilemez', 'eksi')
-          : hucre(sayiYaz(a.uretilecek, 3) + ' ' + (a.birim || ''), 'sayi'),
+          : hucre(miktarYaz(a.uretilecek) + ' ' + (a.birim || ''), 'sayi'),
         hucre(sayiYaz(a.receteSatiri), 'sayi'),
         el('td', null, [
           a.uretilemez
@@ -3997,7 +4015,7 @@ async function uretimSifirlamaBolumu(p) {
 
     const onay = await window.galya.cagir('sistem:onay', {
       baslik: 'Seçilenleri sıfıra çek',
-      mesaj: `${secilenler.length} ürün için toplam ${sayiYaz(toplam, 3)} birim üretim fişi yazılacak.`,
+      mesaj: `${secilenler.length} ürün için toplam ${miktarYaz(toplam)} birim üretim fişi yazılacak.`,
       detay:
         'Her ürün için ayrı üretim fişi kesilir; reçetedeki bileşenler stoktan ' +
         'düşer, mamul stoğa girer. Bir ürün hata verirse diğerleri yazılmaya ' +
@@ -4024,7 +4042,7 @@ async function uretimSifirlamaBolumu(p) {
           s.sonuclar.filter((x) => !x.tamam),
           (x) => el('tr', null, [
             hucre(x.ad),
-            hucre(sayiYaz(x.miktar, 3), 'sayi'),
+            hucre(miktarYaz(x.miktar), 'sayi'),
             hucre(x.mesaj || '—')
           ])
         ));
@@ -4042,8 +4060,8 @@ async function uretimSifirlamaBolumu(p) {
     const onay = await window.galya.cagir('sistem:onay', {
       baslik: 'Sıfıra kadar üret',
       mesaj:
-        `"${aday.ad}" stoğu ${sayiYaz(aday.kalan, 3)} ${aday.birim || ''}. ` +
-        `${sayiYaz(aday.uretilecek, 3)} ${aday.birim || ''} üretilip sıfıra çekilecek.`,
+        `"${aday.ad}" stoğu ${miktarYaz(aday.kalan)} ${aday.birim || ''}. ` +
+        `${miktarYaz(aday.uretilecek)} ${aday.birim || ''} üretilip sıfıra çekilecek.`,
       detay:
         'Reçetedeki bileşenler stoktan düşer, mamul stoğa girer. Üretilecek ' +
         'miktar fişin yazıldığı andaki güncel stoğa göre yeniden hesaplanır. ' +
@@ -4059,7 +4077,7 @@ async function uretimSifirlamaBolumu(p) {
     try {
       const s = await cagir('uretim:sifiraKadar', { stokNo: aday.stokNo });
       bildir(
-        `${sayiYaz(s.uretilenMiktar, 3)} ${aday.birim || ''} ${s.mamulAdi} üretildi (fiş ${s.fisNo}).`,
+        `${miktarYaz(s.uretilenMiktar)} ${aday.birim || ''} ${s.mamulAdi} üretildi (fiş ${s.fisNo}).`,
         'iyi'
       );
       ekranAc('uretim', { kip: 'sifirla', thirdSadece: thirdSadece ? 1 : undefined });
@@ -4113,12 +4131,27 @@ async function uretimFireliBolumu() {
     return satirlar.length === 1;
   }
 
-  // Fire = giren − çıkan. Yalnızca tek hammadde varken ve kullanıcı fire
-  // kutusuna elle dokunmadıysa hesaplanıyor.
+  // Fire = giren − çıkan, ama yalnızca bu çıkarma ANLAMLIYSA. Üç şart:
+  //
+  //   1. Tek hammadde var. İkisi olsaydı hangi hammaddeden ne kadar fire
+  //      düştüğü bilinemezdi.
+  //   2. Kullanıcı fire kutusuna elle dokunmamış.
+  //   3. Hammadde ile mamulün BİRİMİ aynı. "10 kg ham somondan 3 kg somon"
+  //      işinde doğru; "10 kg hamurdan 40 adet ekmek" işinde çıkarma
+  //      anlamsız (40 adet − 10 kg diye bir şey yok) ve fireyi 30 gibi
+  //      uydurma bir sayıya çekerdi.
+  function otomatikFireMi(r) {
+    if (!tekSatirMi() || r.elleFire) return false;
+    if (!mamul) return false;
+    const hb = (r.urun.birim || '').trim().toLocaleUpperCase('tr');
+    const mb = (mamul.birim || '').trim().toLocaleUpperCase('tr');
+    return !!hb && hb === mb;
+  }
+
   function fireyiHesapla() {
     if (!tekSatirMi()) return;
     const r = satirlar[0];
-    if (r.elleFire) return;
+    if (!otomatikFireMi(r)) return;
     const giren = Number(r.miktarKutu.value) || 0;
     const cikan = Number(cikanKutu.value) || 0;
     const fire = giren - cikan;
@@ -4136,9 +4169,27 @@ async function uretimFireliBolumu() {
       return;
     }
     ozetYazi.textContent =
-      `${sayiYaz(giren, 3)} giren hammadde → ${sayiYaz(cikan, 3)} ` +
-      `${mamul ? mamul.ad : 'mamul'} + ${sayiYaz(fire, 3)} fire ` +
-      `(üretimde tüketilecek ${sayiYaz(giren - fire, 3)}).`;
+      `${miktarYaz(giren)} giren hammadde → ${miktarYaz(cikan)} ` +
+      `${mamul ? mamul.ad : 'mamul'} + ${miktarYaz(fire)} fire ` +
+      `(üretimde tüketilecek ${miktarYaz(giren - fire)}).`;
+  }
+
+  // Fire kutusunun etiketi kutuyla birlikte değişiyor. Eskiden etiket
+  // yalnızca ekran yeniden çizilirken hesaplanıyordu: kullanıcı fireye elle
+  // dokunduğunda otomatik hesap kapanıyor ama etiket "(otomatik)" demeye
+  // devam ediyordu. Giren/çıkan sonradan değişince fire olduğu yerde
+  // kalıyor ve ekran yalan söylüyordu.
+  function fireEtiketiTazele(r) {
+    if (otomatikFireMi(r)) {
+      r.fireEtiket.textContent = 'Fire (otomatik: giren − çıkan)';
+    } else if (r.elleFire) {
+      r.fireEtiket.textContent = 'Fire (elle — boşaltırsanız otomatiğe döner)';
+    } else if (tekSatirMi() && mamul) {
+      // Birimler tutmuyor: çıkarma anlamsız, kullanıcı yazacak.
+      r.fireEtiket.textContent = 'Fire (elle yazın — birimler farklı)';
+    } else {
+      r.fireEtiket.textContent = 'Fire (elle yazın)';
+    }
   }
 
   function satirCiz() {
@@ -4157,11 +4208,9 @@ async function uretimFireliBolumu() {
             `${r.urun.kod || ''} · kalan ${sayiYaz(r.urun.kalan, 2)} ${r.urun.birim || ''}` })
         ]),
         el('div', null, [el('label', { metin: 'Giren miktar' }), r.miktarKutu]),
-        el('div', null, [
-          el('label', { metin: tekSatirMi() && !r.elleFire ? 'Fire (otomatik)' : 'Fire' }),
-          r.fireKutu
-        ])
+        el('div', null, [r.fireEtiket, r.fireKutu])
       ];
+      fireEtiketiTazele(r);
       if (satirlar.length > 1) {
         alanlar.push(el('button', {
           sinif: 'dugme-kucuk',
@@ -4190,12 +4239,15 @@ async function uretimFireliBolumu() {
     }
     const miktarKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.001', min: '0' });
     const fireKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: '0' });
-    const satir = { urun, miktarKutu, fireKutu, elleFire: false };
+    const fireEtiket = el('label', { metin: 'Fire (otomatik: giren − çıkan)' });
+    const satir = { urun, miktarKutu, fireKutu, fireEtiket, elleFire: false };
     miktarKutu.addEventListener('input', ozetiTazele);
     // Kullanıcı fire kutusuna dokunduğu an otomatik hesap devreden çıkıyor;
     // yazdığı sayı ekran her tazelendiğinde silinseydi kimse güvenmezdi.
+    // Kutuyu boşaltmak otomatiğe döndürüyor — kilitlenip kalmasın diye.
     fireKutu.addEventListener('input', () => {
-      satir.elleFire = true;
+      satir.elleFire = fireKutu.value.trim() !== '';
+      fireEtiketiTazele(satir);
       ozetiTazele();
     });
     satirlar.push(satir);
@@ -4276,13 +4328,13 @@ async function uretimFireliBolumu() {
       baslik: 'Manuel üretim',
       mesaj:
         satirlar
-          .map((r, i) => `${r.urun.ad} ${sayiYaz(hammaddeler[i].miktar, 3)}`)
+          .map((r, i) => `${r.urun.ad} ${miktarYaz(hammaddeler[i].miktar)}`)
           .join(' + ') +
-        ` → ${mamul.ad} ${sayiYaz(cikan, 3)} ${mamul.birim || ''}` +
-        (fireToplam > 0 ? ` + ${sayiYaz(fireToplam, 3)} fire` : ''),
+        ` → ${mamul.ad} ${miktarYaz(cikan)} ${mamul.birim || ''}` +
+        (fireToplam > 0 ? ` + ${miktarYaz(fireToplam)} fire` : ''),
       detay:
         (fireToplam > 0
-          ? `Önce ${sayiYaz(fireToplam, 3)} fire için stok çıkış fişi kesilir ` +
+          ? `Önce ${miktarYaz(fireToplam)} fire için stok çıkış fişi kesilir ` +
             `(${(secilenCari && (secilenCari.kod || secilenCari.ad)) || 'seçilen cari'}). Sonra `
           : 'Fire yok, zayi fişi kesilmez. ') +
         'kalan hammadde tüketilip mamul stoğa girer. Üretim yazılamazsa fire ' +
@@ -4306,7 +4358,7 @@ async function uretimFireliBolumu() {
       });
       bildir(
         (s.zayiBelgeNo ? `Fire fişi ${s.zayiBelgeNo} kesildi, ` : '') +
-        `${sayiYaz(s.uretilenMiktar, 3)} ${mamul.birim || ''} ${s.mamulAdi} üretildi ` +
+        `${miktarYaz(s.uretilenMiktar)} ${mamul.birim || ''} ${s.mamulAdi} üretildi ` +
         `(fiş ${s.fisNo}).`,
         'iyi'
       );
@@ -4338,7 +4390,10 @@ async function uretimFireliBolumu() {
         tikla: () => uretimUrunSecPenceresi('Üretilecek ürün', (u) => {
           mamul = u;
           mamulYazi.textContent = `${u.ad}${u.birim ? ' (' + u.birim + ')' : ''}`;
-          ozetiTazele();
+          // satirCiz, ozetiTazele'yi de çağırıyor. Mamul değişince fire
+          // etiketleri yeniden yazılmalı: otomatik hesap mamulün birimine
+          // bağlı.
+          satirCiz();
           katmanKapat();
         })
       })

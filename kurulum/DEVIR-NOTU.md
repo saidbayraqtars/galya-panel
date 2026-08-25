@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 25.08.2026 · Sürüm 1.7.0
+Son güncelleme: 25.08.2026 · Sürüm 1.7.1
 
 ---
 
@@ -467,6 +467,30 @@ değişti:
   kartı; kullanıcı çoğu zaman hiç açmıyor.
 - **Reçete gerekmiyor**, gerekmedi de: `yazma.uretimHazirligi` elle bileşen
   listesi alıyor. "Somon" kartının reçetesi yok ve olması da gerekmiyor.
+
+#### 2b. Miktar yazımı ve fire kutusu (1.7.1)
+
+İki kusur ilk kullanımda çıktı:
+
+- **`sayiYaz(x, 3)` üç ondalık basamağı zorla yazıyordu.** Türkçe biçimde
+  virgül ondalık ayracı olduğu için 28 ekrana `28,000` diye düşüyor ve
+  kullanıcı bunu "28 bin" diye okuyor — nitekim "neden 28 yazınca 28000
+  alıyor" diye soruldu. Yeni `miktarYaz()` gereksiz sıfır yazmıyor
+  (28 → `28`), bir yüzdelikten küçük değerlerde ise basamağı artırıyor
+  (0,0083 üç basamakta `0,008` diye kırpılıyordu). Üretim ekranlarında
+  16 yerde değişti.
+- **Fire kutusunun etiketi yalan söylüyordu.** Kullanıcı fireye elle
+  dokununca otomatik hesap kapanıyor (yazdığı sayı silinmesin diye,
+  bilinçli) ama etiket "(otomatik)" demeye devam ediyordu; giren/çıkan
+  sonradan değişince fire olduğu yerde kalıyor ve ekran tutarsız
+  görünüyordu. Etiket artık anında değişiyor ve **kutuyu boşaltmak
+  otomatiğe döndürüyor**.
+
+> Otomatik fire hesabı artık **birim eşitliğine** de bağlı. "10 kg ham
+> somondan 3 kg somon" işinde giren − çıkan doğru; "10 kg hamurdan 40 adet
+> ekmek" işinde `40 adet − 10 kg` diye bir şey yok ve fireyi 30 gibi
+> uydurma bir sayıya çekerdi. Birimler tutmuyorsa etiket "elle yazın —
+> birimler farklı" diyor, hesap yapılmıyor.
 
 #### 3. Tam sayımda stok durumu süzgeci
 
