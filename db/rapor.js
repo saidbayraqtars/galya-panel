@@ -18,8 +18,17 @@ function varsayilanKlasor() {
   }
 }
 
-async function kaydetYeriSor(anaPencere, baslik, uzanti, tur) {
-  const onerilen = path.join(varsayilanKlasor(), disaAktar.dosyaAdiUret(baslik, uzanti));
+// Dosya adı raporun tanımıyla başlar. Kullanıcı aynı ekrandan "Tam sayım" ve
+// "Zayi sayımı" diye iki çıktı alıyorsa masaüstünde hangisinin hangisi olduğu
+// dosya adından anlaşılsın diye (müşterinin isteği).
+function dosyaAdi(rapor, uzanti) {
+  const tanim = (rapor && rapor.tanim ? String(rapor.tanim).trim() : '').slice(0, 40);
+  const baslik = rapor && rapor.baslik ? rapor.baslik : 'rapor';
+  return disaAktar.dosyaAdiUret(tanim ? tanim + '-' + baslik : baslik, uzanti);
+}
+
+async function kaydetYeriSor(anaPencere, dosyaAdiOnerisi, uzanti, tur) {
+  const onerilen = path.join(varsayilanKlasor(), dosyaAdiOnerisi);
   const sonuc = await dialog.showSaveDialog(anaPencere, {
     title: 'Raporu kaydet',
     defaultPath: onerilen,
@@ -33,7 +42,7 @@ async function excelKaydet(anaPencere, rapor, kim) {
   if (!rapor || !rapor.sutunlar || !rapor.satirlar) throw new Error('Rapor içeriği eksik.');
   if (!rapor.satirlar.length) throw new Error('Aktarılacak satır yok.');
 
-  const yol = await kaydetYeriSor(anaPencere, rapor.baslik, 'xlsx', 'Excel dosyası');
+  const yol = await kaydetYeriSor(anaPencere, dosyaAdi(rapor, 'xlsx'), 'xlsx', 'Excel dosyası');
   if (!yol) return { iptal: true };
 
   disaAktar.excelDosyayaYaz(rapor, yol);
@@ -45,7 +54,7 @@ async function pdfKaydet(anaPencere, rapor, kim) {
   if (!rapor || !rapor.sutunlar || !rapor.satirlar) throw new Error('Rapor içeriği eksik.');
   if (!rapor.satirlar.length) throw new Error('Aktarılacak satır yok.');
 
-  const yol = await kaydetYeriSor(anaPencere, rapor.baslik, 'pdf', 'PDF dosyası');
+  const yol = await kaydetYeriSor(anaPencere, dosyaAdi(rapor, 'pdf'), 'pdf', 'PDF dosyası');
   if (!yol) return { iptal: true };
 
   // Görünmez bir pencerede sayfayı basıp PDF alıyoruz. Pencere her durumda
@@ -105,7 +114,7 @@ async function tutanakBelgesiKaydet(anaPencere, tutanak, kim) {
   if (!tutanak || !tutanak.id) throw new Error('Tutanak bilgisi eksik.');
 
   const baslik = 'Tutanak-' + String(tutanak.id).padStart(6, '0');
-  const yol = await kaydetYeriSor(anaPencere, baslik, 'pdf', 'PDF dosyası');
+  const yol = await kaydetYeriSor(anaPencere, disaAktar.dosyaAdiUret(baslik, 'pdf'), 'pdf', 'PDF dosyası');
   if (!yol) return { iptal: true };
 
   await belgeyiPdfeBas(disaAktar.tutanakBelgeHtml(tutanak), yol);

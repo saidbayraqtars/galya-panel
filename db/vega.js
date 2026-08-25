@@ -326,10 +326,37 @@ async function stokKodListeleri(secim) {
 // Gider ve hizmet kartları (STOKTIPI = 3): elektrik, su, nakliye, reklam gibi.
 // Bunların stok miktarı olmaması gerekir; Vega bu kartlarda miktarı elle
 // sıfırlatmadığı için birikmiş bakiye kalıyor.
+//
+// 22.08.2026 — müşteri isteği: bu ekrana "bar ve mutfak dışında olan tüm
+// ürünler" gelsin. Sınıf (KOD2) alanı BAR ya da MUTFAK olmayan her kart
+// listeye giriyor; gider/hizmet kartlarının çoğunun sınıfı zaten boş ya da
+// GİDER olduğu için eski liste bunun içinde kalıyor.
+//
+//   kapsam = 'disi'  (varsayılan) bar-mutfak dışındaki bütün ürünler
+//   kapsam = 'gider'              yalnızca STOKTIPI 3 kartları (eski liste)
+//
+// Mutfak ve barın kendi ürünleri buraya HİÇ girmiyor: bu ekranın sıfırlama
+// düğmesi stoğu tek tuşla siliyor, gerçek mutfak stoğunun yanlışlıkla
+// sıfırlanması geri dönüşü zor bir iş olurdu.
+const SAYIM_SINIFLARI = ['BAR', 'MUTFAK'];
+
 async function giderHizmetStoklari(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const v = vt();
   const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
+  const sadeceGider = String(secim.kapsam || 'disi') === 'gider';
+
+  const sinifParametreleri = {};
+  const sinifAdlari = SAYIM_SINIFLARI.map((deger, i) => {
+    sinifParametreleri['sinif' + i] = deger;
+    return '@sinif' + i;
+  });
+
+  // Pasif kartlar (KOD8 = PASİF) listeye girmiyor; firma kullanmadığı 373
+  // kartı böyle işaretlemiş, sıfırlanacak bir şeyleri yok.
+  const kapsamKosulu = sadeceGider
+    ? 'S.STOKTIPI = 3'
+    : `(S.STOKTIPI = 3 OR LTRIM(RTRIM(ISNULL(S.KOD2, ''))) NOT IN (${sinifAdlari.join(', ')}))`;
 
   return sorgu(
     `
@@ -339,6 +366,8 @@ async function giderHizmetStoklari(secim) {
       S.MALINCINSI           AS ad,
       ISNULL(S.STOKKODU, '') AS kod,
       S.STOKTIPI             AS stokTipi,
+      ISNULL(S.KOD1, '')     AS tur,
+      ISNULL(S.KOD2, '')     AS sinif,
       ISNULL(B.BIRIMADI, '') AS birim,
       ISNULL(K.KALAN, 0)     AS kalan,
       ISNULL(S.MALIYET, 0)   AS birimMaliyet,
@@ -349,11 +378,15 @@ async function giderHizmetStoklari(secim) {
            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
     WHERE ISNULL(S.DELETED, 0) = 0
       AND S.IND >= 100
-      AND S.STOKTIPI = 3
+      AND ${kapsamKosulu}
+      AND LTRIM(RTRIM(ISNULL(S.${PASIF_ALANI}, ''))) <> N'${PASIF_KODU}'
       AND (@sadeceDolu = 0 OR ISNULL(K.KALAN, 0) <> 0)
     ORDER BY ABS(ISNULL(K.KALAN, 0)) DESC, S.MALINCINSI
   `,
-    { depo, sadeceDolu: secim.sadeceDolu === false ? 0 : 1 }
+    Object.assign(
+      { depo, sadeceDolu: secim.sadeceDolu === false ? 0 : 1 },
+      sinifParametreleri
+    )
   );
 }
 
@@ -788,6 +821,7 @@ module.exports = {
   sonHareketTarihi,
   IZAHAT_ADLARI,
   KOD_ALANLARI,
+  kodSuzgeciKur,
   PASIF_KODU,
   PASIF_ALANI
 };

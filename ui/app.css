@@ -505,3 +505,25 @@ input.miktar {
   white-space: nowrap;
   cursor: pointer;
 }
+
+/* Çıktı tanımı satırı. Kullanıcının Excel/PDF çıktısına verdiği ad
+   ("Tam sayım", "Zayi") burada yazılıyor; dışa aktarma düğmeleri de aynı
+   satırda duruyor ki hangi çıktıya ad verildiği belli olsun. */
+.rapor-tanim {
+  align-items: flex-end;
+  padding: 10px 12px;
+  background: var(--yuzey);
+  border: 1px solid var(--cizgi);
+  border-radius: 6px;
+}
+.rapor-tanim input[type="text"] { width: 100%; }
+
+/* Üretim ekranında seçilen ürünün adı. Boşken "Henüz seçilmedi" yazıyor. */
+.secim-yazi {
+  padding: 9px 12px;
+  border: 1px dashed var(--cizgi);
+  border-radius: 6px;
+  color: var(--yazi2);
+  font-size: 15px;
+  min-height: 40px;
+}

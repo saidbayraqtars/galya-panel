@@ -20,6 +20,22 @@ const VARSAYILAN = {
   aktifGun: 90,
   maliyetEskimeGun: 30,
   vegaKlasoru: 'C:\\VegaWinA5',
+  // Yedekleme. Klasör SUNUCUDA olmalı — BACKUP komutunu SQL Server servisi
+  // çalıştırır, yol onun disklerinde aranır. Boş bırakılırsa SQL Server'ın
+  // kendi varsayılan yedek klasörü kullanılır.
+  yedekKlasoru: '',
+  // Son yedek bundan eskiyse ekranda "yedek almayı unutmayın" uyarısı çıkar.
+  yedekUyariSaat: 24,
+  // Vega'ya yazan HER işlemden önce otomatik yedek alınsın mı?
+  // Açıkken işlem, yedek alınamazsa hiç başlamıyor — güvenlik ağı olmadan
+  // yazmamak bilinçli bir tercih.
+  islemOncesiYedek: true,
+  // İşlem öncesi yedekler diferansiyeldir; dayandıkları tam yedek ("temel")
+  // bu saatten eskiyse yenisi alınır.
+  yedekTemelSaat: 24,
+  // Kaç işlemlik geri dönüş noktası saklansın. Dosyalar döngüsel kullanılıyor
+  // (üstüne yazılıyor), böylece disk sınırsız büyümüyor.
+  yedekIslemSayisi: 20,
   // Geliştirme ve deneme aşamasında açık. Kapatmak Ayarlar ekranından.
   // Not: SQL tarafında galya_panel kullanıcısı VEGADB üzerinde salt okunur;
   // bu bayrak açık olsa da yetki verilmeden Vega'ya satır gitmez.

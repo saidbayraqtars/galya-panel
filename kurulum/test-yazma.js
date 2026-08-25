@@ -42,6 +42,7 @@ process.env.GALYA_AYAR_DOSYASI = testAyar;
 
 const sql = require(path.join(kok, 'db', 'sql'));
 const yazma = require(path.join(kok, 'db', 'yazma'));
+const uretim = require(path.join(kok, 'db', 'uretim'));
 
 const SECIM = { firma: 'F0103', donem: 'D0015', depo: 1 };
 
@@ -574,6 +575,187 @@ if (process.argv.includes('--kur')) {
     (await kalan(mamulStok)) === oncekiMamul);
   kontrol('Geri almada bileşen stoğu eski hâline döndü',
     (await kalan(bilesenStok)) === oncekiBilesen);
+
+  // --- Fireli üretim ------------------------------------------------------
+  //
+  // Müşterinin tarif ettiği iş: "10 kg ham somon girdi, 3 kg somon çıktı,
+  // 7 kg fire." Beklenen sonuç iki belge: firenin zayi çıkış fişi ve kalan
+  // hammaddeyi tüketen üretim fişi. Reçete kullanılmıyor — bileşenler elle
+  // veriliyor.
+  console.log('\n== Fireli üretim ==');
+  const fCariler = await sql.sorgu(`
+    SELECT TOP 1 IND AS cariNo, FIRMAADI AS ad
+    FROM [GALYA_TEST].dbo.F0103TBLCARI ORDER BY IND
+  `);
+  if (!fCariler.length) {
+    kontrol('Fire carisi bulundu', false, 'F0103TBLCARI boş, --kur çalıştırın');
+  } else {
+    const fCari = fCariler[0];
+    const fOncekiMamul = await kalan(mamulStok);
+    const fOncekiHam = await kalan(bilesenStok);
+    const oncekiZayiFisi = await say('F0103D0015TBLSTKCIKBASLIK', 'BELGETIPI = 33', {});
+
+    const fSonuc = await uretim.fireliUret(Object.assign({}, SECIM, {
+      mamulStokNo: mamulStok,
+      uretilenMiktar: 3,
+      hammaddeler: [{ stokNo: bilesenStok, miktar: 10, fire: 7 }],
+      cariNo: fCari.cariNo,
+      cariAdi: fCari.ad,
+      altHesap: 'FİRE',
+      sebep: 'Sınama: temizleme firesi',
+      kullanici: 'test'
+    }));
+    console.log(`  Fire fişi: ${fSonuc.zayiBelgeNo} · Üretim fişi: ${fSonuc.fisNo}`);
+
+    kontrol('Fire için zayi fişi kesildi',
+      (await say('F0103D0015TBLSTKCIKBASLIK', 'BELGETIPI = 33', {})) === oncekiZayiFisi + 1);
+    kontrol('Üretim fişi yazıldı',
+      (await say('F0103D0015TBLUREURETIMLIST', 'IND = @i', { i: fSonuc.uretimInd })) === 1);
+    kontrol('Tüketim satırı elle verilen bileşenden geldi',
+      (await say('F0103D0015TBLUREURETIM', 'EVRAKNO = @i AND STOKNO = @s',
+                 { i: fSonuc.uretimInd, s: bilesenStok })) === 1);
+    kontrol('Mamul stoğu 3 arttı',
+      Math.abs((await kalan(mamulStok)) - fOncekiMamul - 3) < 0.001,
+      `${await kalan(mamulStok)} - ${fOncekiMamul}`);
+    // 7 fire (zayi fişi) + 3 üretim tüketimi = 10.
+    kontrol('Hammadde stoğu 10 azaldı (7 fire + 3 tüketim)',
+      Math.abs(fOncekiHam - (await kalan(bilesenStok)) - 10) < 0.001,
+      `${fOncekiHam} → ${await kalan(bilesenStok)}`);
+
+    // Temizlik: üretimi ve fire fişini geri al.
+    const fBelgeler = await sql.sorgu(
+      `SELECT BELGENO AS belgeNo, IZAHAT AS izahat, EVRAKNO AS evrakNo
+       FROM [GALYA_TEST].dbo.F0103D0015TBLUREBELGE WHERE EIND = @i`,
+      { i: fSonuc.uretimInd }
+    );
+    await yazma.uretimFisiGeriAl(Object.assign({}, SECIM, {
+      uretimInd: fSonuc.uretimInd, belgeler: fBelgeler, kullanici: 'test'
+    }));
+    await yazma.zayiFisiGeriAl(Object.assign({}, SECIM, {
+      baslikInd: fSonuc.zayiBaslikInd, kullanici: 'test'
+    }));
+    kontrol('Geri almada hammadde stoğu eski hâline döndü',
+      Math.abs((await kalan(bilesenStok)) - fOncekiHam) < 0.001,
+      `${await kalan(bilesenStok)} ≠ ${fOncekiHam}`);
+    kontrol('Geri almada mamul stoğu eski hâline döndü',
+      Math.abs((await kalan(mamulStok)) - fOncekiMamul) < 0.001);
+
+    // Fire sıfırken zayi fişi HİÇ kesilmemeli.
+    const firesizOncekiFis = await say('F0103D0015TBLSTKCIKBASLIK', 'BELGETIPI = 33', {});
+    const firesiz = await uretim.fireliUret(Object.assign({}, SECIM, {
+      mamulStokNo: mamulStok,
+      uretilenMiktar: 1,
+      hammaddeler: [{ stokNo: bilesenStok, miktar: 2, fire: 0 }],
+      kullanici: 'test'
+    }));
+    kontrol('Fire sıfırken zayi fişi kesilmiyor', firesiz.zayiBelgeNo === null,
+      String(firesiz.zayiBelgeNo));
+    kontrol('Fire sıfırken çıkış fişi sayısı değişmedi',
+      (await say('F0103D0015TBLSTKCIKBASLIK', 'BELGETIPI = 33', {})) === firesizOncekiFis);
+    const firesizBelgeler = await sql.sorgu(
+      `SELECT BELGENO AS belgeNo, IZAHAT AS izahat, EVRAKNO AS evrakNo
+       FROM [GALYA_TEST].dbo.F0103D0015TBLUREBELGE WHERE EIND = @i`,
+      { i: firesiz.uretimInd }
+    );
+    await yazma.uretimFisiGeriAl(Object.assign({}, SECIM, {
+      uretimInd: firesiz.uretimInd, belgeler: firesizBelgeler, kullanici: 'test'
+    }));
+
+    // Fire, giren miktardan büyük olamaz.
+    let fHata = null;
+    try {
+      await uretim.fireliUret(Object.assign({}, SECIM, {
+        mamulStokNo: mamulStok,
+        uretilenMiktar: 1,
+        hammaddeler: [{ stokNo: bilesenStok, miktar: 2, fire: 5 }],
+        cariNo: fCari.cariNo,
+        kullanici: 'test'
+      }));
+    } catch (e) { fHata = e; }
+    kontrol('Fire giren miktardan büyük olamıyor', !!fHata, fHata ? '' : 'hata çıkmadı');
+
+    // Hepsi fire ise üretilecek bir şey kalmıyor.
+    let fHepsi = null;
+    try {
+      await uretim.fireliUret(Object.assign({}, SECIM, {
+        mamulStokNo: mamulStok,
+        uretilenMiktar: 1,
+        hammaddeler: [{ stokNo: bilesenStok, miktar: 2, fire: 2 }],
+        cariNo: fCari.cariNo,
+        kullanici: 'test'
+      }));
+    } catch (e) { fHepsi = e; }
+    kontrol('Hepsi fire olunca üretim reddediliyor', !!fHepsi, fHepsi ? '' : 'hata çıkmadı');
+  }
+
+  // --- Sıfıra kadar üretim -------------------------------------------------
+  //
+  // Mamulün stoğu zayi fişiyle eksiye düşürülüyor, sonra sıfıra çekiliyor.
+  // Gerçek akış da bu: zayi girişi Zayi ekranından yapılır, üretim ekranı
+  // yalnızca eksiği kapatır. Üretilecek miktarı kullanıcı yazmıyor.
+  console.log('\n== Sıfıra kadar üretim ==');
+
+  const sCariler = await sql.sorgu(`
+    SELECT TOP 1 IND AS cariNo, FIRMAADI AS ad
+    FROM [GALYA_TEST].dbo.F0103TBLCARI ORDER BY IND
+  `);
+  if (!sCariler.length) {
+    kontrol('Zayi carisi bulundu', false, 'F0103TBLCARI boş, --kur çalıştırın');
+  } else {
+    const sOncekiMamul = await kalan(mamulStok);
+    // Stoğu 2 birim eksiye düşürmek için önce zayi fişi.
+    const sZayi = await yazma.zayiFisiYaz(Object.assign({}, SECIM, {
+      cariNo: sCariler[0].cariNo,
+      cariAdi: sCariler[0].ad,
+      altHesap: 'ZAYİ',
+      sebep: 'Sınama: sıfıra kadar üretim hazırlığı',
+      satirlar: [{ stokNo: mamulStok, miktar: sOncekiMamul + 2 }],
+      kullanici: 'test'
+    }));
+    const eksiKalan = await kalan(mamulStok);
+    kontrol('Zayi fişi stoğu eksiye düşürdü', eksiKalan < 0, String(eksiKalan));
+
+    const adaylar = await uretim.sifirAdaylari(Object.assign({}, SECIM));
+    kontrol('Eksideki mamul aday listesine düştü',
+      adaylar.some((a) => Number(a.stokNo) === mamulStok),
+      adaylar.map((a) => a.stokNo).join(','));
+
+    const sSonuc = await uretim.sifiraKadarUret(Object.assign({}, SECIM, {
+      stokNo: mamulStok, kullanici: 'test'
+    }));
+    kontrol('Üretilen miktar eksinin karşılığı',
+      Math.abs(sSonuc.uretilenMiktar + eksiKalan) < 0.001,
+      `${sSonuc.uretilenMiktar} ≠ ${-eksiKalan}`);
+    kontrol('Stok sıfıra oturdu', Math.abs(await kalan(mamulStok)) < 0.001,
+      String(await kalan(mamulStok)));
+
+    // Stok eksi değilken üretim reddedilmeli — miktarı program buluyor,
+    // bulacak bir şey yoksa fiş kesilmemeli.
+    let sHata = null;
+    try {
+      await uretim.sifiraKadarUret(Object.assign({}, SECIM, {
+        stokNo: mamulStok, kullanici: 'test'
+      }));
+    } catch (e) { sHata = e; }
+    kontrol('Eksi olmayan stokta üretim reddediliyor', !!sHata,
+      sHata ? '' : 'hata çıkmadı');
+
+    // Temizlik: üretimi ve zayi fişini geri al.
+    const sBelgeler = await sql.sorgu(
+      `SELECT BELGENO AS belgeNo, IZAHAT AS izahat, EVRAKNO AS evrakNo
+       FROM [GALYA_TEST].dbo.F0103D0015TBLUREBELGE WHERE EIND = @i`,
+      { i: sSonuc.uretimInd }
+    );
+    await yazma.uretimFisiGeriAl(Object.assign({}, SECIM, {
+      uretimInd: sSonuc.uretimInd, belgeler: sBelgeler, kullanici: 'test'
+    }));
+    await yazma.zayiFisiGeriAl(Object.assign({}, SECIM, {
+      baslikInd: sZayi.baslikInd, kullanici: 'test'
+    }));
+    kontrol('Geri almada mamul stoğu eski hâline döndü',
+      Math.abs((await kalan(mamulStok)) - sOncekiMamul) < 0.001,
+      `${await kalan(mamulStok)} ≠ ${sOncekiMamul}`);
+  }
 
   // --- Sayım fişi ---------------------------------------------------------
   //

@@ -20,6 +20,7 @@ const rapor = require('./db/rapor');
 const maliyet = require('./db/maliyet');
 const alisFatura = require('./db/fatura');
 const uretim = require('./db/uretim');
+const yedek = require('./db/yedek');
 const oturum = require('./db/oturum');
 const zayi = require('./db/zayi');
 
@@ -107,7 +108,10 @@ const YONETICI_KANALLARI = new Set([
   'oturum:pinBelirle',
   'oturum:pinKaldir',
   'ayar:yaz',
-  'stok:pasifYap'
+  'stok:pasifYap',
+  // Geri yükleme veritabanını yedeğin alındığı ana döndürür ve aradaki her
+  // şeyi siler; panelde geri dönüşü olmayan tek iş budur.
+  'yedek:geriYukle'
 ]);
 
 // Kanal → gereken yetki anahtarı. Yönetici hepsini geçer.
@@ -121,18 +125,23 @@ const YETKI_KANALLARI = {
   'sayim:listeyiBosalt': 'sayim',
   'zayi:kaydet': 'zayi',
   'zayi:liste': 'zayi',
+  'zayi:satirDokumu': 'zayi',
   'zayi:getir': 'zayi',
   'zayi:sil': 'zayi',
   'zayi:cariler': 'zayi',
   'zayi:vegayaYaz': 'zayi',
   'zayi:vegadanGeriAl': 'zayi',
-  'uretim:adaylar': 'uretim',
-  'uretim:uretilebilirler': 'uretim',
-  'uretim:uret': 'uretim',
-  'uretim:zayiatli': 'uretim',
-  'uretim:hepsiniUret': 'uretim',
+  'uretim:sifirAdaylari': 'uretim',
+  'uretim:urunAra': 'uretim',
+  'uretim:sifiraKadar': 'uretim',
+  'uretim:hepsiniSifirla': 'uretim',
+  'uretim:fireli': 'uretim',
   'uretim:gecmis': 'uretim',
   'uretim:geriAl': 'uretim',
+  // Sayım ekranındaki sınıflandırma süzgeçlerinin seçenekleri. Stok
+  // ekranının aynı listesi `stok` yetkisine bağlı; sayımcıya o yetki
+  // verilmediği için ayrı bir uç açıldı.
+  'sayim:kodListeleri': 'sayim',
   'stok:durum': 'stok',
   'stok:kontrol': 'stok',
   'stok:ara': 'stok',
@@ -140,6 +149,100 @@ const YETKI_KANALLARI = {
   'cari:bakiye': 'stok',
   'cari:ara': 'stok'
 };
+
+// VEGADB'ye YAZAN kanallar. Bu listedeki bir kanal çağrılmadan ÖNCE
+// otomatik yedek alınıyor (db/yedek.js → islemOncesiYedek).
+//
+// Müşterinin isteği: "işlemden önce yedeği alacak, eğer işlemi yanlış
+// yaparsa anında geri dönebilmeli." Yedek diferansiyel olduğu için işlem
+// başına ~60 milisaniye sürüyor; kullanıcı beklediğini fark etmiyor.
+//
+// Geri alma uçları da (`…GeriAl`, `…vegadanGeriAl`) listede: geri alma da
+// bir yazma işlemidir ve yanlış kaydı geri almak da bir hatadır.
+//
+// 'yedek:geriYukle' burada YOK — kendi güvenlik yedeğini zaten alıyor.
+const YAZAN_KANALLAR = new Set([
+  'sayim:onayla',
+  'sayim:vegayaYaz',
+  'sayim:vegadanGeriAl',
+  'zayi:vegayaYaz',
+  'zayi:vegadanGeriAl',
+  'alisFatura:vegayaYaz',
+  'alisFatura:vegadanGeriAl',
+  'tutanak:kaydet',
+  'tutanak:vegayaYaz',
+  'tutanak:vegadanGeriAl',
+  'uretim:sifiraKadar',
+  'uretim:hepsiniSifirla',
+  'uretim:fireli',
+  'uretim:geriAl',
+  'gider:sifirla',
+  'gider:geriAl',
+  'maliyet:yaz',
+  'maliyet:geriAl',
+  'third:vegayaYaz',
+  'recete:olustur',
+  'recete:satirEkle',
+  'recete:satirGuncelle',
+  'recete:satirSil',
+  'stok:pasifYap'
+]);
+
+// Kanal adlarının kullanıcıya gösterilecek karşılığı. Geri dönüş noktaları
+// listesinde "uretim:fireli" değil "Fireli üretim" yazsın diye.
+const KANAL_ADLARI = {
+  'sayim:onayla': 'Sayım onayı',
+  'sayim:vegayaYaz': "Sayımı Vega'ya yazma",
+  'sayim:vegadanGeriAl': 'Sayımı geri alma',
+  'zayi:vegayaYaz': "Zayi fişini Vega'ya yazma",
+  'zayi:vegadanGeriAl': 'Zayi fişini geri alma',
+  'alisFatura:vegayaYaz': "Alış faturasını Vega'ya yazma",
+  'alisFatura:vegadanGeriAl': 'Alış faturasını geri alma',
+  'tutanak:kaydet': 'Tutanak kaydı',
+  'tutanak:vegayaYaz': "Tutanağı Vega'ya yazma",
+  'tutanak:vegadanGeriAl': 'Tutanağı geri alma',
+  'uretim:sifiraKadar': 'Sıfıra kadar üretim',
+  'uretim:hepsiniSifirla': 'Toplu sıfırlama üretimi',
+  'uretim:fireli': 'Fireli üretim',
+  'uretim:geriAl': 'Üretimi geri alma',
+  'gider:sifirla': 'Gider stoğu sıfırlama',
+  'gider:geriAl': 'Gider sıfırlamasını geri alma',
+  'maliyet:yaz': 'Maliyet yazma',
+  'maliyet:geriAl': 'Maliyeti geri alma',
+  'third:vegayaYaz': "THIRD işaretini Vega'ya yazma",
+  'recete:olustur': 'Reçete oluşturma',
+  'recete:satirEkle': 'Reçeteye satır ekleme',
+  'recete:satirGuncelle': 'Reçete satırı güncelleme',
+  'recete:satirSil': 'Reçete satırı silme',
+  'stok:pasifYap': 'Stok kartını pasife alma'
+};
+
+// İşlem öncesi yedek. Alınamazsa işlem HİÇ BAŞLAMIYOR.
+//
+// Bu bilinçli: güvenlik ağı yokken Vega'ya yazmak, yanlış bir işlemi geri
+// dönülemez hâle getirir. Yedeksiz çalışmak isteyen kullanıcı ayarlardan
+// `islemOncesiYedek` bayrağını kapatabiliyor.
+async function islemOncesiYedekAl(kanal, kimlik) {
+  const a = ayarlar.ayarOku();
+  if (a.islemOncesiYedek === false) return null;
+  // Yazma kapalıyken VEGADB'ye zaten tek satır gitmiyor; yedek de gereksiz.
+  if (!yazma.yazmaAcikMi()) return null;
+
+  try {
+    return await yedek.islemOncesiYedek({
+      islem: KANAL_ADLARI[kanal] || kanal,
+      kullanici: kimlik.kullanici
+    });
+  } catch (e) {
+    const hata = new Error(
+      'İşlem öncesi yedek alınamadı, işlem yapılmadı: ' + (e.message || e) +
+      ' — Yedekleme merkezinden sebebini görebilir, ya da Ayarlar ekranından ' +
+      '"işlem öncesi yedek" seçeneğini kapatabilirsiniz (önerilmez).'
+    );
+    hata.kod = 'YEDEK_ALINAMADI';
+    throw hata;
+  }
+}
 
 function kayitEt(kanal, isFn) {
   ipcMain.handle(kanal, async (olay, girdi) => {
@@ -167,7 +270,21 @@ function kayitEt(kanal, isFn) {
         ? Object.assign({}, kim, { kullanici: o.kullaniciAdi, windows: kim.kullanici })
         : kim;
 
+      // YETKİ DENETİMİNDEN SONRA, işten ÖNCE. Yetkisiz bir istek yüzünden
+      // boşuna yedek alınmıyor; yetkili istek ise yedeksiz çalışmıyor.
+      let yedekBilgisi = null;
+      if (YAZAN_KANALLAR.has(kanal)) {
+        yedekBilgisi = await islemOncesiYedekAl(kanal, kimlik);
+      }
+
       const veri = await isFn(girdi || {}, kimlik, o);
+      // Arayüz "geri dönebilirsiniz" diyebilsin diye yedek bilgisi yanıtta.
+      if (yedekBilgisi && veri && typeof veri === 'object' && !Array.isArray(veri)) {
+        veri.islemOncesiYedek = {
+          dosya: yedekBilgisi.dosya,
+          temelDosya: yedekBilgisi.temelDosya
+        };
+      }
       return { tamam: true, veri };
     } catch (e) {
       return {
@@ -292,6 +409,25 @@ kayitEt('gider:geriAl', async (g, k) =>
 );
 
 // Rapor dışa aktarma
+// --- Yedekleme merkezi ---------------------------------------------------
+//
+// Yedek dosyası SUNUCUDA oluşur; BACKUP komutunu SQL Server servisi
+// çalıştırır. Ayrıntı ve yetki: kurulum/sql-yedek-yetkisi-ver.sql
+//
+// 'yedek:geriYukle' YONETICI_KANALLARI içinde: veritabanını yedeğin alındığı
+// ana döndürür, aradaki her şeyi siler.
+kayitEt('yedek:durum', async () => yedek.durum());
+kayitEt('yedek:liste', async (g) => yedek.liste(g));
+kayitEt('yedek:hatirlatma', async () => yedek.hatirlatma());
+// Geri dönüş noktaları: hangi işlemden önceye dönülebilir.
+kayitEt('yedek:donusNoktalari', async (g) => yedek.donusNoktalari(g));
+kayitEt('yedek:al', async (g, k) =>
+  yedek.yedekAl(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+kayitEt('yedek:geriYukle', async (g, k) =>
+  yedek.geriYukle(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+
 kayitEt('rapor:excel', async (g, k) => rapor.excelKaydet(pencere, g, k));
 kayitEt('rapor:pdf', async (g, k) => rapor.pdfKaydet(pencere, g, k));
 kayitEt('rapor:ac', async (g) => rapor.dosyaAc(g.yol));
@@ -339,29 +475,47 @@ kayitEt('maliyet:geriAl', async (g, k) =>
 );
 kayitEt('maliyet:mamul', async (g) => maliyet.mamulMaliyeti(g));
 
-// Üretim. Üç yol: otomatik (stoğu eksiye düşenleri sıfıra çek), manuel
-// (istenen ürün, istenen miktar) ve zayiatlı (zayi fişi + üretim tek işlemde).
-kayitEt('uretim:adaylar', async (g) => uretim.adaylar(g));
-kayitEt('uretim:uretilebilirler', async (g) => uretim.uretilebilirler(g));
-kayitEt('uretim:uret', async (g, k) =>
-  uretim.uret(Object.assign({}, g, { kullanici: k.kullanici }))
+// Üretim. İki yol:
+//   sıfıra kadar — stoğu EKSİYE düşmüş, reçeteli ürün sıfıra çekilir.
+//                  Zayi fişi kesmez; zayiat "Zayi / personel çıkışı"
+//                  ekranında yazılır, burası yalnızca üretir.
+//   fireli       — hammadde fire vermiştir ("10 kg ham somondan 3 kg somon").
+//                  Fire varsa önce zayi fişi, sonra üretim.
+//
+// Zayiatlı üretim (zayi fişi + sıfıra çekme, tek düğmede) 25.08.2026'da
+// kaldırıldı; iki ayrı iş tek düğmeye biniyordu. Otomatik üretim de
+// 22.08.2026'da kaldırılmıştı, yerine bu sıfıra kadar üretim geldi.
+kayitEt('uretim:sifirAdaylari', async (g) => uretim.sifirAdaylari(g));
+kayitEt('uretim:urunAra', async (g) => uretim.urunAra(g));
+kayitEt('uretim:sifiraKadar', async (g, k) =>
+  uretim.sifiraKadarUret(Object.assign({}, g, { kullanici: k.kullanici }))
 );
-// Zayiatlı üretim zayi fişi DE kesiyor; iki yetki birden isteniyor.
+kayitEt('uretim:hepsiniSifirla', async (g, k) =>
+  uretim.hepsiniSifirla(Object.assign({}, g, { kullanici: k.kullanici }))
+);
+
+// Fireli üretim fire varsa zayi fişi DE kesiyor; iki yetki birden isteniyor.
 // YETKI_KANALLARI tek anahtar taşıdığı için ikincisi burada denetleniyor.
-kayitEt('uretim:zayiatli', async (g, k, o) => {
+function zayiYetkisiIste(o, isim) {
   if (o.rol !== oturum.YONETICI && !(o.yetkiler && o.yetkiler.zayi)) {
     const e = new Error(
-      'Zayiatlı üretim zayi fişi de kesiyor; "zayi girişi" yetkiniz yok. ' +
-      'Yetkiniz varsa manuel üretimi kullanabilirsiniz.'
+      `${isim} zayi fişi de kesiyor; "zayi girişi" yetkiniz yok. ` +
+      'Yöneticinize başvurun.'
     );
     e.kod = 'YETKISIZ';
     throw e;
   }
-  return uretim.zayiatliUret(Object.assign({}, g, { kullanici: k.kullanici }));
+}
+
+kayitEt('uretim:fireli', async (g, k, o) => {
+  // Fire girilmemişse zayi fişi hiç kesilmiyor; yetki de yalnızca fire
+  // varken isteniyor.
+  const fireVar = (Array.isArray(g.hammaddeler) ? g.hammaddeler : []).some(
+    (h) => Number(h && h.fire) > 0
+  );
+  if (fireVar) zayiYetkisiIste(o, 'Fireli üretim');
+  return uretim.fireliUret(Object.assign({}, g, { kullanici: k.kullanici }));
 });
-kayitEt('uretim:hepsiniUret', async (g, k) =>
-  uretim.hepsiniUret(Object.assign({}, g, { kullanici: k.kullanici }))
-);
 kayitEt('uretim:gecmis', async (g) => uretim.gecmis(g));
 kayitEt('uretim:geriAl', async (g, k) =>
   uretim.geriAl(Object.assign({}, g, { kullanici: k.kullanici }))
@@ -376,6 +530,8 @@ kayitEt('zayi:kaydet', async (g, k) =>
   zayi.taslakKaydet(Object.assign({}, g, { duzenleyen: g.duzenleyen || k.kullanici }))
 );
 kayitEt('zayi:liste', async (g) => zayi.liste(g));
+// Ayrıntılı Excel için satır dökümü: her fişin her kalemi ayrı satır.
+kayitEt('zayi:satirDokumu', async (g) => zayi.satirDokumu(g));
 kayitEt('zayi:getir', async (g) => zayi.getir(g));
 kayitEt('zayi:sil', async (g, k) =>
   zayi.sil(Object.assign({}, g, { kullanici: k.kullanici }))
@@ -484,6 +640,8 @@ kayitEt('satis:oneri', async (g) => sefim.eslesmeOnerisi(g));
 
 // Ara sayım
 kayitEt('sayim:liste', async (g) => sayim.listeGetir(g));
+// Sayım süzgeçlerinin seçenekleri (firmanın kendi TBLSTOKKODTAN tanımları).
+kayitEt('sayim:kodListeleri', async (g) => vega.stokKodListeleri(g));
 kayitEt('sayim:listeyeEkle', async (g, k) =>
   sayim.listeyeEkle(Object.assign({}, g, { kullanici: k.kullanici }))
 );
@@ -512,7 +670,16 @@ kayitEt('sayim:ekran', async (g, k, o) => {
   }
 
   const siniflar = await oturum.kapsamAl();
-  const liste = await sayim.sayimEkraniGetir(Object.assign({}, g, { tur, siniflar }));
+  // Sınıflandırma süzgeçleri (kod1…kod10) arayüzden gelir ve yalnızca
+  // listeyi DARALTIR. Kapsam (siniflar) oturumdan gelir ve süzgeç onu
+  // genişletemez — ikisi AND'lenerek uygulanıyor.
+  //
+  // Stok durumu süzgeci (eksi / sıfır / dolu) Vega'daki miktara bakıyor;
+  // körleme sayımda sayan kişiye açık olsaydı "eksileri göster" diyerek
+  // gizlenen miktarı öğrenirdi. Yalnızca yöneticide çalışıyor.
+  const istek = Object.assign({}, g, { tur, siniflar });
+  if (!yoneticiMi) delete istek.stokDurumu;
+  const liste = await sayim.sayimEkraniGetir(istek);
   if (yoneticiMi) return liste;
   return liste.map((s) => ({
     stokNo: s.stokNo,

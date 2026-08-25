@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 19.08.2026 · Sürüm 1.5.0
+Son güncelleme: 25.08.2026 · Sürüm 1.7.0
 
 ---
 
@@ -79,7 +79,8 @@ rapor programı (galya)/
     zayi.js          Zayi / personel çıkışı taslağı (panel veritabanında)
     maliyet.js       Maliyet hesabı (son alış fiyatı + reçete)
     fatura.js        Alış faturası taslağı (panel veritabanında)
-    uretim.js        Üretim: zayiatlı, manuel, otomatik
+    uretim.js        Üretim: manuel (fireli) ve sıfıra kadar
+    yedek.js         Yedekleme merkezi (BACKUP / RESTORE)
     rapor.js         Rapor üretimi
     disaaktar.js     Excel / PDF dışa aktarma
     guncelleme.js    electron-updater sarmalayıcı
@@ -91,10 +92,11 @@ rapor programı (galya)/
     sql-kullanici-olustur.sql
     sql-yetki-tazele.sql     restore sonrası okuma yetkisini geri verir
     sql-yazma-yetkisi-ver.sql  VEGADB'ye yazma yetkisi (ikinci kilit)
-    test-sorgular.js         98 okuma sınaması
-    test-yazma.js           106 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
+    sql-yedek-yetkisi-ver.sql  yedek alma (ve isteğe bağlı geri yükleme) yetkisi
+    test-sorgular.js        120 okuma sınaması
+    test-yazma.js           123 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
     test-yetki.js            41 kullanıcı / kapsam / onay sınaması
-    test-arayuz.js           29 arayüz duman sınaması (Electron ile)
+    test-arayuz.js           35 arayüz duman sınaması, 28 ekran (Electron ile)
     izleyici-kur.sql / izleyici-kapat.sql / izleyici-oku.js   (eski, elle sürüm)
 ```
 
@@ -369,8 +371,12 @@ başlamayın.
 | Sınıflandırma süzgeçleri (10 kod alanı) | Çalışıyor — çoklu seçim + "hariç tut" |
 | Sayım fişini Vega'ya yazma | Çalışıyor — canlıda denendi ve geri alındı |
 | Zayi / personel çıkışı | Çalışıyor — 33 fiş + cari borç, canlıda DENENMEDİ |
-| Zayiatlı üretim | Çalışıyor — zayi + üretim tek işlem, canlıda DENENMEDİ |
-| Manuel / otomatik üretim | Çalışıyor |
+| Fireli (manuel) üretim | Çalışıyor — **canlıda denendi ve geri alındı** (25.08) |
+| Sıfıra kadar üretim | Çalışıyor — **canlıda denendi ve geri alındı** (25.08), tek tek ve toplu |
+| Zayiatlı üretim | **Kaldırıldı** (25.08.2026) |
+| Otomatik üretim | **Kaldırıldı** (22.08.2026) |
+| Her ekranda ayrıntılı Excel/PDF | Çalışıyor — 14 ekran, çıktıya ad verilebiliyor |
+| Yedekleme merkezi | Çalışıyor — yedek alma denendi, geri yükleme DENENMEDİ |
 | Kullanıcılar ve yetkiler | Çalışıyor — PIN'le giriş, sınıf kapsamı |
 | Sayım onay akışı | Çalışıyor — onaysız Vega'ya yazılmıyor |
 | Tam sayım | Çalışıyor — kapsamdaki bütün kartlar |
@@ -378,8 +384,283 @@ başlamayın.
 
 Belgedeki maddelerin tamamı bitti. Panelin yazdığı her belge tipi gerçek
 Vega fişlerinden çıkarıldı, `GALYA_TEST` üzerinde sınandı ve canlı firmada
-tek örnekle doğrulanıp geri alındı — zayi ve zayiatlı üretim hariç, onlar
-henüz yalnızca `GALYA_TEST` üzerinde denendi (bkz. 11. Sıradaki işler).
+tek örnekle doğrulanıp geri alındı — zayi, fireli ve sıfıra kadar üretim
+hariç, onlar henüz yalnızca `GALYA_TEST` üzerinde denendi
+(bkz. 11. Sıradaki işler).
+
+### 25.08.2026'da yapılanlar
+
+Müşterinin dört isteği karşılandı.
+
+#### 1. Zayiatlı üretim kaldırıldı
+
+Müşterinin sözü: *"zayiatlı üretimi kaldırmak istiyorum, orada sadece
+çalışanların zayi ettiği ürünleri yazabilelim; ayrıca eksiye düşmüş ürünleri
+de sıfıra kadar üretebilelim."*
+
+22.08'de eklenen birleşik kip (zayi fişi + stoğu sıfıra çekme, tek düğmede)
+iki ayrı işi tek düğmeye bindiriyordu. Ayrıldılar:
+
+| Nerede | Ne yapılır |
+|---|---|
+| Zayi / personel çıkışı ekranı | Çalışanın zayi ettiği ürün yazılır (stok çıkış fişi 33 + cari borç). Zaten vardı, değişmedi. |
+| Üretim → "Sıfıra kadar üret" | Stoğu EKSİYE düşmüş, reçetesi olan ürünler listelenir; seçilenler sıfıra çekilir. Zayi fişi kesilmez. |
+
+Kaldırılanlar: `uretim.zayiatliUret`, `uretim.uretilebilirler` ve
+`uretim:zayiatli` / `uretim:uretilebilirler` kanalları.
+
+Yeni uçlar: `uretim.sifirAdaylari` / `sifiraKadarUret` / `hepsiniSifirla`,
+kanalları `uretim:sifirAdaylari` / `uretim:sifiraKadar` /
+`uretim:hepsiniSifirla`. Üretilecek miktarı kullanıcı yazmıyor; program eksi
+kalanın karşılığını buluyor ve **fişin yazıldığı anda** yeniden okuyor.
+
+> Aday listesi artık THIRD işaretiyle SINIRLI DEĞİL. 22.08 öncesindeki
+> otomatik üretim yalnızca `KOD11 = THIRD` kartlara bakıyordu; müşteri
+> "eksiye düşmüş ürünleri" dediği için liste eksideki bütün reçeteli
+> kartları getiriyor. Şeritteki "Yalnızca THIRD işaretliler" düğmesi eski
+> dar listeyi veriyor. Canlı veride fark büyük: **9 aday, THIRD'e
+> kısıtlanınca 1.**
+
+##### Kendini tüketen reçete (canlı denemede çıktı)
+
+Bazı kartların reçetesinde mamulün KENDİSİ bileşen olarak duruyor. F0102'de
+`Tequila.Olmeca Blanco` üretmek için 0,07 birim `Tequila.Olmeca Blanco`
+tüketiliyor — içkilerde şişeden kadeh üretimi böyle tanımlanmış.
+
+Böyle bir kartta 1 birim üretim stoğu 1 değil **(1 − oran)** kadar artırıyor.
+İlk canlı denemede bu görüldü: stoğu −0,1575 olan Tequila için 0,1575
+üretildi ve stok sıfır yerine **−0,0110**'da kaldı.
+
+Düzeltme (`uretim.kendiTuketimOrani` + `sifirlamaMiktari`):
+
+    üretilecek = eksik / (1 − oran)
+
+Tequila'da 0,1575 / 0,93 = 0,16935 → stok tam sıfıra oturuyor (canlıda
+doğrulandı, sonra geri alındı). Oran 1 veya üstündeyse üretim stoğu hiç
+artırmaz; o kart `uretilemez` işaretiyle geliyor, ekranda "Sıfıra çekilemez
+— reçete kendini tüketiyor" yazıyor, toplu üretimde atlanıyor.
+
+> Aynı ölçek **maliyet hesabında yok**. `db/maliyet.js` kendini tüketen
+> reçeteyi olduğu gibi hesaplıyor; mamulün maliyeti kendi maliyetini
+> içerdiği için oran büyükse şişiyor. Müşteriye sorulacaklar listesine
+> girdi (11. bölüm).
+
+#### 2. Manuel (fireli) üretim ekranı sadeleşti
+
+Müşterinin sözü: *"senin yaptığın görsel daha zor, Vega tarafında bu görsel
+daha basit."* İş mantığı değişmedi (`uretim.fireliUret` aynı), ekran
+değişti:
+
+```
+1. Ne üretilecek?     [Ürün seç] somon      Çıkan miktar [3]
+2. Neyden üretilecek? [Ürün seç] ham somon  Giren miktar [10]
+   Fire: 7 (otomatik = giren − çıkan, elle değiştirilebilir)
+```
+
+- **Fire artık elle yazılmıyor**, giren − çıkan olarak hesaplanıyor.
+  Kullanıcı kutuya dokunursa otomatik hesap o satır için devreden çıkıyor
+  (yazdığı sayı ekran tazelenince silinseydi kimse güvenmezdi).
+- Birden fazla hammadde eklenirse otomatik hesap kapanıyor ve ekran bunu
+  yazıyor — hangi hammaddeye ne kadar fire düştüğü bilinemez.
+- Fire carisi / alt hesap / sebep / "maliyetle yaz" alanları kapalı bir
+  `<details>` bölümüne alındı. Varsayılan cari zaten FİRE (yoksa ZAYİ)
+  kartı; kullanıcı çoğu zaman hiç açmıyor.
+- **Reçete gerekmiyor**, gerekmedi de: `yazma.uretimHazirligi` elle bileşen
+  listesi alıyor. "Somon" kartının reçetesi yok ve olması da gerekmiyor.
+
+#### 3. Tam sayımda stok durumu süzgeci
+
+Müşterinin sözü: *"tam sayım ekranına full yetki verildiyse filtreleme
+sistemi getir."*
+
+Sınıflandırma süzgeçlerinin (KOD1…KOD10) yanına ikinci bir katman kondu:
+**Hepsi / Eksi stok / Kalan 0 / Eksi ve sıfır / Stoklu**.
+
+> Bu süzgeç YALNIZCA yöneticide çiziliyor ve `sayim:ekran` yetkisiz istekten
+> `stokDurumu` alanını **siliyor**. Sebebi körleme sayım: "eksileri göster"
+> diyebilen sayımcı, gizlenen teorik miktarı satır satır geri okurdu.
+> Süzgeç kapsamı da genişletemiyor — kapsam (oturumdan) ve süzgeç (arayüzden)
+> SQL'de AND'leniyor (sınama var).
+
+#### 4. Neredeyse her ekranda ayrıntılı Excel / PDF
+
+Müşterinin sözü: *"sayım exceli ve çıktısı tam sayım, zayi gibi tanımlama
+yapabilmeliyiz; neredeyse her ekranda ayrıntılı bir excel raporu dışarı
+aktarabilmeliyiz."*
+
+**Çıktı tanımı.** Dışa aktarma olan her ekranda bir "Çıktı tanımı" kutusu
+var (hazır seçenekli, serbest yazılabilir). Yazılan ad hem Excel/PDF'in ilk
+satırına hem de **dosya adının başına** giriyor: `Tam-sayim-Sayim-listesi_
+2026-08-25_1430.xlsx`. Ekran değişince tanım sıfırlanıyor; aynı ekranda iki
+kutu varsa (üretim) biri diğerine yansıyor.
+
+**Yeni çıktı alan ekranlar:** Zayi (fiş listesi + **satır dökümü**), Üretim
+(sıfıra çekilecekler + yazılan fişler), Tutanak, Alış faturası, Reçete
+listesi, Reçete ağacı (düzleştirilmiş, seviye sütunlu), Satış aktarımı,
+Sayım onay kuyruğu, Sayım geçmişi, Sayım farkları, Kullanıcı yetkileri,
+Yedek listesi, tek ürünün stok hareketi.
+
+Zayi satır dökümü için yeni uç: `zayi.satirDokumu` / `zayi:satirDokumu` —
+ekrandaki tablo fiş başlıklarını gösteriyor, "kim neyi ne kadar zayi etti"
+ancak satır düzeyinde çıkıyor.
+
+### 22.08.2026'da yapılanlar
+
+Müşterinin beş isteği karşılandı. Üçü üretimin anlamını değiştiriyor.
+
+#### 1. Üretim artık zayi/fire geçmeden yapılmıyor
+
+Müşterinin sözü: *"zayiatlı üretim dediğimiz mantıkta önce zayi için stok
+çıkış fişi yapılması gerekiyor, sonrasında sıfırlanana kadar üret mantığı
+olmalı; diğer şekilde o zayiatlı üretim olmuyormuş."*
+
+Üretim ekranında artık iki şerit var, ikisi de ÖNCE zayi fişi keser:
+
+| Kip | Ne zaman | Ne olur |
+|---|---|---|
+| Zayiatlı | **Mamul** zayi olmuş | Mamulden zayi fişi (33) → stok eksiye düşer → stok SIFIRLANANA KADAR reçeteden üretilir. Miktarı program bulur. |
+| Fireli (manuel) | **Hammadde** fire vermiş | Firenin zayi fişi (33) → kalan hammadde tüketilip mamul üretilir. Miktarları kullanıcı yazar. |
+
+> **Zayiatlı kip 25.08.2026'da kaldırıldı** (bkz. yukarıdaki bölüm). Müşteri
+> zayi girişini kendi ekranında, sıfıra çekmeyi ayrı bir kipte istedi.
+> Buradaki anlatım kararın nasıl geldiğini göstermek için duruyor.
+
+**Otomatik üretim kaldırıldı** (`uretim.adaylar`, `uretim.uret`,
+`uretim.hepsiniUret` ve `uretim:adaylar` / `uretim:uret` /
+`uretim:hepsiniUret` kanalları). THIRD ekranındaki "Sıfıra kadar üret"
+kısayolu da gitti — o kısayol zayi adımını atlıyordu.
+
+#### 2. Fireli üretim: "10 kg ham somondan 3 kg somon"
+
+Müşterinin tarifi: *"ne üretilecekse seçiliyor, misal somon; sonra o neyden
+üretilecekse — ham somon — o giriliyor 10 kg olarak; çıkışta 3 kg somon ve
+7 kg fire olarak yazılıyor."*
+
+Vega karşılığı iki belge:
+
+```
+1. Zayi çıkış fişi (33)  →  ham somon 7 kg, cari FİRE/ZAYİ
+2. Üretim fişi           →  ham somon 3 kg tüketim, somon 3 kg çıktı
+```
+
+Toplamda 10 kg hammadde stoktan çıkar, 3 kg mamul girer. Sıra bilinçli:
+üretim adımı hata verirse fire fişi geri alınır. Tersi sırada üretim yazılıp
+fire yazılamasaydı stokta olmayan hammadde tüketilmiş görünürdü.
+
+> **Reçete şartı kalktı.** `yazma.uretimHazirligi` artık `elleBilesenler`
+> alıyor; verilirse reçeteye hiç bakılmıyor, tüketim satırlarını kullanıcı
+> belirliyor. Reçetesi olmayan mamul de üretilebiliyor — "somon" kartının
+> reçetesi yok ve olması da gerekmiyor. Reçete varsa yalnızca pozisyon
+> adımları (üretim yeri / mamul deposu) ve KDV oranı ondan okunuyor;
+> yoksa varsayılan BAŞLA/BİTİR adımları yazılıyor.
+
+Ürün seçimi için ayrı bir uç açıldı: `uretim:urunAra`. Stok ekranının arama
+ucu `stok` yetkisine bağlı ve sayımcıya o yetki verilmiyor; üretim yapan
+kişinin stok ekranını açabilmesi gerekmesin diye.
+
+Fire sıfırsa zayi fişi hiç kesilmiyor ve `uretim:fireli` o durumda `zayi`
+yetkisi de aramıyor.
+
+#### 3. Gider / hizmet ekranı bar-mutfak dışındaki her şeyi listeliyor
+
+Eskiden yalnızca `STOKTIPI = 3` kartları (16 kart) geliyordu. Artık sınıfı
+(`KOD2`) BAR ya da MUTFAK **olmayan** bütün kartlar geliyor (398 kart);
+şeritten eski dar listeye dönülebiliyor.
+
+> **Bar ve mutfak korumalı.** Bu ekranın "Sıfırla" düğmesi stoğu tek tuşla
+> siliyor. `yazma.giderStokSifirla` kartın sınıfını VEGADB'den kendisi
+> okuyup BAR/MUTFAK ise reddediyor — istek DevTools'tan kurcalansa bile
+> gerçek mutfak stoğu bu uçtan sıfırlanamıyor. Gider/hizmet kartları
+> (STOKTIPI 3) sınıfı ne olursa olsun sıfırlanabiliyor.
+
+#### 4. Tam sayımda sınıflandırma süzgeci, Excel ve PDF
+
+Tam sayım listesi 1.253 kart; müşteri "özel kod" süzgeci istedi. Stok
+ekranındaki KOD1…KOD10 süzgeçlerinin aynısı sayım ekranına kondu — kod
+`kodSuzgeciOku` / `kodSuzgeciKutulari` / `kodSuzgeciOzeti` içinde ortak,
+iki ekran da onu çağırıyor.
+
+Sayım listesi iki ayrı çıktı olarak alınabiliyor, ikisi de ekrandaki
+süzgece ve arama kutusuna uyuyor:
+
+| Düğme | Ne verir |
+|---|---|
+| **Föy: Excel / PDF** | Sayımdan ÖNCE. "Sayılan miktar" sütunu boş; kâğıda basılıp elde doldurulur. |
+| **Dolu liste: Excel / PDF** | Sayımdan SONRA. Ekranda yazılı miktarlarla; yöneticide fark sütunu da var. |
+
+Körleme sayım çıktıda da geçerli: `Vega'da görünen` sütunu yalnızca
+yöneticinin çıktısında var.
+
+> **Süzgeç kapsamı genişletemez.** Kullanıcının sayabildiği sınıflar
+> (kapsam) oturumdan geliyor, süzgeç arayüzden. İkisi SQL'de AND'leniyor;
+> kapsamı BAR olan kişi `kod2=MUTFAK` süzgeci istese bile liste boş dönüyor
+> (sınama var). `sayim.sayimKaydet` süzgeçleri BİLEREK geçirmiyor: kaydetme
+> anındaki denetim listesi süzgeçsiz okunuyor, yani süzgecin üst kümesi —
+> kullanıcı süzgeci değiştirse bile kaydettiği satır reddedilmiyor.
+
+#### 5. Yedekleme merkezi
+
+Müşterinin isteği: *"basit bir yedekleme merkezi; işlemden önce yedeği
+alacak, işlemden önce ekrana yedek almayı unutmayın diye uyarı çıkacak,
+geri de yükleyebilmeli."*
+
+`db/yedek.js` + "Yedekleme merkezi" ekranı. Bilinmesi gereken dört şey:
+
+1. **Yedek dosyası SUNUCUDA oluşur, panelin kurulu olduğu PC'de değil.**
+   `BACKUP DATABASE` komutunu SQL Server servisi çalıştırır; verilen klasör
+   onun disklerinde aranır ve servis hesabının oraya yazma izni olmalı.
+   Klasör Ayarlar ekranından (`yedekKlasoru`); boşsa SQL Server'ın kendi
+   varsayılan yedek klasörü kullanılır.
+
+2. **Ayrı bağlantı.** Yedek ve geri yükleme `sql.yonetimHavuzu()` ile
+   `master` üzerinde kendi bağlantısını açıp kapatıyor. Normal havuz
+   VEGADB'nin *içinde* duruyor ve o havuzla VEGADB geri yüklenemez
+   ("veritabanı kullanımda").
+
+3. **Yetki ayrı verilir.** `galya_panel` VEGADB'de salt okunur; yedek için
+   `db_backupoperator`, geri yükleme için `dbcreator` gerekiyor.
+   `kurulum/sql-yedek-yetkisi-ver.sql` ikisini de içeriyor ama **geri
+   yükleme satırı bilerek yorumda**. Yetki yoksa ekran sebebini yazıyor ve
+   hiçbir şey yapmıyor.
+
+   > mssql sürücüsü BACKUP hatasında yalnızca son satırı veriyor
+   > ("BACKUP DATABASE is terminating abnormally"); asıl sebep
+   > ("permission denied in database 'VEGADB'") `e.precedingErrors`
+   > dizisinde duruyor. `hataMetni()` ikisini birleştiriyor — birleştirmeden
+   > kullanıcı neden başarısız olduğunu hiç öğrenemiyordu.
+
+4. **Uyarı.** `yedek:hatirlatma` son yedeğin yaşına bakıyor; ayarlardaki
+   saatten (`yedekUyariSaat`, varsayılan 24) eskiyse ya da hiç yedek yoksa
+   Vega'ya yazan ekranların başına kırmızı bir kutu düşüyor
+   (`yedekUyarisiCiz`): Üretim, Zayi, Sayım onayı, Alış faturası, Gider.
+   Her ekranda sürekli duran bir uyarı bir süre sonra okunmaz oluyor; o
+   yüzden yalnızca gerektiğinde çıkıyor.
+
+**Geri yükleme panelin geri dönüşü olmayan tek işi.** Veritabanı yedeğin
+alındığı ana döner, aradaki her şey silinir; ayrıca `SINGLE_USER`'a alındığı
+için Vega ve Şefim dahil bağlı olan herkes atılır. Korumalar:
+
+- `yedek:geriYukle` **yönetici kanalı** (`YONETICI_KANALLARI`).
+- Arayüzde iki kapı: ne olacağını anlatan onay penceresi, sonra veritabanı
+  adının elle yazılması.
+- `RESTORE HEADERONLY` ile dosyanın gerçekten o veritabanının yedeği olduğu
+  doğrulanıyor — yanlış dosya reddediliyor.
+- Geri yüklemeden önce otomatik bir **güvenlik yedeği** alınıyor; alınamazsa
+  işlem hiç başlamıyor.
+- `ALTER DATABASE … SET MULTI_USER` `finally` içinde: hata çıksa bile
+  veritabanı tek kullanıcıda bırakılmıyor (bırakılsaydı Vega ve Şefim hiç
+  bağlanamazdı).
+
+Veritabanı adı SQL metnine doğrudan giriyor (parametre olamaz), o yüzden
+her ad önce beyaz listeye (`vegaVeritabani`, `panelVeritabani`) ve
+`sys.databases`'e karşı doğrulanıyor; dosya yolu parametre olarak gidiyor
+ve uzantısı `.bak`/`.trn` değilse reddediliyor.
+
+Yedek listesi `msdb.dbo.backupset`'ten geliyor — SSMS ya da bakım planıyla
+alınanlar da görünsün diye. msdb okunamazsa panelin kendi
+`GALYA_PANEL.dbo.Yedek` tablosuna düşülüyor.
+
+---
 
 ### 19.08.2026'da eklenenler
 
@@ -542,13 +823,23 @@ sürümüdür. Kalsın; sunucuda exe çalıştırılamayan durumlarda işe yarar
 ## 8. Sınama
 
 ```
-node kurulum/test-sorgular.js       #  98 okuma sınaması
+node kurulum/test-sorgular.js       # 120 okuma sınaması
 node kurulum/test-yazma.js --kur    # test veritabanını hazırla/tamamla
-node kurulum/test-yazma.js          # 106 yazma sınaması
+node kurulum/test-yazma.js          # 123 yazma sınaması
 node kurulum/test-yetki.js          #  41 kullanıcı / kapsam / onay sınaması
-npx electron kurulum/test-arayuz.js #  29 arayüz duman sınaması
+npx electron kurulum/test-arayuz.js #  35 arayüz duman sınaması
 node izleyici/test-izleyici.js …    #   6 izleyici sınaması
 ```
+
+> **25.08.2026: dördü de geçti** — 120 / 123 / 41 / 35, sıfır hata.
+>
+> Başlarken hepsi `Login failed for user 'galya_panel'` veriyordu: geliştirme
+> sunucusundaki VEGADB restore edilmiş ve `galya_panel` kullanıcısı içeride
+> kalmamıştı (giriş sunucuda duruyordu, şifre doğruydu). `sql-yetki-tazele.sql`
+> çalıştırılınca düzeldi. Aynı hatayı bir daha görürseniz ilk bakılacak yer
+> burası:
+>
+>     sqlcmd -S localhost -E -C -i kurulum/sql-yetki-tazele.sql
 
 Yazma sınamaları müşteri verisine dokunmaz: yapısı VEGADB'den
 `SELECT * INTO … WHERE 1=0` ile kopyalanmış boş bir **`GALYA_TEST`**
@@ -659,16 +950,63 @@ tablo tutuyor ve firmalar şöyle:
    carisinin ekstresinde borcun göründüğü kontrol edilmeli. Fiyatsız kip
    (varsayılan) cari borcunu 0 yazar — muhasebenin bunu beklediği teyit
    edilmeli.
-5. **Zayiatlı üretimin canlıda ilk denemesi.** İki belge birden kesiyor
-   (zayi + üretim). Üretim tarafı 96/97 sayacını kullandığı için yoğun
-   saatlerden kaçınılmalı. Üretim adımı hata verirse zayi fişinin gerçekten
-   geri alındığı gözle doğrulanmalı.
-6. **Müşteriye sorulacak: tam sayımda girilmeyen ürün.** Şu an atlanıyor
+5. **Fireli ve sıfıra kadar üretim canlıda denendi (25.08.2026).** F0102 /
+   D0002 üzerinde, geliştirme sunucusundaki kopyada:
+
+   - Sıfıra kadar: `SUSHİ SİRKESİ 1,5 LT` (−0,0083) → fiş A0000290, doğan
+     belgeler 38+38+97+96, 5 tüketim + 1 çıktı hareketi, stok sıfıra oturdu,
+     geri alındı ve stok −0,0083'e döndü.
+   - Fireli: **10 kg HAM SOMON → 3 kg SOMON + 7 kg fire** (müşterinin kendi
+     örneği). Zayi fişi A0000477 (tip 33, cari FİRE, `OZELKOD4 = FİRE`,
+     fiyatsız olduğu için cari borcu 0), ardından üretim fişi. Ham somon
+     −10, somon +3. İkisi de geri alındı, stoklar başlangıca döndü.
+   - Toplu: iki ürün tek düğmede, ikisi de yazıldı ve geri alındı.
+
+   VEGADB'de kalıntı belge yok. Panel geçmişinde `canli-deneme` kullanıcı
+   adıyla 5 kayıt duruyor, hepsi "geri alındı" işaretli.
+
+   **Yine de canlı müşteri sunucusunda dikkat:** üretim 96/97 sayacını
+   kullanıyor, Şefim entegrasyonu günde 250–600 belge hızında ilerletiyor;
+   yoğun saatlerde toplu üretimden kaçının. İlk gerçek kullanımda TEK ürünle
+   başlayın — "Seçilenleri sıfıra çek" liste uzunsa onlarca fiş keser.
+
+   Fireli üretimde müşteriyle teyit edilecek iki nokta duruyor:
+   - Fire hangi cariye yazılacak? Panel `FİRE` kartını, yoksa `ZAYİ`
+     kartını varsayılan seçiyor; muhasebenin beklediği bu mu?
+   - Fire fişi varsayılan olarak **fiyatsız** (cari borcu 0). Zayi fişinde
+     olduğu gibi burada da "maliyetle yaz" kutusu var; hangisinin
+     kullanılacağı muhasebeyle netleşmeli.
+6. **Yedekten geri yüklemenin denenmesi.** Yedek ALMA canlı sunucuda
+   denendi ve çalışıyor (GALYA_PANEL, 7 MB). **Geri yükleme hiç
+   denenmedi** — denemek için canlı bir veritabanını yedeğe döndürmek
+   gerekiyordu. Önce `GALYA_TEST` gibi at gözüyle bakılabilecek bir
+   veritabanında denenmeli. Ayrıca geri yükleme yetkisi
+   (`sql-yedek-yetkisi-ver.sql` içindeki `dbcreator` satırı) bilerek yorumda;
+   müşteri geri yüklemeyi panelden mi yapmak istiyor, yoksa gerektiği gün
+   SSMS'ten bir yönetici mi yapsın — bu karar verilmeli.
+7. **Yedek klasörü kurulumda ayarlanmalı.** Şu an boş, yani SQL Server'ın
+   varsayılan klasörü kullanılıyor (`C:\Program Files\Microsoft SQL
+   Server\…\Backup`). Sistem diskinde yedek tutmak ilk disk dolduğunda
+   hem yedeği hem veritabanını birden kaybettirir; ayrı bir diske
+   (`D:\SQLYedek` gibi) alınmalı. Klasör SUNUCUDA olmalı ve SQL Server
+   servis hesabı oraya yazabilmeli.
+8. **Eski yedekleri kim silecek?** Panel her yedeği yeni bir dosyaya
+   yazıyor (üstüne yazmıyor), yani klasör sürekli büyüyor. Temizlik
+   yapılmıyor; bilerek — dosya silmek geri dönüşü olmayan bir iş ve
+   sunucudaki bakım planının işi. Müşteriye söylenmeli.
+9. **Müşteriye sorulacak: tam sayımda girilmeyen ürün.** Şu an atlanıyor
    (stok değişmiyor). Gerçek dönem sonu envanterinde sayılmayan ürünün
    stoğunun sıfırlanması beklenir. Bu geri dönüşü zor bir davranış
    olduğu için kullanıcının kararıyla "atla" seçildi; envanter kapanışında
    yeterli olup olmadığı müşteriyle netleşmeli.
-7. **Müşteriye sorulacak: sayımcıya stok yetkisi.** `stok` yetkisi verilen
+10. **Kendini tüketen reçetelerin maliyeti.** `Tequila.Olmeca Blanco` gibi
+   kartların reçetesinde mamulün kendisi bileşen (şişeden kadeh). Üretim
+   tarafı 25.08'de bunu hesaba katacak şekilde düzeltildi ama
+   `db/maliyet.js` katmıyor: mamulün maliyeti kendi maliyetini içeriyor.
+   Oran küçükken (%7) fark küçük, ama reçeteler böyle kaldıkça maliyet
+   şişer. Müşteriye bu reçetelerin bilinçli mi kurulduğu sorulmalı.
+
+11. **Müşteriye sorulacak: sayımcıya stok yetkisi.** `stok` yetkisi verilen
    kullanıcı stok ekranında envanter miktarını görür — körleme sayım o kişi
    için anlamını yitirir. Sayım yapan kullanıcılara bu yetki verilmemeli;
    gerekiyorsa `stok:kontrol` yanıtındaki miktarın da süzülmesi ayrı bir iş.

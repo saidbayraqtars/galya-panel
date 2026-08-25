@@ -118,6 +118,8 @@ db/sayim.js          Ara sayım
 db/tutanak.js        Ürün değişim tutanağı ve THIRD işaretleme
 db/ozet.js           Ana ekran kutularının sayıları
 db/yazma.js          VEGADB'ye yazma — varsayılan kapalı
+db/uretim.js         Üretim: manuel (fireli) ve sıfıra kadar
+db/yedek.js          Yedekleme merkezi (BACKUP / RESTORE)
 db/guncelleme.js     Otomatik güncelleme
 kurulum/             SQL kullanıcı betiği ve veritabanı testi
 ```

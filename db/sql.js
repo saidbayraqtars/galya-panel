@@ -109,6 +109,32 @@ async function havuzAl() {
   return havuz;
 }
 
+// Yedekleme ve geri yükleme için AYRI, kısa ömürlü bağlantı.
+//
+// Havuz `vegaVeritabani` içinde açılıyor; VEGADB'yi geri yüklemek için o
+// veritabanına bağlı OLMAMAK gerekiyor (SQL Server "veritabanı kullanımda"
+// diye reddeder). Bu yüzden yedek işleri master üzerinde kendi bağlantısını
+// açıyor ve işi bitince kapatıyor. Havuza hiç dokunmuyor.
+//
+// Çağıran kapatmakla yükümlü:  const h = await yonetimHavuzu(); try { … }
+//                              finally { await h.close(); }
+async function yonetimHavuzu() {
+  const a = ayarOku();
+  if (a.windowsGirisi && !mssqlWindows) {
+    throw new Error(
+      'Windows oturumuyla bağlanma seçili ama gerekli sürücü kurulu değil.'
+    );
+  }
+  const { surucu, config } = baglantiAyari(a);
+  const yonetimConfig = Object.assign({}, config, {
+    database: 'master',
+    pool: { max: 1, min: 0, idleTimeoutMillis: 5000 },
+    // Yedek/geri yükleme dakikalarca sürebilir.
+    requestTimeout: 0
+  });
+  return new surucu.ConnectionPool(yonetimConfig).connect();
+}
+
 async function havuzKapat() {
   if (havuz) {
     try { await havuz.close(); } catch (e) { /* yoksay */ }
@@ -221,5 +247,6 @@ module.exports = {
   islem,
   havuzAl,
   havuzKapat,
+  yonetimHavuzu,
   baglantiTesti
 };

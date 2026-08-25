@@ -25,6 +25,7 @@ const { sorgu, calistir } = require('./sql');
 const { ayarOku } = require('./ayar');
 const { dogrula, kart, tablo } = require('./firma');
 const panel = require('./panel');
+const { kodSuzgeciKur } = require('./vega');
 
 function vt() {
   return ayarOku().vegaVeritabani;
@@ -150,6 +151,31 @@ async function listedenCikar(kayit) {
 //
 // tur = 'ara'  → sayım listesindeki ürünler
 // tur = 'tam'  → kapsamdaki bütün stok kartları (pasifler hariç)
+//
+// SÜZGEÇ. Tam sayımda liste 900 kartı geçebiliyor; müşterinin isteğiyle stok
+// ekranındaki sınıflandırma süzgeçlerinin (KOD1…KOD10, "özel kod") aynısı
+// buraya da kondu. Süzgeç YALNIZCA listeyi daraltır — kapsam (kullanıcının
+// sayabileceği sınıflar) ayrı bir şeydir ve oturumdan gelir; ikisi birlikte
+// uygulanır, süzgeç kapsamı genişletemez.
+//
+// sayimKaydet bu süzgeçleri BİLEREK geçirmiyor: kaydetme anındaki denetim
+// listesi süzgeçsiz okunur, yani süzgecin üst kümesidir. Kullanıcı süzgeci
+// değiştirse bile kaydettiği satırlar reddedilmez.
+//
+// STOK DURUMU SÜZGECİ (`stokDurumu`: eksi / sifir / dolu). Vega'daki miktara
+// bakar, yani körleme sayımda sayan kişiye sızdırılmamalı: "eksi olanları
+// göster" diyebilen kişi hangi ürünün eksi olduğunu öğrenirdi. Bu yüzden
+// main.js → sayim:ekran alanı yönetici olmayandan siliyor; buradaki kod
+// gelen değeri olduğu gibi uygular.
+function stokDurumuKosulu(deger) {
+  const d = String(deger || '').trim();
+  if (d === 'eksi') return 'ISNULL(K.KALAN, 0) < 0';
+  if (d === 'sifir') return 'ISNULL(K.KALAN, 0) = 0';
+  if (d === 'dolu') return 'ISNULL(K.KALAN, 0) > 0';
+  if (d === 'eksiSifir') return 'ISNULL(K.KALAN, 0) <= 0';
+  return '';
+}
+
 async function sayimEkraniGetir(secim) {
   await panel.kur();
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
@@ -158,6 +184,8 @@ async function sayimEkraniGetir(secim) {
   const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
   const tam = String(secim.tur || 'ara') === 'tam';
   const kapsam = kapsamSuzgeci(secim.siniflar, 'S.KOD2');
+  const kod = kodSuzgeciKur(secim);
+  const durumKosulu = stokDurumuKosulu(secim.stokDurumu);
 
   const envanter = `
     WITH K AS (
@@ -191,9 +219,11 @@ async function sayimEkraniGetir(secim) {
         AND S.STOKTIPI NOT IN (3, 7, 9)
         AND ISNULL(S.KOD8, '') <> N'PASİF'
         ${kapsam.kosul ? 'AND ' + kapsam.kosul : ''}
+        ${kod.kosullar.length ? 'AND ' + kod.kosullar.join(' AND ') : ''}
+        ${durumKosulu ? 'AND ' + durumKosulu : ''}
       ORDER BY ISNULL(S.KOD2, ''), S.MALINCINSI
     `,
-      Object.assign({ depo }, kapsam.parametreler)
+      Object.assign({ depo }, kapsam.parametreler, kod.parametreler)
     );
   }
 
@@ -214,9 +244,11 @@ async function sayimEkraniGetir(secim) {
     LEFT JOIN K ON K.STOKNO = L.StokNo
     WHERE L.Firma = @firma AND L.Aktif = 1
       ${kapsam.kosul ? 'AND ' + kapsam.kosul : ''}
+      ${kod.kosullar.length ? 'AND ' + kod.kosullar.join(' AND ') : ''}
+      ${durumKosulu ? 'AND ' + durumKosulu : ''}
     ORDER BY L.Sira, ISNULL(S.MALINCINSI, L.StokAdi)
   `,
-    Object.assign({ firma, depo }, kapsam.parametreler)
+    Object.assign({ firma, depo }, kapsam.parametreler, kod.parametreler)
   );
 }
 

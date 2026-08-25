@@ -21,6 +21,10 @@
   "aktifGun": 90,
   "maliyetEskimeGun": 30,
 
+  "yedekKlasoru": "",
+  "_yedekKlasoruNotu": "Yedek dosyasi SUNUCUDA olusur; bu yol SQL Server'in disklerinde aranir. Bos birakilirsa SQL Server'in varsayilan yedek klasoru kullanilir. Yedek yetkisi icin kurulum/sql-yedek-yetkisi-ver.sql calistirilmali.",
+  "yedekUyariSaat": 24,
+
   "vegayaYazmaAktif": true,
   "_vegayaYazmaNotu": "false yapılırsa program VEGADB'ye tek satır yazmaz. SQL tarafında da yetki gerekir: galya_panel kullanıcısı VEGADB üzerinde salt okunur kurulur."
 }

@@ -232,6 +232,30 @@ async function liste(secim) {
   );
 }
 
+// Ayrıntılı dışa aktarma için satır dökümü: her zayi fişinin her kalemi ayrı
+// satır. Ekrandaki liste yalnızca başlıkları gösteriyor; "hangi çalışan neyi
+// ne kadar zayi etti" sorusunun cevabı ancak satır düzeyinde çıkıyor.
+async function satirDokumu(secim) {
+  await panel.kur();
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  return sorgu(
+    `SELECT
+       Z.Id AS zayiId, Z.Tarih AS tarih, Z.CariAdi AS cariAdi,
+       Z.AltHesap AS altHesap, Z.Sebep AS sebep, Z.Duzenleyen AS duzenleyen,
+       Z.MaliyetliMi AS maliyetliMi, Z.VegayaYazildi AS vegayaYazildi,
+       Z.VegaBelgeNo AS vegaBelgeNo, Z.Depo AS depo,
+       S.Sira AS sira, S.StokNo AS stokNo, S.StokAdi AS stokAdi,
+       S.StokKodu AS stokKodu, S.Birim AS birim, S.Miktar AS miktar,
+       S.BirimMaliyet AS birimMaliyet,
+       S.Miktar * ISNULL(S.BirimMaliyet, 0) AS tutar
+     FROM [${p()}].dbo.Zayi Z
+     JOIN [${p()}].dbo.ZayiSatir S ON S.ZayiId = Z.Id
+     WHERE Z.Firma = @firma AND Z.Donem = @donem AND Z.Iptal = 0
+     ORDER BY Z.Id DESC, S.Sira`,
+    { firma, donem }
+  );
+}
+
 async function getir(secim) {
   await panel.kur();
   const basliklar = await sorgu(
@@ -269,4 +293,4 @@ async function sil(secim) {
   return { tamam: true };
 }
 
-module.exports = { cariler, taslakKaydet, liste, getir, sil };
+module.exports = { cariler, taslakKaydet, liste, satirDokumu, getir, sil };

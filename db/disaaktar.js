@@ -127,13 +127,19 @@ function hucreXml(satirNo, sutunNo, deger, tur) {
   return `<c r="${ref}" s="1" t="inlineStr"><is><t xml:space="preserve">${xmlKacir(deger)}</t></is></c>`;
 }
 
-function sayfaXml(sutunlar, satirlar, baslik, altBaslik) {
+function sayfaXml(sutunlar, satirlar, baslik, altBaslik, tanim) {
   const parcalar = [];
   let satirNo = 1;
 
   // Başlık bloğu — raporun neyi, hangi firmayı ve hangi anı gösterdiği
   // dosyaya bakan kişi için kaybolmasın diye ilk satırlara yazılıyor.
-  parcalar.push(`<row r="${satirNo}"><c r="A${satirNo}" s="4" t="inlineStr"><is><t>${xmlKacir(baslik)}</t></is></c></row>`);
+  //
+  // `tanim` kullanıcının o çıktıya elle verdiği ad ("Tam sayım", "Zayi",
+  // "Dönem sonu envanteri"). Müşterinin isteği: aynı ekrandan alınan iki
+  // çıktı dosyaya bakınca ayırt edilebilsin. Başlığın yanına yazılıyor,
+  // dosya adına da giriyor (db/rapor.js).
+  const anaBaslik = tanim ? `${tanim} — ${baslik}` : baslik;
+  parcalar.push(`<row r="${satirNo}"><c r="A${satirNo}" s="4" t="inlineStr"><is><t>${xmlKacir(anaBaslik)}</t></is></c></row>`);
   satirNo++;
   if (altBaslik) {
     parcalar.push(`<row r="${satirNo}"><c r="A${satirNo}" s="5" t="inlineStr"><is><t>${xmlKacir(altBaslik)}</t></is></c></row>`);
@@ -264,7 +270,7 @@ function excelUret(rapor) {
     { ad: 'xl/styles.xml', icerik: STIL_XML },
     {
       ad: 'xl/worksheets/sheet1.xml',
-      icerik: sayfaXml(rapor.sutunlar, rapor.satirlar, rapor.baslik, rapor.altBaslik)
+      icerik: sayfaXml(rapor.sutunlar, rapor.satirlar, rapor.baslik, rapor.altBaslik, rapor.tanim)
     }
   ]);
 }
@@ -320,7 +326,7 @@ function pdfHtml(rapor) {
     .eksi { color: #c92a2a; font-weight: 600; }
     .dip { margin-top: 10px; color: #868e96; font-size: 9px; }
   </style></head><body>
-    <h1>${xmlKacir(rapor.baslik)}</h1>
+    <h1>${xmlKacir(rapor.tanim ? rapor.tanim + ' — ' + rapor.baslik : rapor.baslik)}</h1>
     <p class="alt">${xmlKacir(rapor.altBaslik || '')}</p>
     <table><thead><tr>${basliklar}</tr></thead><tbody>${satirlar}</tbody></table>
     <p class="dip">${xmlKacir(rapor.satirlar.length + ' satır · Galya Panel')}</p>

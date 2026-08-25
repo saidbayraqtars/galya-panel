@@ -355,6 +355,40 @@ async function kur() {
       SELECT 'Yönetici', PinTuz, PinOzet, 'yonetici', NULL, Degistiren
       FROM dbo.Guvenlik WHERE Id = 1;
 
+    IF OBJECT_ID('dbo.Yedek') IS NULL
+    CREATE TABLE dbo.Yedek (
+      Id          INT IDENTITY(1,1) PRIMARY KEY,
+      Tarih       DATETIME      NOT NULL DEFAULT GETDATE(),
+      Veritabani  NVARCHAR(128) NOT NULL,
+      Dosya       NVARCHAR(500) NULL,
+      Boyut       BIGINT        NULL,
+      -- 'yedek'   elle alınan tam yedek
+      -- 'temel'   işlem öncesi yedeklerin dayandığı tam yedek
+      -- 'islem'   bir işlemden hemen önce alınan diferansiyel yedek
+      -- 'geriyukleme'
+      Tur         NVARCHAR(20)  NOT NULL DEFAULT 'yedek',
+      Kullanici   NVARCHAR(100) NULL,
+      Aciklama    NVARCHAR(300) NULL,
+      -- Diferansiyel yedeğin dayandığı tam yedek dosyası. Geri yükleme
+      -- önce bunu, sonra diferansiyeli açıyor.
+      TemelDosya  NVARCHAR(500) NULL,
+      -- Hangi işlemden önce alındı (IPC kanal adı ve okunur karşılığı).
+      Islem       NVARCHAR(200) NULL,
+      -- Dosya döngüsel kullanılıyor; üstüne yazılan yedek geçersiz olur.
+      Gecerli     BIT           NOT NULL DEFAULT 1,
+      Slot        INT           NULL
+    );
+
+    -- 22.08.2026'da eklenen alanlar; eski kurulumlarda tablo zaten vardı.
+    IF COL_LENGTH('dbo.Yedek', 'TemelDosya') IS NULL
+      ALTER TABLE dbo.Yedek ADD TemelDosya NVARCHAR(500) NULL;
+    IF COL_LENGTH('dbo.Yedek', 'Islem') IS NULL
+      ALTER TABLE dbo.Yedek ADD Islem NVARCHAR(200) NULL;
+    IF COL_LENGTH('dbo.Yedek', 'Gecerli') IS NULL
+      ALTER TABLE dbo.Yedek ADD Gecerli BIT NOT NULL DEFAULT 1;
+    IF COL_LENGTH('dbo.Yedek', 'Slot') IS NULL
+      ALTER TABLE dbo.Yedek ADD Slot INT NULL;
+
     IF OBJECT_ID('dbo.Islem') IS NULL
     CREATE TABLE dbo.Islem (
       Id         INT IDENTITY(1,1) PRIMARY KEY,

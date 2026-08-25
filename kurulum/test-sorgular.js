@@ -13,6 +13,8 @@ const vega = require(path.join(kok, 'db', 'vega'));
 const sefim = require(path.join(kok, 'db', 'sefim'));
 const sayim = require(path.join(kok, 'db', 'sayim'));
 const ozet = require(path.join(kok, 'db', 'ozet'));
+const uretim = require(path.join(kok, 'db', 'uretim'));
+const yedek = require(path.join(kok, 'db', 'yedek'));
 
 let basarili = 0;
 let basarisiz = 0;
@@ -208,6 +210,186 @@ async function dene(ad, isFn) {
       return dizi;
     });
   }
+
+  // --- 22.08.2026'da eklenenler -----------------------------------------
+
+  console.log('\n== Gider / hizmet ekranının kapsamı ==');
+  const giderKartlari = await dene('Yalnızca gider/hizmet (STOKTIPI 3)', () =>
+    vega.giderHizmetStoklari(Object.assign({}, SECIM, { kapsam: 'gider', sadeceDolu: false }))
+  );
+  const barMutfakDisi = await dene('Bar-mutfak dışı tüm ürünler', () =>
+    vega.giderHizmetStoklari(Object.assign({}, SECIM, { kapsam: 'disi', sadeceDolu: false }))
+  );
+  await dene('Listeye BAR ve MUTFAK sızmıyor', async () => {
+    if (!barMutfakDisi) throw new Error('önceki sorgu başarısız');
+    const sizan = barMutfakDisi.find((k) => {
+      const sinif = String(k.sinif || '').trim().toLocaleUpperCase('tr');
+      // Gider/hizmet kartları sınıfı ne olursa olsun listeye girer.
+      return Number(k.stokTipi) !== 3 && (sinif === 'BAR' || sinif === 'MUTFAK');
+    });
+    if (sizan) throw new Error('sızan kart: ' + sizan.ad + ' / ' + sizan.sinif);
+    return 'tamam';
+  });
+  await dene('Geniş liste dar listeyi kapsıyor', async () => {
+    if (!giderKartlari || !barMutfakDisi) throw new Error('önceki sorgu başarısız');
+    const genis = new Set(barMutfakDisi.map((k) => Number(k.stokNo)));
+    const eksik = giderKartlari.find((k) => !genis.has(Number(k.stokNo)));
+    if (eksik) throw new Error('gider kartı geniş listede yok: ' + eksik.ad);
+    return `${giderKartlari.length} gider kartı, ${barMutfakDisi.length} toplam`;
+  });
+
+  console.log('\n== Sayım süzgeci (tam sayım) ==');
+  const tamHepsi = await dene('Tam sayım — süzgeçsiz', () =>
+    sayim.sayimEkraniGetir(Object.assign({}, SECIM, { tur: 'tam' }))
+  );
+  const tamBar = await dene('Tam sayım — yalnızca BAR', () =>
+    sayim.sayimEkraniGetir(Object.assign({}, SECIM, { tur: 'tam', kod2: 'BAR' }))
+  );
+  const tamBarHaric = await dene('Tam sayım — BAR hariç', () =>
+    sayim.sayimEkraniGetir(Object.assign({}, SECIM, { tur: 'tam', kod2: 'BAR', kod2Haric: 1 }))
+  );
+  await dene('Süzgeç listeyi ikiye bölüyor', async () => {
+    if (!tamHepsi || !tamBar || !tamBarHaric) throw new Error('önceki sorgu başarısız');
+    if (tamBar.length + tamBarHaric.length !== tamHepsi.length) {
+      throw new Error(
+        `${tamBar.length} + ${tamBarHaric.length} = ${tamBar.length + tamBarHaric.length}, ` +
+        `toplam ${tamHepsi.length}`
+      );
+    }
+    const sizan = tamBar.find((x) => String(x.sinif || '').trim() !== 'BAR');
+    if (sizan) throw new Error('süzgeç dışı sınıf sızdı: ' + sizan.sinif);
+    return 'tamam';
+  });
+  await dene('Süzgeç kapsamı GENİŞLETEMİYOR', async () => {
+    // Kullanıcının kapsamı BAR iken MUTFAK süzgeci istense bile liste boş
+    // kalmalı; süzgeç ile kapsam AND'leniyor.
+    const liste = await sayim.sayimEkraniGetir(
+      Object.assign({}, SECIM, { tur: 'tam', siniflar: ['BAR'], kod2: 'MUTFAK' })
+    );
+    if (liste.length) throw new Error(liste.length + ' satır sızdı');
+    return 'tamam';
+  });
+
+  await dene('Sayım stok durumu süzgeci (eksi)', async () => {
+    const liste = await sayim.sayimEkraniGetir(
+      Object.assign({}, SECIM, { tur: 'tam', stokDurumu: 'eksi' })
+    );
+    for (const x of liste) {
+      if (!(Number(x.teorik) < 0)) throw new Error('eksi olmayan satır sızdı: ' + x.stokAdi);
+    }
+    return liste.length + ' satır';
+  });
+  await dene('Sayım stok durumu süzgeci (sıfır)', async () => {
+    const liste = await sayim.sayimEkraniGetir(
+      Object.assign({}, SECIM, { tur: 'tam', stokDurumu: 'sifir' })
+    );
+    for (const x of liste) {
+      if (Math.abs(Number(x.teorik)) > 0.0001) {
+        throw new Error('sıfır olmayan satır sızdı: ' + x.stokAdi);
+      }
+    }
+    return liste.length + ' satır';
+  });
+  await dene('Stok durumu süzgeci kapsamı genişletmiyor', async () => {
+    // Kapsamı BAR olan kullanıcı "eksi" süzgeciyle mutfak ürünü göremez.
+    const liste = await sayim.sayimEkraniGetir(
+      Object.assign({}, SECIM, { tur: 'tam', siniflar: ['BAR'], stokDurumu: 'eksi' })
+    );
+    for (const x of liste) {
+      if ((x.sinif || '').trim() !== 'BAR') throw new Error('kapsam dışı: ' + x.stokAdi);
+    }
+    return liste.length + ' satır';
+  });
+
+  console.log('\n== Üretim ==');
+  await dene('Ürün arama (reçete şartsız)', () =>
+    uretim.urunAra(Object.assign({}, SECIM, { arama: '' }))
+  );
+  await dene('Sıfıra çekilecek adaylar (eksi stok + reçete)', async () => {
+    const liste = await uretim.sifirAdaylari(Object.assign({}, SECIM));
+    // Liste boş olabilir (eksiye düşmüş ürün yoksa); dolan satırların hepsi
+    // eksi kalanlı, reçeteli olmalı ve üretilecek miktar eksinin karşılığı.
+    for (const a of liste) {
+      if (!(Number(a.kalan) < 0)) throw new Error('eksi olmayan satır: ' + a.ad);
+      if (!(Number(a.receteSatiri) > 0)) throw new Error('reçetesiz satır: ' + a.ad);
+      // Kendini tüketmeyen reçetede üretilecek miktar eksinin karşılığı;
+      // tüketende eksik / (1 - oran) kadar (şişeden kadeh üretimi böyle).
+      const oran = Number(a.kendiOran) || 0;
+      if (oran >= 1) {
+        if (!a.uretilemez) throw new Error('oran 1 ustu ama uretilemez isareti yok: ' + a.ad);
+        continue;
+      }
+      const beklenen = -Number(a.kalan) / (1 - oran);
+      if (Math.abs(Number(a.uretilecek) - beklenen) > 0.0001) {
+        throw new Error(`üretilecek miktar yanlış: ${a.ad} ${a.uretilecek} != ${beklenen}`);
+      }
+    }
+    return liste.length + ' aday';
+  });
+  await dene('Kendini tüketen reçetede üretim ölçekleniyor', async () => {
+    const liste = await uretim.sifirAdaylari(Object.assign({}, SECIM));
+    const kendini = liste.filter((a) => Number(a.kendiOran) > 0);
+    // F0102'de içki kartlarının reçetesi kendini tüketiyor (şişeden kadeh).
+    // Böyle bir kart yoksa sınama yalnızca "sızmadı" demiş oluyor.
+    for (const a of kendini) {
+      if (!(Number(a.uretilecek) > -Number(a.kalan))) {
+        throw new Error('ölçeklenmemiş: ' + a.ad);
+      }
+    }
+    return kendini.length + ' kart kendini tüketiyor';
+  });
+  await dene('THIRD süzgeci adayları daraltıyor', async () => {
+    const hepsi = await uretim.sifirAdaylari(Object.assign({}, SECIM));
+    const dar = await uretim.sifirAdaylari(Object.assign({}, SECIM, { thirdSadece: 1 }));
+    if (dar.length > hepsi.length) throw new Error('dar liste daha uzun döndü');
+    return `${hepsi.length} -> ${dar.length}`;
+  });
+  await dene('Kaldırılan üretim uçları geri gelmemiş', async () => {
+    for (const ad of ['adaylar', 'uret', 'hepsiniUret', 'zayiatliUret', 'uretilebilirler']) {
+      if (typeof uretim[ad] === 'function') throw new Error('hâlâ duruyor: ' + ad);
+    }
+    return 'tamam';
+  });
+
+  console.log('\n== Yedekleme ==');
+  await dene('Yedek durumu okunuyor', async () => {
+    const d = await yedek.durum();
+    if (!d || !Array.isArray(d.veritabanlari)) throw new Error('durum eksik döndü');
+    // Yetki verilmemiş olabilir; sınama yetkiyi değil, ucun çalıştığını denetliyor.
+    return `sunucu ${d.sunucu}, klasör ${d.klasor || '(yok)'}, ` +
+      d.veritabanlari.map((v) => v.ad + (v.yedekYetkisi ? '+' : '-')).join(' ');
+  });
+  await dene('Yedek hatırlatması', async () => {
+    const h = await yedek.hatirlatma();
+    if (typeof h.gerekli !== 'boolean') throw new Error('gerekli alanı yok');
+    return h.mesaj;
+  });
+  await dene('Yedek listesi', async () => {
+    const l = await yedek.liste({});
+    if (!Array.isArray(l.yedekler)) throw new Error('liste dizi değil');
+    return l.yedekler;
+  });
+  // Bu sınama YEDEK ALMIYOR: VEGADB'nin tam yedeği 2,2 GB ve her sınama
+  // çalıştırışında bir tane almak kabul edilemez. Yalnızca okuma uçlarına
+  // ve ayarların yerine oturduğuna bakıyoruz. İşlem öncesi yedeğin kendisi
+  // canlıda uçtan uca denendi (bkz. DEVIR-NOTU → işlem öncesi yedek).
+  await dene('Geri dönüş noktaları okunuyor', async () => {
+    const n = await yedek.donusNoktalari({ sinir: 10 });
+    if (!Array.isArray(n)) throw new Error('dizi değil');
+    for (const x of n) {
+      if (!x.dosya) throw new Error('dosya alanı boş');
+      if (!x.temelDosya) throw new Error('temel dosya alanı boş: ' + x.dosya);
+    }
+    return n;
+  });
+  await dene('İşlem öncesi yedek ayarları okunuyor', async () => {
+    const d = await yedek.durum();
+    if (typeof d.islemOncesiYedek !== 'boolean') throw new Error('islemOncesiYedek yok');
+    if (!(d.islemSayisi >= 2)) throw new Error('islemSayisi geçersiz: ' + d.islemSayisi);
+    if (!(d.temelSaat > 0)) throw new Error('temelSaat geçersiz: ' + d.temelSaat);
+    return `işlem öncesi ${d.islemOncesiYedek ? 'açık' : 'kapalı'}, ` +
+      `${d.islemSayisi} dönüş noktası, temel ${d.temelSaat} saat`;
+  });
 
   console.log(`\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı\n`);
   await sql.havuzKapat();

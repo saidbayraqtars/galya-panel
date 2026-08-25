@@ -33,6 +33,10 @@ function vt() {
   return ayarOku().vegaVeritabani;
 }
 
+// Stok kartındaki sınıf (KOD2) alanı bu değerlerdeyse ürün gerçek
+// mutfak/bar stoğudur; gider sıfırlaması bunlara dokunmaz.
+const KORUNAN_SINIFLAR = ['BAR', 'MUTFAK'];
+
 function kilitKontrol() {
   const a = ayarOku();
   if (!a.vegayaYazmaAktif) {
@@ -128,6 +132,10 @@ async function kod11GeriAl(kayit) {
 // miktarı olmaması gerekir; Vega bunlarda miktarı elle sıfırlatmadığı için
 // faturalardan birikmiş bakiye kalıyor.
 //
+// 22.08.2026'dan beri ekran bar ve mutfak DIŞINDAKİ bütün ürünleri de
+// listeliyor; sıfırlama onlarda da çalışıyor. Bar ve mutfak sınıfı korumalı:
+// o iki sınıfın stoğu yalnızca sayımla değişir.
+//
 // Yöntem: miktar TBLDEPOENVANTER satırlarının toplamından geliyor. Kalanı
 // kapatan tek bir denge satırı ekliyoruz — sayım fişinin yaptığının aynısı,
 // ama belge oluşturmadan. Belge tablolarında Vega'nın "GK" adında bir
@@ -147,15 +155,21 @@ async function giderStokSifirla(kayit) {
 
   const stokNo = Number(kayit.stokNo);
   const kartlar = await sorgu(
-    `SELECT IND, MALINCINSI AS ad, STOKTIPI AS stokTipi
+    `SELECT IND, MALINCINSI AS ad, STOKTIPI AS stokTipi, ISNULL(KOD2, '') AS sinif
      FROM ${kart(v, firma, 'TBLSTOKLAR')} WHERE IND = @stokNo`,
     { stokNo }
   );
   if (!kartlar.length) throw new Error('Stok kartı bulunamadı.');
-  if (Number(kartlar[0].stokTipi) !== 3) {
+
+  // Kapsam denetimi. Ekran 22.08.2026'da genişledi: gider/hizmet kartlarının
+  // (STOKTIPI 3) yanında bar-mutfak dışındaki bütün ürünler de sıfırlanabiliyor.
+  // Buradaki denetim ARAYÜZDEN gelmiyor, kartın kendi sınıfından okunuyor —
+  // istek kurcalansa bile gerçek mutfak/bar stoğu bu uçtan sıfırlanamaz.
+  const sinif = String(kartlar[0].sinif || '').trim().toLocaleUpperCase('tr');
+  if (Number(kartlar[0].stokTipi) !== 3 && KORUNAN_SINIFLAR.includes(sinif)) {
     throw new Error(
-      `"${kartlar[0].ad}" gider/hizmet kartı değil (stok tipi ${kartlar[0].stokTipi}). ` +
-      'Bu işlem yalnızca gider ve hizmet kartlarında yapılabilir.'
+      `"${kartlar[0].ad}" ${sinif} sınıfında. Bar ve mutfak ürünlerinin stoğu ` +
+      'bu ekrandan sıfırlanamaz; sayım yapın.'
     );
   }
 
@@ -2146,7 +2160,13 @@ async function depoTransferiYaz(t, a) {
 }
 
 // Mamulün reçetesini, bileşen kartlarını ve pozisyon adımlarını toplar.
-async function uretimHazirligi(v, firma, mamulStokNo, miktar) {
+//
+// `elleBilesenler` verilirse reçeteye HİÇ bakılmaz: tüketilecek satırları
+// kullanıcı kendisi seçmiştir (fireli üretim — "10 kg ham somondan 3 kg
+// somon"). Reçetesi olmayan mamul de böyle üretilebiliyor. Reçete varsa
+// yalnızca pozisyon adımları ve KDV oranı ondan okunur; miktarlar elle
+// gelenlerdir.
+async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
   const mamuller = await sorgu(
     `SELECT S.IND AS stokNo, S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
             ISNULL(S.STOKTIPI, 0) AS stokTipi, ISNULL(S.MALIYET, 0) AS maliyet,
@@ -2160,17 +2180,84 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar) {
   if (!mamuller.length) throw new Error('Üretilecek mamulün stok kartı bulunamadı.');
   const mamul = mamuller[0];
 
+  const elle = Array.isArray(elleBilesenler) && elleBilesenler.length > 0;
+
   const basliklar = await sorgu(
     `SELECT TOP 1 IND AS receteNo, ISNULL(MIKTAR, 1) AS verim, ISNULL(KDV, 0) AS kdv
      FROM ${kart(v, firma, 'TBLURERECETELIST')}
      WHERE STOKNO = @stokNo ORDER BY IND`,
     { stokNo: Number(mamulStokNo) }
   );
-  if (!basliklar.length) {
+  if (!elle && !basliklar.length) {
     throw new Error(`"${mamul.ad}" için reçete tanımlı değil. Üretim fişi reçetesiz yazılamaz.`);
   }
-  const receteNo = Number(basliklar[0].receteNo);
-  const verim = Number(basliklar[0].verim) > 0 ? Number(basliklar[0].verim) : 1;
+  const receteNo = basliklar.length ? Number(basliklar[0].receteNo) : 0;
+  const verim = basliklar.length && Number(basliklar[0].verim) > 0
+    ? Number(basliklar[0].verim)
+    : 1;
+  const kdv = basliklar.length ? Number(basliklar[0].kdv) : 0;
+
+  // Üretim yeri ve mamul deposu reçetenin kendi pozisyon tanımından gelir.
+  // Reçetesi olmayan mamulde boş kalır; uretimFisiYaz varsayılan BAŞLA/BİTİR
+  // adımlarını yazar.
+  const pozlar = receteNo
+    ? await sorgu(
+        `SELECT SIRANO AS sira, KOD AS kod, ISNULL(ACIKLAMA,'') AS aciklama,
+                POZISYONNO AS pozisyonNo, URETIMYERINO AS yerNo,
+                ISNULL(URETIMYERIKODU,'') AS yerKodu,
+                ISNULL(DEPONO, 0) AS depoNo, ISNULL(DEPOKODU,'') AS depoKodu
+         FROM ${kart(v, firma, 'TBLURERECETEPOZ')}
+         WHERE EVRAKNO = @receteNo ORDER BY SIRANO`,
+        { receteNo }
+      )
+    : [];
+
+  if (elle) {
+    const istenen = elleBilesenler
+      .map((b) => ({ stokNo: Number(b.stokNo), miktar: Number(b.miktar) }))
+      .filter((b) => b.stokNo);
+    if (!istenen.length) throw new Error('Tüketilecek hammadde seçilmedi.');
+    if (istenen.some((b) => !(b.miktar > 0))) {
+      throw new Error('Her hammadde satırının miktarı sıfırdan büyük olmalı.');
+    }
+
+    const parametreler = {};
+    const adlar = istenen.map((b, i) => {
+      parametreler['ham' + i] = b.stokNo;
+      return '@ham' + i;
+    });
+    const kartlar = await sorgu(
+      `SELECT S.IND AS stokNo, S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
+              ISNULL(S.STOKTIPI, 0) AS stokTipi, ISNULL(S.MALIYET, 0) AS maliyet,
+              ISNULL(B.BIRIMADI, '') AS birim, ISNULL(B.IND, 0) AS birimEx
+       FROM ${kart(v, firma, 'TBLSTOKLAR')} S
+       LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+              ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+       WHERE S.IND IN (${adlar.join(', ')})`,
+      parametreler
+    );
+    const harita = new Map(kartlar.map((k) => [Number(k.stokNo), k]));
+    const eksik = istenen.filter((b) => !harita.has(b.stokNo));
+    if (eksik.length) {
+      throw new Error(`Hammadde stok kartı bulunamadı (${eksik.map((b) => b.stokNo).join(', ')}).`);
+    }
+
+    const elleBilesen = istenen.map((b) => {
+      const k = harita.get(b.stokNo);
+      return {
+        stokNo: b.stokNo,
+        ad: k.ad,
+        kod: k.kod,
+        stokTipi: Number(k.stokTipi),
+        birim: k.birim,
+        birimEx: Number(k.birimEx),
+        birimMaliyet: Number(k.maliyet),
+        receteMiktari: b.miktar,
+        miktar: b.miktar
+      };
+    });
+    return { mamul, receteNo, verim, kdv, bilesenler: elleBilesen, pozlar, elle: true };
+  }
 
   const satirlar = await sorgu(
     `SELECT R.STOKNO AS stokNo, ISNULL(R.MIKTAR, 0) AS miktar,
@@ -2190,17 +2277,6 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar) {
     throw new Error(`"${mamul.ad}" reçetesinde bileşen yok. Önce reçeteyi doldurun.`);
   }
 
-  // Üretim yeri ve mamul deposu reçetenin kendi pozisyon tanımından gelir.
-  const pozlar = await sorgu(
-    `SELECT SIRANO AS sira, KOD AS kod, ISNULL(ACIKLAMA,'') AS aciklama,
-            POZISYONNO AS pozisyonNo, URETIMYERINO AS yerNo,
-            ISNULL(URETIMYERIKODU,'') AS yerKodu,
-            ISNULL(DEPONO, 0) AS depoNo, ISNULL(DEPOKODU,'') AS depoKodu
-     FROM ${kart(v, firma, 'TBLURERECETEPOZ')}
-     WHERE EVRAKNO = @receteNo ORDER BY SIRANO`,
-    { receteNo }
-  );
-
   const oran = Number(miktar) / verim;
   const bilesenler = satirlar.map((s) => ({
     stokNo: Number(s.stokNo),
@@ -2215,7 +2291,7 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar) {
     miktar: Number(s.miktar) * oran * (1 + Number(s.fireOrani || 0) / 100)
   }));
 
-  return { mamul, receteNo, verim, kdv: Number(basliklar[0].kdv), bilesenler, pozlar };
+  return { mamul, receteNo, verim, kdv, bilesenler, pozlar, elle: false };
 }
 
 async function uretimFisiYaz(kayit) {
@@ -2225,7 +2301,7 @@ async function uretimFisiYaz(kayit) {
   const miktar = Number(kayit.miktar);
   if (!(miktar > 0)) throw new Error('Üretim miktarı sıfırdan büyük olmalı.');
 
-  const h = await uretimHazirligi(v, firma, kayit.mamulStokNo, miktar);
+  const h = await uretimHazirligi(v, firma, kayit.mamulStokNo, miktar, kayit.bilesenler);
 
   // BİTİR adımının deposu mamul deposu, BAŞLA adımınınki üretim yeri deposu.
   const bitir = h.pozlar.find((p) => Number(p.sira) === 2) || null;

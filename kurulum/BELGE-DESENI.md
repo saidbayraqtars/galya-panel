@@ -518,25 +518,39 @@ olur ve KDV dahil toplam cariye borç yazılır.
 Geri alma beş tablodaki satırları da siler; stok ve cari bakiye fiş
 öncesine döner.
 
-## Zayiatlı üretim
+## Sıfıra kadar üretim
 
-Belgede yeni bir tip yok: **zayi fişi + üretim fişi** ardarda kesiliyor.
-Desen `galya döküman/zaiyatlı manuel üretim .md` izleyici kaydından
-çıkarıldı — kullanıcı Vega'da önce `StkÇık\A0000499\ZAYİ` fişini kesiyor,
-sonra üretim fişini yazıp doğan `38+38+97+96` belgelerini oluşturuyor.
+Yeni bir belge tipi yok: **yalnızca üretim fişi** (38+38+97+96) kesiliyor.
+Stoğu eksiye düşmüş, reçetesi olan ürün için eksi kalanın karşılığı kadar
+üretim yazılıyor ve stok sıfıra oturuyor.
 
-Panel ikisini `db/uretim.js` → `zayiatliUret()` içinde tek işlem gibi
-yapıyor:
+`db/uretim.js` → `sifiraKadarUret()`:
 
-1. Zayi fişi kesilir, ürünün stoğu düşer.
-2. Kalan **yeniden okunur** (Şefim aradaki saniyelerde satış işleyebilir).
-3. Kalan eksiyse eksik miktar kadar üretim fişi yazılır.
-4. Üretim yazılamazsa **zayi fişi geri alınır** — stoktan düşmüş ama
-   üretilmemiş ürün bırakılmaz. Geri alma da başarısız olursa hata mesajı
-   belge numarasını söyler, elle silinmesi gerekir.
+1. Kalan **yazma anında Vega'dan okunur** (Şefim aradaki saniyelerde satış
+   işleyebilir; ekrandaki eski sayı stoğu yanlış yere oturturdu).
+2. Kalan eksi değilse fiş HİÇ kesilmez, hata döner.
+3. Eksiyse eksik miktar kadar üretim fişi yazılır.
 
-Zayi sonrası stok eksiye düşmezse üretim yapılmaz; fiş kesilmiş olarak
-kalır (kullanıcının girdiği zayi gerçekten oldu).
+`hepsiniSifirla()` aynı işi seçilen ürünlerin hepsi için yapıyor; bir ürün
+hata verirse diğerleri yazılmaya devam ediyor ve sonuç listesinde hangisinin
+neden yazılamadığı duruyor.
+
+> **Kendini tüketen reçete.** Bazı kartların reçetesinde mamulün KENDİSİ
+> bileşen: F0102'de `Tequila.Olmeca Blanco` üretmek için 0,07 birim aynı
+> kart tüketiliyor (şişeden kadeh). Böyle bir kartta 1 birim üretim stoğu
+> (1 − oran) kadar artırıyor, o yüzden üretilecek miktar ölçekleniyor:
+> `eksik / (1 − oran)`. Ölçeklenmezse tek geçişte sıfıra inilmiyor — canlıda
+> görüldü: −0,1575 olan kart 0,1575 üretimden sonra −0,0110'da kaldı.
+> Oran ≥ 1 ise üretim stoğu hiç artırmaz; kart `uretilemez` işaretiyle
+> geliyor ve fiş kesilmiyor.
+
+> **Zayi fişi kesilmiyor.** 25.08.2026'ya kadar "zayiatlı üretim" adında
+> birleşik bir kip vardı: önce zayi fişi kesiyor, sonra stoğu sıfıra
+> çekiyordu. Müşterinin kararıyla kaldırıldı — zayi girişi kendi ekranında
+> (Zayi / personel çıkışı) yapılıyor, burası yalnızca eksiği kapatıyor.
+> Deseni `galya döküman/zaiyatlı manuel üretim .md` izleyici kaydında
+> duruyor: kullanıcı Vega'da da iki işi ayrı yapıyor — önce
+> `StkÇık\A0000499\ZAYİ` fişi, sonra üretim fişi.
 
 ### Üretim fişine eklenen tablo: TBLUREURETIMARAC
 
@@ -554,6 +568,56 @@ FROM F0102TBLURERECETEARAC WHERE EVRAKNO=4499
 (1405 = üretim başlığının IND'i, 4499 = reçete IND'i.) Panel aynısını
 yazıyor; reçetede araç tanımlı değilse hiç satır oluşmuyor. Geri alma bu
 tabloyu da siliyor.
+
+## Fireli (manuel) üretim
+
+Sıfıra kadar üretimin kardeşi. Fark: orada eksiye düşmüş **mamul** reçeteden
+üretiliyor, burada **hammadde** fire vermiş ve mamul reçetesiz üretiliyor.
+Müşterinin tarifi:
+
+> "Ne üretilecekse seçiliyor, misal somon. Sonra o neyden üretilecekse —
+> ham somon — o giriliyor 10 kg olarak. Çıkışta 3 kg somon ve 7 kg fire
+> olarak yazılıyor."
+
+Yine yeni bir belge tipi yok, aynı iki belge ardarda kesiliyor:
+
+```
+1. Zayi çıkış fişi (33)  ham somon 7 kg   cari FİRE/ZAYİ
+2. Üretim fişi           ham somon 3 kg tüketim → somon 3 kg çıktı
+                         (doğan belgeler: 38 + 38 + 97 + 96)
+```
+
+Toplamda 10 kg hammadde stoktan çıkar, 3 kg mamul girer.
+
+`db/uretim.js` → `fireliUret()`:
+
+1. Her hammadde satırı için **giren miktar** ve **fire** alınır.
+2. Fire toplamı > 0 ise zayi fişi kesilir (yalnızca fire satırlarıyla).
+3. Üretim fişi yazılır; tüketim miktarı `giren − fire`.
+4. Üretim yazılamazsa **fire fişi geri alınır**.
+
+Fire sıfırsa zayi fişi hiç kesilmez, yalnızca üretim yazılır.
+
+### Reçetesiz üretim fişi
+
+Fireli üretimde reçete YOKTUR — "somon" kartının reçetesi yok ve olması da
+gerekmiyor. `yazma.uretimHazirligi()` bunun için `elleBilesenler` alıyor:
+
+| Alan | Reçeteli üretim | Elle bileşenli üretim |
+|---|---|---|
+| Tüketim satırları | `TBLURERECETE`'den, verime oranlanarak | Kullanıcının verdiği miktar, olduğu gibi |
+| `TBLUREURETIMLIST.RECETENO` | Reçete başlığının IND'i | Reçete varsa IND'i, yoksa **0** |
+| Pozisyon adımları | `TBLURERECETEPOZ`'dan | Reçete varsa oradan, yoksa varsayılan BAŞLA/BİTİR |
+| `TBLUREURETIMARAC` | Reçeteden kopyalanır | Reçete varsa kopyalanır, yoksa satır oluşmaz |
+| KDV oranı | Reçete başlığından | Reçete varsa oradan, yoksa 0 |
+
+Yani reçete varsa **yalnızca çerçevesi** (pozisyon, araç, KDV) kullanılıyor;
+miktarlar her hâlükârda elle gelenler. Reçete yoksa üretim fişi yine de
+eksiksiz yazılıyor.
+
+> Çıktı satırındaki `TBLUREURETIMCIKTI.RECETENO` alanı reçeteyi değil,
+> **üretim başlığının IND'ini** tutuyor (alan adı yanıltıcı, Vega'nın kendi
+> fişlerinde de böyle). Bu, reçetesiz üretimde de değişmiyor.
 
 ## Stok kartını pasife alma
 
