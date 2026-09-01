@@ -8,6 +8,7 @@ const { dogrula, tablo, kart } = require('./firma');
 const sefim = require('./sefim');
 const sayim = require('./sayim');
 const vega = require('./vega');
+const alisFatura = require('./fatura');
 
 function vt() {
   return ayarOku().vegaVeritabani;
@@ -42,16 +43,6 @@ async function stokSayilari(firma, donem, depo, ust, aktifGun) {
     { depo, ust, aktifGun }
   );
   return r[0] || { biten: 0, azalan: 0 };
-}
-
-async function faturaSayisi(firma, donem) {
-  const v = vt();
-  const r = await sorgu(`
-    SELECT COUNT(*) AS adet
-    FROM ${tablo(v, firma, donem, 'TBLEFAINBOX')}
-    WHERE ISNULL(IMPORTSTATUS, 0) = 0
-  `);
-  return r[0] ? r[0].adet : 0;
 }
 
 async function maliyetSayisi(firma) {
@@ -98,7 +89,7 @@ async function anaEkran(secim) {
       guvenli('stok', () => stokSayilari(firma, donem, depo, ust, aktifGun)),
       guvenli('aktarim', () => sefim.aktarimDurumu()),
       guvenli('sayim', () => sayim.sonSayimFarki({ firma, donem })),
-      guvenli('fatura', () => faturaSayisi(firma, donem)),
+      guvenli('fatura', () => alisFatura.bekleyenSayisi({ firma, donem })),
       guvenli('maliyet', () => maliyetSayisi(firma)),
       guvenli('eslesmeyen', () => eslesmeyenUrunSayisi({ firma, donem })),
       guvenli('sonTarih', () => vega.sonHareketTarihi({ firma, donem })),
@@ -167,11 +158,12 @@ async function anaEkran(secim) {
       },
       {
         anahtar: 'fatura',
-        baslik: 'Bekleyen e-fatura',
+        baslik: 'Onay bekleyen alış faturası',
         deger: fatura.deger,
-        altBaslik: 'Kabul/eşleştirme bekliyor',
+        altBaslik: "Yönetici onayıyla Vega'ya işlenir",
         renk: 'mavi',
-        ekran: 'fatura',
+        ekran: 'alisFatura',
+        yoneticiSadece: true,
         hata: fatura.hata
       },
       {

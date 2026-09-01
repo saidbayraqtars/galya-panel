@@ -585,6 +585,7 @@ ekranlar.ana = async function () {
     yonetici() && islemDugmesi('Sayım onayı', "Bekleyen sayımları Vega'ya işle", 'sayimOnay'),
     yetkiVar('zayi') && islemDugmesi('Zayi / personel çıkışı', 'Çalışanın zayi ettiği ürünü düş', 'zayi'),
     yetkiVar('uretim') && islemDugmesi('Üretim', 'Manuel üretim ve eksileri sıfıra çekme', 'uretim'),
+    islemDugmesi("Şefim'i yönetici aç", 'Windows yönetici onayıyla Şefim programını başlat', null, sefimYoneticiAc),
     islemDugmesi('Reçete ağacı', 'Mamulün altındaki her şeyi gör', 'recete'),
     islemDugmesi('THIRD listesi', 'Üretim gerektiren stokları işaretle', 'third'),
     islemDugmesi('Ürün değişim tutanağı', 'Bir stoktan düş, diğerine ekle', 'tutanak'),
@@ -615,6 +616,15 @@ function islemDugmesi(ad, not, ekran, elleIs) {
     el('span', { sinif: 'ad', metin: ad }),
     el('span', { sinif: 'not', metin: not })
   ]);
+}
+
+async function sefimYoneticiAc() {
+  try {
+    const sonuc = await cagir('vegaprogram:ac', { program: 'sefim' });
+    bildir(sonuc.ad + ' açılıyor. Windows onay penceresini kabul edin.', 'iyi');
+  } catch (e) {
+    hataGoster(e);
+  }
 }
 
 // ---------- STOK KONTROL ----------
@@ -3000,9 +3010,8 @@ ekranlar.maliyet = async function () {
 
 // ---------- ALIŞ FATURASI ----------
 //
-// Fatura önce panelde taslak olarak hazırlanır. "Vega'ya yaz" düğmesi
-// bastığında stok girişi, depo envanteri ve cari borç birlikte oluşur.
-// Yanlış girilen taslak Vega'ya hiç dokunmaz.
+// Fatura önce panelde taslak olarak hazırlanır. Yalnızca yönetici onaylayıp
+// Vega'ya yazabilir; stok girişi, depo envanteri ve cari borç o anda oluşur.
 
 ekranlar.alisFatura = async function () {
   const liste = await cagir('alisFatura:liste');
@@ -3014,11 +3023,9 @@ ekranlar.alisFatura = async function () {
   await yedekUyarisiCiz();
 
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-    'Tedarikçiden gelen malı buradan stoğa girebilirsiniz. Fatura önce taslak ' +
-    'olarak kaydedilir; ' +
-    (durum.yazmaAcik
-      ? "\"Vega'ya yaz\" dediğinizde stok girişi ve tedarikçiye borç birlikte oluşur."
-      : "Vega'ya yazma kapalı olduğu için şimdilik yalnızca taslak tutulabilir.")
+    'Tedarikçiden gelen malı buradan kaydedebilirsiniz. Fatura yönetici ' +
+    'onayına kadar Vega\'ya aktarılmaz; stok girişi ve tedarikçi borcu ancak ' +
+    'yönetici onayladığında oluşur.'
   ]));
 
   if (!durum.depo) {
@@ -3046,7 +3053,7 @@ ekranlar.alisFatura = async function () {
         ],
         satirlar: liste.map((f) => Object.assign({}, f, {
           tarihYazi: tarihYaz(f.tarih),
-          vegaYazi: f.vegayaYazildi ? (f.vegaBelgeNo || 'Yazıldı') : 'Taslak'
+          vegaYazi: f.vegayaYazildi ? (f.vegaBelgeNo || 'Yazıldı') : 'Onay bekliyor'
         }))
       }))
     ));
@@ -3066,7 +3073,7 @@ ekranlar.alisFatura = async function () {
       el('td', null, [
         f.vegayaYazildi
           ? el('span', { sinif: 'etiket yesil', metin: f.vegaBelgeNo || 'Yazıldı' })
-          : el('span', { sinif: 'etiket gri', metin: 'Taslak' })
+          : el('span', { sinif: 'etiket gri', metin: 'Onay bekliyor' })
       ]),
       el('td', null, alisFaturaDugmeleri(f))
     ])
@@ -3084,11 +3091,11 @@ function alisFaturaDugmeleri(f) {
     }));
   }
 
-  if (durum.yazmaAcik && !f.vegayaYazildi) {
+  if (yonetici() && durum.yazmaAcik && !f.vegayaYazildi) {
     dugmeler.push(el('button', {
       sinif: 'dugme-kucuk tehlike',
       style: 'margin-left:6px',
-      metin: "Vega'ya yaz",
+      metin: "Onayla ve Vega'ya yaz",
       tikla: async () => {
         const onay = await window.galya.cagir('sistem:onay', {
           baslik: "Faturayı Vega'ya yaz",

@@ -109,6 +109,8 @@ const YONETICI_KANALLARI = new Set([
   'oturum:pinKaldir',
   'ayar:yaz',
   'stok:pasifYap',
+  'alisFatura:vegayaYaz',
+  'alisFatura:vegadanGeriAl',
   // Geri yükleme veritabanını yedeğin alındığı ana döndürür ve aradaki her
   // şeyi siler; panelde geri dönüşü olmayan tek iş budur.
   'yedek:geriYukle'
@@ -371,7 +373,13 @@ kayitEt('firma:liste', async (g) => firma.firmalariGetir(!!g.yenile));
 kayitEt('depo:liste', async () => firma.depolariGetir());
 
 // Ana ekran
-kayitEt('ozet:anaEkran', async (g) => ozet.anaEkran(g));
+kayitEt('ozet:anaEkran', async (g, k, o) => {
+  const sonuc = await ozet.anaEkran(g);
+  if (o.rol !== oturum.YONETICI) {
+    sonuc.kutular = sonuc.kutular.filter((kutu) => !kutu.yoneticiSadece);
+  }
+  return sonuc;
+});
 
 // Stok
 kayitEt('stok:durum', async (g) => vega.stokDurumu(g));

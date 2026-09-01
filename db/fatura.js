@@ -163,6 +163,18 @@ async function taslakListesi(secim) {
   );
 }
 
+async function bekleyenSayisi(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const r = await sorgu(
+    `SELECT COUNT(*) AS adet
+     FROM [${p()}].dbo.AlisFatura
+     WHERE Firma = @firma AND Donem = @donem
+       AND Iptal = 0 AND VegayaYazildi = 0`,
+    { firma, donem }
+  );
+  return r[0] ? Number(r[0].adet) : 0;
+}
+
 async function taslakGetir(secim) {
   const basliklar = await sorgu(
     `SELECT Id AS id, Firma AS firma, Donem AS donem, Depo AS depo,
@@ -200,4 +212,11 @@ async function taslakSil(secim) {
   return { tamam: true };
 }
 
-module.exports = { taslakKaydet, taslakListesi, taslakGetir, taslakSil, satirToplamlari };
+module.exports = {
+  taslakKaydet,
+  taslakListesi,
+  taslakGetir,
+  taslakSil,
+  bekleyenSayisi,
+  satirToplamlari
+};
