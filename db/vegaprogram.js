@@ -1,11 +1,10 @@
 'use strict';
 
-// VegaWinA5 kurulumundaki yardımcı programları panelden açmak için.
-// Şimdilik sayım programı kullanılıyor; liste ihtiyaca göre büyütülebilir.
+// Vega kurulumundaki beyaz listeli programları panelden açmak için.
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { ayarOku } = require('./ayar');
 const panel = require('./panel');
 
@@ -70,17 +69,17 @@ async function ac(anahtar, kim) {
   let surec;
   if (tanim.yoneticiOlarak) {
     // Sabit, beyaz listedeki yol dışında hiçbir metin PowerShell'e girmez.
-    // -Verb RunAs Windows UAC penceresini açar.
+    // Önceki fire-and-forget çağrı PowerShell sonucunu beklemeden başarı
+    // dönüyor, UAC iptalini ve başlatma hatasını tamamen yutuyordu.
     const kacisliYol = yol.replace(/'/g, "''");
     const kacisliKlasor = path.dirname(yol).replace(/'/g, "''");
     const komut =
-      `Start-Process -FilePath '${kacisliYol}' ` +
-      `-WorkingDirectory '${kacisliKlasor}' -Verb RunAs`;
-    surec = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', komut], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    });
+      `$ErrorActionPreference='Stop'; ` +
+      `$p=Start-Process -FilePath '${kacisliYol}' ` +
+      `-WorkingDirectory '${kacisliKlasor}' -Verb RunAs -PassThru; ` +
+      `[Console]::Out.Write($p.Id)`;
+    const pid = await yoneticiOlarakBaslat(komut);
+    surec = { pid };
   } else {
     surec = spawn(yol, [], {
       cwd: path.dirname(yol),
@@ -88,16 +87,48 @@ async function ac(anahtar, kim) {
       stdio: 'ignore'
     });
   }
-  surec.unref();
+  if (surec.unref) surec.unref();
 
   await panel.kayit(
     'Vega Programı',
     tanim.ad + ' açıldı',
-    { yol, yoneticiOlarak: !!tanim.yoneticiOlarak },
+    { yol, yoneticiOlarak: !!tanim.yoneticiOlarak, pid: surec.pid || null },
     kim && kim.kullanici,
     kim && kim.bilgisayar
   );
-  return { tamam: true, ad: tanim.ad, yol };
+  return { tamam: true, ad: tanim.ad, yol, pid: surec.pid || null };
+}
+
+function yoneticiOlarakBaslat(komut) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', komut],
+      { windowsHide: true, timeout: 120000 },
+      (hata, stdout, stderr) => {
+        if (hata) {
+          const ayrinti = String(stderr || hata.message || '').trim();
+          const iptal = /cancel|iptal|1223/i.test(ayrinti + ' ' + (hata.code || ''));
+          const e = new Error(
+            iptal
+              ? 'Windows yönetici onayı verilmedi; Şefim açılmadı.'
+              : 'Şefim yönetici olarak başlatılamadı: ' + (ayrinti || hata.message)
+          );
+          e.kod = iptal ? 'UAC_IPTAL' : 'PROGRAM_ACILAMADI';
+          reject(e);
+          return;
+        }
+        const pid = Number(String(stdout || '').trim());
+        if (!pid) {
+          const e = new Error('Windows Şefim işlemini başlattı ancak işlem kimliği alınamadı.');
+          e.kod = 'PROGRAM_ACILAMADI';
+          reject(e);
+          return;
+        }
+        resolve(pid);
+      }
+    );
+  });
 }
 
 module.exports = { ac, durum, PROGRAMLAR };

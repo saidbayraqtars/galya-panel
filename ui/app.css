@@ -527,3 +527,23 @@ input.miktar {
   font-size: 15px;
   min-height: 40px;
 }
+.yetki-listesi {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 8px;
+  margin: 10px 0 16px;
+}
+
+.yetki-secim {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #f8f9fa;
+}
+
+.yetki-secim input {
+  margin-top: 2px;
+}

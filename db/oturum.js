@@ -23,20 +23,12 @@
 const crypto = require('crypto');
 const { sorgu, calistir } = require('./sql');
 const panel = require('./panel');
+const { YETKILER } = require('./yetki');
 
 const YONETICI = 'yonetici';
 const KULLANICI = 'kullanici';
 // Eski adı; dışarıdaki çağrılar kırılmasın diye duruyor.
 const SAYIMCI = KULLANICI;
-
-// Yetki anahtarları. Yönetici hepsine sahiptir, ayrıca işaretlenmez.
-const YETKILER = [
-  { anahtar: 'sayim', ad: 'Ara sayım yapabilir' },
-  { anahtar: 'tamSayim', ad: 'Tam sayım yapabilir' },
-  { anahtar: 'zayi', ad: 'Zayi / personel çıkışı girebilir' },
-  { anahtar: 'uretim', ad: 'Üretim fişi yazabilir' },
-  { anahtar: 'stok', ad: 'Stok ve cari ekranlarını görebilir' }
-];
 
 // Program açıkken geçerli tek oturum. Program kapanınca düşer.
 const oturum = {
@@ -74,6 +66,8 @@ function yetkiCoz(ham) {
   y.siniflar = Array.isArray(gelen.siniflar)
     ? gelen.siniflar.map((s) => String(s).trim()).filter(Boolean)
     : [];
+  if (y.tamSayim) y.sayim = true;
+  if (y.yedekGeriYukle) y.yedek = true;
   return y;
 }
 
@@ -85,6 +79,10 @@ function yetkiYaz(gelen) {
       ? gelen.siniflar.map((s) => String(s).trim()).filter(Boolean)
       : [];
   }
+  // Alt yetki tek başına anlamsız kalmasın. Tam sayım ara/tam sayım ekranını,
+  // geri yükleme de yedekleme merkezini kullanır.
+  if (y.tamSayim) y.sayim = true;
+  if (y.yedekGeriYukle) y.yedek = true;
   return JSON.stringify(y);
 }
 

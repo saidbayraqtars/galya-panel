@@ -110,6 +110,7 @@ async function anaEkran(secim) {
         altBaslik: 'Eksi veya sıfır',
         renk: 'kirmizi',
         ekran: 'stok',
+        yetki: 'stok',
         parametre: { suzgec: 'sifir' },
         hata: stok.hata
       },
@@ -120,6 +121,7 @@ async function anaEkran(secim) {
         altBaslik: `1–${ust} arası kaldı`,
         renk: 'turuncu',
         ekran: 'stok',
+        yetki: 'stok',
         parametre: { suzgec: 'azalan' },
         hata: stok.hata
       },
@@ -132,6 +134,7 @@ async function anaEkran(secim) {
           : 'Şefim satırı bekliyor',
         renk: 'kirmizi',
         ekran: 'aktarim',
+        yetki: 'aktarim',
         hata: aktarim.hata
       },
       {
@@ -143,10 +146,11 @@ async function anaEkran(secim) {
           : 'Henüz sayım yapılmamış',
         renk: 'turuncu',
         ekran: 'sayim',
+        yetki: 'sayim',
         hata: sayimFark.hata
       },
-      // Sayım artık kaydedilir kaydedilmez Vega'ya gitmiyor; yönetici
-      // onaylayana kadar burada bekliyor.
+      // Sayım kaydedilir kaydedilmez Vega'ya gitmez; onay yetkilisi
+      // onaylayana kadar burada bekler.
       {
         anahtar: 'sayimOnay',
         baslik: 'Onay bekleyen sayım',
@@ -154,16 +158,17 @@ async function anaEkran(secim) {
         altBaslik: "Onaylanınca Vega'ya işlenir",
         renk: 'mavi',
         ekran: 'sayimOnay',
+        yetki: 'sayimOnay',
         hata: bekleyen.hata
       },
       {
         anahtar: 'fatura',
         baslik: 'Onay bekleyen alış faturası',
         deger: fatura.deger,
-        altBaslik: "Yönetici onayıyla Vega'ya işlenir",
+        altBaslik: "Onay yetkisiyle Vega'ya işlenir",
         renk: 'mavi',
         ekran: 'alisFatura',
-        yoneticiSadece: true,
+        yetki: 'alisFaturaOnay',
         hata: fatura.hata
       },
       {
@@ -173,6 +178,7 @@ async function anaEkran(secim) {
         altBaslik: 'Fiyat değişti, maliyet değişmedi',
         renk: 'turuncu',
         ekran: 'maliyet',
+        yetki: 'maliyet',
         hata: maliyet.hata
       }
     ]

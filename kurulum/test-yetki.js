@@ -84,12 +84,28 @@ function kontrol(ad, kosul, ayrinti) {
     },
     KIM
   );
+  const tumYetkiler = {};
+  for (const y of oturum.YETKILER) tumYetkiler[y.anahtar] = true;
+  await oturum.kullaniciKaydet(
+    {
+      ad: 'Sınama Operasyon',
+      rol: 'kullanici',
+      pin: '6842',
+      yetkiler: tumYetkiler
+    },
+    KIM
+  );
   let liste = await oturum.kullaniciListesi();
-  kontrol('İki kullanıcı kaydedildi', liste.length === 2);
+  kontrol('Üç kullanıcı kaydedildi', liste.length === 3);
   const barci = liste.find((k) => k.ad === 'Sınama Barcı');
+  const operasyon = liste.find((k) => k.ad === 'Sınama Operasyon');
   kontrol('Sayım yetkisi işaretli', barci.yetkiler.sayim === true);
   kontrol('Tam sayım yetkisi işaretsiz', barci.yetkiler.tamSayim === false);
   kontrol('Kapsam BAR', JSON.stringify(barci.yetkiler.siniflar) === '["BAR"]');
+  kontrol(
+    'Bütün modül yetkileri kaydedilip okunuyor',
+    oturum.YETKILER.every((y) => operasyon.yetkiler[y.anahtar] === true)
+  );
 
   console.log('\n== Kilit devrede ==');
   kontrol('Kilit açıldı', (await oturum.pinVarMi()) === true);

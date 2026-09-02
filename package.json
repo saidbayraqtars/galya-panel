@@ -1,6 +1,6 @@
 {
   "name": "galya-panel",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "private": true,
   "description": "Galya Master Panel — VegaWin ve Vega Şefim verileri üzerinden günlük stok, sayım, reçete ve fatura takibi",
   "author": "Bayraktar Yazılım",
@@ -8,6 +8,7 @@
   "scripts": {
     "start": "electron .",
     "test:db": "node kurulum/test-sorgular.js",
+    "test:yetki": "node kurulum/test-yetki-haritasi.js && node kurulum/test-yetki.js",
     "dist": "electron-builder --win --x64 --publish never",
     "dist:dir": "electron-builder --win --x64 --dir --publish never",
     "release": "electron-builder --win --x64 --publish always"

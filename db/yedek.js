@@ -745,7 +745,7 @@ async function hatirlatma() {
 // SINGLE_USER'a alındığı için Vega ve Şefim dahil bağlı olan HERKES atılır.
 //
 // Bu yüzden:
-//   - yalnızca yönetici çağırabiliyor (main.js → YONETICI_KANALLARI),
+//   - yalnızca yönetici veya yedekGeriYukle yetkili kullanıcı çağırabiliyor,
 //   - arayüz veritabanı adını elle yazdırıyor,
 //   - geri yüklemeden ÖNCE otomatik bir güvenlik yedeği alınıyor
 //     (yanlış dosyayı seçen kişi bugüne dönebilsin diye).

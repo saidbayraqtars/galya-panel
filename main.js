@@ -23,6 +23,13 @@ const uretim = require('./db/uretim');
 const yedek = require('./db/yedek');
 const oturum = require('./db/oturum');
 const zayi = require('./db/zayi');
+const {
+  YONETICI_KANALLARI,
+  ACIK_KANALLAR,
+  KANAL_YETKILERI,
+  kullaniciYetkiliMi,
+  yetkiAdi
+} = require('./db/yetki');
 
 let pencere = null;
 
@@ -86,71 +93,14 @@ const kim = {
 // anda aşağıdaki üç katman devreye girer:
 //
 //   1. YONETICI_KANALLARI — yalnızca yönetici çağırabilir.
-//   2. YETKI_KANALLARI    — kullanıcının o yetkisi işaretliyse çağrılabilir.
+//   2. KANAL_YETKILERI    — kullanıcının o yetkisi işaretliyse çağrılabilir.
 //   3. Yanıt süzme        — sayım ekranının teorik miktarı gibi alanlar
 //                           role göre nesneden çıkarılır (gizlenmez,
 //                           GÖNDERİLMEZ).
 //
 // Sayan kişi Vega'daki miktarı görürse çoğu zaman aynı sayıyı yazar ve
-// sayım anlamını kaybeder; yönetici girişi yapılınca teorik miktar gelir.
-const YONETICI_KANALLARI = new Set([
-  'sayim:gecmis',        // fark tutarı ve farklı satır sayısı
-  'sayim:detay',         // satır satır teorik / fark
-  'sayim:bekleyenler',   // onay kuyruğu
-  'sayim:onayla',        // sayımı Vega'ya işleyen tek uç
-  'sayim:reddet',
-  'sayim:vegayaYaz',
-  'sayim:vegadanGeriAl',
-  'sayim:iptal',
-  'kullanici:liste',
-  'kullanici:kaydet',
-  'kullanici:sil',
-  'oturum:pinBelirle',
-  'oturum:pinKaldir',
-  'ayar:yaz',
-  'stok:pasifYap',
-  'alisFatura:vegayaYaz',
-  'alisFatura:vegadanGeriAl',
-  // Geri yükleme veritabanını yedeğin alındığı ana döndürür ve aradaki her
-  // şeyi siler; panelde geri dönüşü olmayan tek iş budur.
-  'yedek:geriYukle'
-]);
-
-// Kanal → gereken yetki anahtarı. Yönetici hepsini geçer.
-const YETKI_KANALLARI = {
-  'sayim:ekran': 'sayim',
-  'sayim:kaydet': 'sayim',
-  'sayim:liste': 'sayim',
-  'sayim:listeyeEkle': 'sayim',
-  'sayim:topluEkle': 'sayim',
-  'sayim:listedenCikar': 'sayim',
-  'sayim:listeyiBosalt': 'sayim',
-  'zayi:kaydet': 'zayi',
-  'zayi:liste': 'zayi',
-  'zayi:satirDokumu': 'zayi',
-  'zayi:getir': 'zayi',
-  'zayi:sil': 'zayi',
-  'zayi:cariler': 'zayi',
-  'zayi:vegayaYaz': 'zayi',
-  'zayi:vegadanGeriAl': 'zayi',
-  'uretim:sifirAdaylari': 'uretim',
-  'uretim:urunAra': 'uretim',
-  'uretim:sifiraKadar': 'uretim',
-  'uretim:hepsiniSifirla': 'uretim',
-  'uretim:fireli': 'uretim',
-  'uretim:gecmis': 'uretim',
-  'uretim:geriAl': 'uretim',
-  // Sayım ekranındaki sınıflandırma süzgeçlerinin seçenekleri. Stok
-  // ekranının aynı listesi `stok` yetkisine bağlı; sayımcıya o yetki
-  // verilmediği için ayrı bir uç açıldı.
-  'sayim:kodListeleri': 'sayim',
-  'stok:durum': 'stok',
-  'stok:kontrol': 'stok',
-  'stok:ara': 'stok',
-  'stok:hareket': 'stok',
-  'cari:bakiye': 'stok',
-  'cari:ara': 'stok'
-};
+// sayım anlamını kaybeder. Teorik miktar yalnız yöneticiye veya sayım onayı
+// verilmiş kullanıcıya gider.
 
 // VEGADB'ye YAZAN kanallar. Bu listedeki bir kanal çağrılmadan ÖNCE
 // otomatik yedek alınıyor (db/yedek.js → islemOncesiYedek).
@@ -262,9 +212,12 @@ function kayitEt(kanal, isFn) {
       if (!yoneticiMi && YONETICI_KANALLARI.has(kanal)) {
         return yetkisizCevap();
       }
-      const gereken = YETKI_KANALLARI[kanal];
-      if (!yoneticiMi && gereken && !(o.yetkiler && o.yetkiler[gereken])) {
+      const gereken = KANAL_YETKILERI[kanal];
+      if (!yoneticiMi && gereken && !kullaniciYetkiliMi(o.yetkiler, gereken)) {
         return yetkisizCevap(gereken);
+      }
+      if (!yoneticiMi && !gereken && !ACIK_KANALLAR.has(kanal)) {
+        return yetkisizCevap();
       }
 
       // İşlem günlüğüne Windows kullanıcısı değil, giriş yapmış kişi düşsün.
@@ -298,19 +251,13 @@ function kayitEt(kanal, isFn) {
   });
 }
 
-const YETKI_ADLARI = {
-  sayim: 'sayım',
-  tamSayim: 'tam sayım',
-  zayi: 'zayi girişi',
-  uretim: 'üretim',
-  stok: 'stok ve cari görüntüleme'
-};
-
 function yetkisizCevap(gereken) {
+  const anahtarlar = Array.isArray(gereken) ? gereken : [gereken];
+  const adlar = anahtarlar.filter(Boolean).map(yetkiAdi).join(' veya ');
   return {
     tamam: false,
     mesaj: gereken
-      ? `Bu iş için "${YETKI_ADLARI[gereken] || gereken}" yetkiniz yok. ` +
+      ? `Bu iş için "${adlar}" yetkiniz yok. ` +
         'Yöneticinize başvurun ya da sağ üstten yönetici PIN\'iyle girin.'
       : 'Bunu görmek için yönetici girişi gerekiyor. Sağ üstteki "Giriş" düğmesini kullanın.',
     kod: 'YETKISIZ'
@@ -376,7 +323,9 @@ kayitEt('depo:liste', async () => firma.depolariGetir());
 kayitEt('ozet:anaEkran', async (g, k, o) => {
   const sonuc = await ozet.anaEkran(g);
   if (o.rol !== oturum.YONETICI) {
-    sonuc.kutular = sonuc.kutular.filter((kutu) => !kutu.yoneticiSadece);
+    sonuc.kutular = sonuc.kutular.filter(
+      (kutu) => !kutu.yetki || kullaniciYetkiliMi(o.yetkiler, kutu.yetki)
+    );
   }
   return sonuc;
 });
@@ -662,14 +611,15 @@ kayitEt('sayim:listeyiBosalt', async (g, k) =>
 kayitEt('sayim:listedenCikar', async (g) => sayim.listedenCikar(g));
 // Körleme sayım. Sayan kişi Vega'daki miktarı görürse çoğu zaman aynı sayıyı
 // yazar ve sayım anlamını kaybeder. Bu yüzden teorik miktar ve birim maliyet
-// yalnızca yönetici girişi yapılmışsa arayüze gönderilir; yoksa alanlar
-// nesneden tamamen çıkarılır (gizlemek değil, göndermemek).
+// yalnızca yöneticiye veya sayım onay yetkisi verilmiş kullanıcıya gönderilir;
+// diğer oturumlarda alanlar nesneden tamamen çıkarılır.
 //
 // Kapsam (hangi sınıflar sayılabilir) ARAYÜZDEN GELMEZ, oturumdan okunur.
 // Aksi hâlde bar sayma yetkisi olan kişi isteği kurcalayıp mutfağı da
 // listeleyebilirdi.
 kayitEt('sayim:ekran', async (g, k, o) => {
   const yoneticiMi = o.rol === oturum.YONETICI;
+  const onayYetkiliMi = yoneticiMi || !!(o.yetkiler && o.yetkiler.sayimOnay);
   const tur = String(g.tur || 'ara') === 'tam' ? 'tam' : 'ara';
   if (tur === 'tam' && !yoneticiMi && !(o.yetkiler && o.yetkiler.tamSayim)) {
     const e = new Error('Tam sayım yetkiniz yok. Ara sayım yapabilirsiniz.');
@@ -684,11 +634,11 @@ kayitEt('sayim:ekran', async (g, k, o) => {
   //
   // Stok durumu süzgeci (eksi / sıfır / dolu) Vega'daki miktara bakıyor;
   // körleme sayımda sayan kişiye açık olsaydı "eksileri göster" diyerek
-  // gizlenen miktarı öğrenirdi. Yalnızca yöneticide çalışıyor.
+  // gizlenen miktarı öğrenirdi. Yalnızca yönetici/onay yetkilisinde çalışıyor.
   const istek = Object.assign({}, g, { tur, siniflar });
-  if (!yoneticiMi) delete istek.stokDurumu;
+  if (!onayYetkiliMi) delete istek.stokDurumu;
   const liste = await sayim.sayimEkraniGetir(istek);
-  if (yoneticiMi) return liste;
+  if (onayYetkiliMi) return liste;
   return liste.map((s) => ({
     stokNo: s.stokNo,
     stokAdi: s.stokAdi,
@@ -699,13 +649,13 @@ kayitEt('sayim:ekran', async (g, k, o) => {
 });
 // Sayım kaydedilir kaydedilmez Vega'ya YAZILMAZ.
 //
-// Müşterinin isteği: sayımı çalışan yapar, yönetici bakar, doğruysa onaylar
-// ve ancak o zaman fiş kesilir. Yanlış sayılmış bir kalem böylece Vega'nın
-// stok zincirine hiç dokunmadan düzeltilebiliyor.
+// Sayımı çalışan yapar; yönetici veya sayım onay yetkilisi bakıp onaylar ve
+// ancak o zaman fiş kesilir. Yanlış sayılmış kalem Vega'ya dokunmadan düzelir.
 //
-// Onaylama ucu: sayim:onayla (yalnızca yönetici).
+// Onaylama ucu: sayim:onayla (sayimOnay yetkisi).
 kayitEt('sayim:kaydet', async (g, k, o) => {
   const yoneticiMi = o.rol === oturum.YONETICI;
+  const farkGorebilirMi = yoneticiMi || !!(o.yetkiler && o.yetkiler.sayimOnay);
   const tur = String(g.tur || 'ara') === 'tam' ? 'tam' : 'ara';
   if (tur === 'tam' && !yoneticiMi && !(o.yetkiler && o.yetkiler.tamSayim)) {
     const e = new Error('Tam sayım yetkiniz yok.');
@@ -721,7 +671,7 @@ kayitEt('sayim:kaydet', async (g, k, o) => {
   // Kayıttan SONRA çıkan fark özeti de sayımcıya gitmiyor; yoksa sayımcı
   // rastgele bir sayı yazıp "fark kaç çıktı" diye deneyerek teorik miktarı
   // aramalı olarak bulabilir.
-  if (yoneticiMi) return sonuc;
+  if (farkGorebilirMi) return sonuc;
   const suzulmus = Object.assign({}, sonuc);
   for (const alan of ['artan', 'azalan', 'farkliSatir', 'farkTutari']) {
     delete suzulmus[alan];

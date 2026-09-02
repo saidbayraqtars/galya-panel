@@ -450,6 +450,37 @@ function yetkiVar(anahtar) {
   return !!(durum.yetkiler && durum.yetkiler[anahtar]);
 }
 
+function yetkilerdenBiri() {
+  return Array.from(arguments).some(yetkiVar);
+}
+
+const EKRAN_YETKILERI = {
+  stok: 'stok',
+  gider: 'gider',
+  aktarim: 'aktarim',
+  sayim: 'sayim',
+  sayimOnay: 'sayimOnay',
+  recete: 'recete',
+  third: 'third',
+  tutanak: 'tutanak',
+  fatura: 'alisFatura',
+  maliyet: 'maliyet',
+  alisFatura: ['alisFatura', 'alisFaturaOnay'],
+  zayi: 'zayi',
+  uretim: 'uretim',
+  maliyetlendirme: 'maliyet',
+  cari: 'cari',
+  yedek: 'yedek',
+  ayarlar: 'ayarlar'
+};
+
+function ekranYetkisiVar(ad) {
+  if (ad === 'kullanicilar') return yonetici();
+  const gereken = EKRAN_YETKILERI[ad];
+  if (!gereken) return true;
+  return (Array.isArray(gereken) ? gereken : [gereken]).some(yetkiVar);
+}
+
 async function oturumDurumuOku() {
   try {
     const o = await window.galya.cagir('oturum:durum');
@@ -472,6 +503,7 @@ function girisDugmesiniYaz() {
   d.title = durum.kullaniciAdi
     ? `${durum.kullaniciAdi} olarak giriş yapıldı. Tıklayınca oturum kapanır.`
     : 'PIN ile giriş yapın';
+  document.getElementById('ayarDugme').classList.toggle('hidden', !yetkiVar('ayarlar'));
 }
 
 async function oturumdanCik() {
@@ -538,6 +570,15 @@ function girisPenceresi() {
 const ekranlar = {};
 
 async function ekranAc(ad, parametre) {
+  if (!ekranYetkisiVar(ad)) {
+    bosalt(icerik);
+    icerik.appendChild(ekranBasligi('Yetki gerekli', null, ad !== 'ana'));
+    icerik.appendChild(el('div', {
+      sinif: 'aciklama-kutu kritik',
+      metin: 'Bu ekran için yetkiniz yok. Yöneticiniz kullanıcı yetkilerinden erişim verebilir.'
+    }));
+    return;
+  }
   // Çıktı tanımı ekrana bağlı: Sayım ekranında yazılan "Tam sayım" tanımı
   // Zayi ekranının Excel'ine yapışmasın diye ekran değişince sıfırlanıyor.
   // Aynı ekranın kendi içindeki tazelemelerde (süzgeç değişimi) korunuyor.
@@ -582,19 +623,19 @@ ekranlar.ana = async function () {
   // süreçte; buradaki gizleme sadece boşuna tıklamayı önlüyor.
   const islemler = el('div', { sinif: 'islem-dugmeleri' }, [
     yetkiVar('sayim') && islemDugmesi('Sayım', 'Ara ve tam sayım, onaya gönder', 'sayim'),
-    yonetici() && islemDugmesi('Sayım onayı', "Bekleyen sayımları Vega'ya işle", 'sayimOnay'),
+    yetkiVar('sayimOnay') && islemDugmesi('Sayım onayı', "Bekleyen sayımları Vega'ya işle", 'sayimOnay'),
     yetkiVar('zayi') && islemDugmesi('Zayi / personel çıkışı', 'Çalışanın zayi ettiği ürünü düş', 'zayi'),
     yetkiVar('uretim') && islemDugmesi('Üretim', 'Manuel üretim ve eksileri sıfıra çekme', 'uretim'),
-    islemDugmesi("Şefim'i yönetici aç", 'Windows yönetici onayıyla Şefim programını başlat', null, sefimYoneticiAc),
-    islemDugmesi('Reçete ağacı', 'Mamulün altındaki her şeyi gör', 'recete'),
-    islemDugmesi('THIRD listesi', 'Üretim gerektiren stokları işaretle', 'third'),
-    islemDugmesi('Ürün değişim tutanağı', 'Bir stoktan düş, diğerine ekle', 'tutanak'),
-    islemDugmesi('Gider / hizmet stokları', 'Elektrik, su, nakliye kartlarını sıfırla', 'gider'),
-    yetkiVar('stok') && islemDugmesi('Cari bakiye', 'Kime ne kadar borç var', 'cari'),
-    islemDugmesi('Alış faturası', 'Gelen malı faturasıyla stoğa gir', 'alisFatura'),
-    islemDugmesi('Maliyetlendirme', 'Son alış fiyatından maliyet hesapla', 'maliyetlendirme'),
+    yetkiVar('sefim') && islemDugmesi("Şefim'i yönetici aç", 'Windows yönetici onayıyla Şefim programını başlat', null, sefimYoneticiAc),
+    yetkiVar('recete') && islemDugmesi('Reçete ağacı', 'Mamulün altındaki her şeyi gör', 'recete'),
+    yetkiVar('third') && islemDugmesi('THIRD listesi', 'Üretim gerektiren stokları işaretle', 'third'),
+    yetkiVar('tutanak') && islemDugmesi('Ürün değişim tutanağı', 'Bir stoktan düş, diğerine ekler', 'tutanak'),
+    yetkiVar('gider') && islemDugmesi('Gider / hizmet stokları', 'Elektrik, su, nakliye kartlarını sıfırla', 'gider'),
+    yetkiVar('cari') && islemDugmesi('Cari bakiye', 'Kime ne kadar borç var', 'cari'),
+    yetkilerdenBiri('alisFatura', 'alisFaturaOnay') && islemDugmesi('Alış faturası', 'Gelen malı faturasıyla stoğa gir', 'alisFatura'),
+    yetkiVar('maliyet') && islemDugmesi('Maliyetlendirme', 'Son alış fiyatından maliyet hesapla', 'maliyetlendirme'),
     yonetici() && islemDugmesi('Kullanıcılar', 'Kim neyi yapabilir, kim neyi sayabilir', 'kullanicilar'),
-    islemDugmesi('Yedekleme merkezi', 'Yedek al, gerekirse yedekten dön', 'yedek')
+    yetkiVar('yedek') && islemDugmesi('Yedekleme merkezi', 'Yedek al, gerekirse yedekten dön', 'yedek')
   ]);
   icerik.appendChild(islemler);
 
@@ -621,7 +662,7 @@ function islemDugmesi(ad, not, ekran, elleIs) {
 async function sefimYoneticiAc() {
   try {
     const sonuc = await cagir('vegaprogram:ac', { program: 'sefim' });
-    bildir(sonuc.ad + ' açılıyor. Windows onay penceresini kabul edin.', 'iyi');
+    bildir(sonuc.ad + ' yönetici olarak başlatıldı.', 'iyi');
   } catch (e) {
     hataGoster(e);
   }
@@ -913,8 +954,8 @@ ekranlar.stok = async function (parametre) {
             metin: 'Hareketler',
             tikla: () => stokHareketiGoster(s)
           }),
-          // Pasife alma yalnızca yöneticide; kart Vega'da da pasif görünür.
-          yonetici()
+          // Stok yetkisi verilen kullanıcı kartı pasife alıp açabilir.
+          yetkiVar('stok')
             ? el('button', {
                 sinif: 'dugme-kucuk',
                 style: 'margin-left:6px',
@@ -1345,7 +1386,7 @@ const STOK_DURUM_SUZGECLERI = [
 
 ekranlar.sayim = async function (parametre) {
   const p = parametre || {};
-  const yetkili = yonetici();
+  const yetkili = yetkiVar('sayimOnay');
   const tur = p.tur === 'tam' ? 'tam' : 'ara';
   const tamYetkisi = yetkiVar('tamSayim');
 
@@ -1399,8 +1440,8 @@ ekranlar.sayim = async function (parametre) {
   const raporAltBaslik = suzgecMetni ? 'Süzgeç — ' + suzgecMetni : null;
 
   // SAYIMDAN ÖNCE alınan liste: boş "Sayılan" sütunuyla, elde doldurulmak
-  // üzere. Teorik miktar yalnızca yöneticinin çıktısında var; körleme sayımın
-  // anlamı kâğıda basılınca kaybolmasın diye.
+  // üzere. Teorik miktar yalnızca yönetici/onay yetkilisinin çıktısında var;
+  // körleme sayımın anlamı kâğıda basılınca kaybolmasın diye.
   function foyRaporu() {
     const sutunlar = [
       { ad: 'Ürün', alan: 'stokAdi', tur: 'metin', genislik: 44 },
@@ -1589,7 +1630,7 @@ ekranlar.sayim = async function (parametre) {
         ]),
         hucre(x.sinif || '—'),
         hucre(x.birim || '—'),
-        // Teorik miktar yalnızca yönetici girişinden sonra geliyor.
+        // Teorik miktar yalnızca yönetici/onay yetkisiyle geliyor.
         yetkili ? hucre(sayiYaz(x.teorik, 2), 'sayi') : null,
         el('td', null, [kutu])
       ]);
@@ -1695,7 +1736,7 @@ ekranlar.sayim = async function (parametre) {
           `Sayım kaydedildi (${satirlar.length} ürün) ve yönetici onayına gönderildi.`,
           'iyi'
         );
-        // Fark dökümü yalnızca yöneticiye açılır.
+        // Fark dökümü yalnızca yönetici/onay yetkilisine açılır.
         if (yetkili) sayimDetayGoster(sonuc.sayimId);
         ekranAc('sayim', p);
       } catch (e) {
@@ -3010,22 +3051,21 @@ ekranlar.maliyet = async function () {
 
 // ---------- ALIŞ FATURASI ----------
 //
-// Fatura önce panelde taslak olarak hazırlanır. Yalnızca yönetici onaylayıp
-// Vega'ya yazabilir; stok girişi, depo envanteri ve cari borç o anda oluşur.
+// Fatura önce panelde taslak olarak hazırlanır. Yönetici veya ayrıca onay
+// yetkisi verilmiş kullanıcı Vega'ya yazabilir.
 
 ekranlar.alisFatura = async function () {
   const liste = await cagir('alisFatura:liste');
   bosalt(icerik);
-  icerik.appendChild(ekranBasligi('Alış faturası', [
+  icerik.appendChild(ekranBasligi('Alış faturası', yetkiVar('alisFatura') ? [
     el('button', { sinif: 'dugme-ana', metin: 'Yeni fatura', tikla: () => alisFaturaPenceresi(null) })
-  ]));
+  ] : null));
 
   await yedekUyarisiCiz();
 
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-    'Tedarikçiden gelen malı buradan kaydedebilirsiniz. Fatura yönetici ' +
-    'onayına kadar Vega\'ya aktarılmaz; stok girişi ve tedarikçi borcu ancak ' +
-    'yönetici onayladığında oluşur.'
+    'Tedarikçiden gelen mal burada hazırlanır. Fatura onay yetkisi olan kişi ' +
+    'onaylayana kadar Vega\'ya aktarılmaz; stok girişi ve tedarikçi borcu o anda oluşur.'
   ]));
 
   if (!durum.depo) {
@@ -3083,7 +3123,7 @@ ekranlar.alisFatura = async function () {
 function alisFaturaDugmeleri(f) {
   const dugmeler = [];
 
-  if (!f.vegayaYazildi) {
+  if (yetkiVar('alisFatura') && !f.vegayaYazildi) {
     dugmeler.push(el('button', {
       sinif: 'dugme-kucuk',
       metin: 'Düzenle',
@@ -3091,7 +3131,7 @@ function alisFaturaDugmeleri(f) {
     }));
   }
 
-  if (yonetici() && durum.yazmaAcik && !f.vegayaYazildi) {
+  if (yetkiVar('alisFaturaOnay') && durum.yazmaAcik && !f.vegayaYazildi) {
     dugmeler.push(el('button', {
       sinif: 'dugme-kucuk tehlike',
       style: 'margin-left:6px',
@@ -3115,7 +3155,7 @@ function alisFaturaDugmeleri(f) {
     }));
   }
 
-  if (durum.yazmaAcik && f.vegayaYazildi) {
+  if (yetkiVar('alisFaturaOnay') && durum.yazmaAcik && f.vegayaYazildi) {
     dugmeler.push(el('button', {
       sinif: 'dugme-kucuk',
       metin: "Vega'dan sil",
@@ -3136,7 +3176,7 @@ function alisFaturaDugmeleri(f) {
     }));
   }
 
-  if (!f.vegayaYazildi) {
+  if (yetkiVar('alisFatura') && !f.vegayaYazildi) {
     dugmeler.push(el('button', {
       sinif: 'dugme-kucuk',
       style: 'margin-left:6px',
@@ -4824,9 +4864,8 @@ ekranlar.cari = async function (parametre) {
 // Giriş yalnızca PIN'le olduğu için PIN'ler benzersiz olmak zorunda; aynı
 // PIN'i ikinci bir kullanıcıya verirseniz ana süreç reddeder.
 //
-// Sayım kapsamı stok kartındaki Sınıf (KOD2) alanına dayanıyor: "BAR"
-// seçilen kullanıcı yalnızca bar ürünlerini görür ve sayabilir. Kapsam boş
-// bırakılırsa sınırsızdır.
+// Her operasyon modülünün ayrı yetkisi vardır. Sayım yetkisine ek olarak
+// stok kartındaki Sınıf (KOD2) alanıyla sayım kapsamı daraltılabilir.
 
 ekranlar.kullanicilar = async function () {
   const [liste, kodListeleri] = await Promise.all([
@@ -4846,9 +4885,8 @@ ekranlar.kullanicilar = async function () {
 
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
     'Çalışan PIN\'ini yazarak giriş yapar; kullanıcı adı seçmesi gerekmez. ' +
-    'Her PIN farklı olmalı. Yaptığı her iş adına kaydedilir. ' +
-    'Sayım kapsamı verirseniz kullanıcı yalnızca o sınıftaki ürünleri görür ' +
-    've sayabilir.'
+    'Her PIN farklı olmalı. Her ekran ve işlem için ayrı yetki verebilir veya ' +
+    'geri alabilirsiniz. Sayım kapsamı yalnızca sayılabilecek ürün sınıflarını daraltır.'
   ]));
 
   if (!liste.length) {
@@ -5015,7 +5053,7 @@ function kullaniciPenceresi(mevcut, siniflar) {
     const kutu = el('input', { type: 'checkbox' });
     kutu.checked = !!(mevcut && mevcut.yetkiler && mevcut.yetkiler[y.anahtar]);
     yetkiKutulari[y.anahtar] = kutu;
-    return el('div', null, [el('label', null, [kutu, ' ' + y.ad])]);
+    return el('label', { sinif: 'yetki-secim' }, [kutu, ' ' + y.ad]);
   });
 
   // Sayım kapsamı: stok kartındaki Sınıf (KOD2) değerleri.
@@ -5051,12 +5089,26 @@ function kullaniciPenceresi(mevcut, siniflar) {
     el('label', null, [aktifKutu, ' Aktif'])
   ]));
 
-  yetkiBolumu.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Yetkiler' }));
+  yetkiBolumu.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Ekran ve işlem yetkileri' }));
   yetkiBolumu.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-    'İşaretlenmeyen iş için kullanıcı düğmeyi göremez; görse de ana süreç ' +
-    'isteği reddeder.'
+    'İşaretlenmeyen modül ana ekranda görünmez ve doğrudan çağrılsa bile reddedilir. ' +
+    'Onay, geri yükleme ve ayarlar gibi kritik işler ayrıca yetkilendirilir.'
   ]));
-  yetkiBolumu.appendChild(el('div', { sinif: 'form-satir' }, yetkiSatirlari));
+  yetkiBolumu.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('button', {
+      type: 'button',
+      sinif: 'dugme-sade',
+      metin: 'Tümünü seç',
+      tikla: () => Object.values(yetkiKutulari).forEach((k) => { k.checked = true; })
+    }),
+    el('button', {
+      type: 'button',
+      sinif: 'dugme-sade',
+      metin: 'Tümünü kaldır',
+      tikla: () => Object.values(yetkiKutulari).forEach((k) => { k.checked = false; })
+    })
+  ]));
+  yetkiBolumu.appendChild(el('div', { sinif: 'yetki-listesi' }, yetkiSatirlari));
   kap.appendChild(yetkiBolumu);
 
   kapsamBolumu.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Sayım kapsamı' }));
@@ -5122,9 +5174,8 @@ function kullaniciPenceresi(mevcut, siniflar) {
 // İki şey bilinmeli:
 //   1. Yedek dosyası SUNUCUDA oluşur, bu bilgisayarda değil. BACKUP komutunu
 //      SQL Server servisi çalıştırır, klasör onun disklerinde aranır.
-//   2. Geri yükleme her şeyi siler ve veritabanını yedeğin alındığı ana
-//      döndürür. Yalnızca yönetici yapabiliyor, veritabanı adını elle
-//      yazdırıyoruz ve öncesinde otomatik bir güvenlik yedeği alınıyor.
+//   2. Geri yükleme her şeyi siler ve ayrı, kritik bir yetkidir. Veritabanı
+//      adını elle yazdırıyoruz ve öncesinde otomatik güvenlik yedeği alınıyor.
 
 // Vega'ya yazan ekranların başına konan hatırlatma. Müşterinin isteği:
 // "işlemden önce ekrana yedek almayı unutmayın diye uyarı çıksın."
@@ -5150,13 +5201,15 @@ async function yedekUyarisiCiz(kap) {
         ? `Son yedek: ${saatliTarih(h.son.tarih)} · ${h.son.dosya || ''}`
         : 'Bu panelden hiç yedek alınmadı.'
     }),
-    el('div', { sinif: 'form-satir', style: 'margin-top:10px' }, [
-      el('button', {
-        sinif: 'dugme-ana',
-        metin: 'Yedekleme merkezini aç',
-        tikla: () => ekranAc('yedek')
-      })
-    ])
+    yetkiVar('yedek')
+      ? el('div', { sinif: 'form-satir', style: 'margin-top:10px' }, [
+          el('button', {
+            sinif: 'dugme-ana',
+            metin: 'Yedekleme merkezini aç',
+            tikla: () => ekranAc('yedek')
+          })
+        ])
+      : null
   ]));
 }
 
@@ -5316,7 +5369,7 @@ ekranlar.yedek = async function () {
         hucre(n.kullanici || '—'),
         hucre(boyutYaz(n.boyut), 'sayi'),
         el('td', null, [
-          yonetici()
+          yetkiVar('yedekGeriYukle')
             ? el('button', {
                 sinif: 'dugme-kucuk tehlike',
                 metin: 'Bu işlemden önceye dön',
@@ -5388,7 +5441,7 @@ ekranlar.yedek = async function () {
       ]),
       el('td', null, [el('div', { sinif: 'alt-not', metin: y.dosya || '—' })]),
       el('td', null, [
-        yonetici()
+        yetkiVar('yedekGeriYukle')
           ? el('button', {
               sinif: 'dugme-kucuk tehlike',
               metin: 'Geri yükle',
@@ -5400,9 +5453,9 @@ ekranlar.yedek = async function () {
     60
   ));
 
-  if (!yonetici()) {
+  if (!yetkiVar('yedekGeriYukle')) {
     icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-      'Geri yükleme yalnızca yöneticide. Yedek almak için yönetici olmak gerekmez.'
+      'Yedekten geri yükleme yetkiniz yok. Yedek alma ve geri yükleme ayrı yetkilerdir.'
     ]));
   }
 };
@@ -5550,15 +5603,6 @@ ekranlar.ayarlar = async function () {
   bosalt(icerik);
   icerik.appendChild(ekranBasligi('Ayarlar'));
 
-  // Ayar yazma yönetici kanalı. Düğmeler duruyor ama basılınca ana süreç
-  // reddeder; kullanıcı sebebini baştan bilsin.
-  if (!yonetici()) {
-    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
-      'Ayarları yalnızca yönetici değiştirebilir. Buradaki bilgileri ' +
-      'görebilirsiniz ama kaydedemezsiniz.'
-    ]));
-  }
-
   const sunucu = el('input', { type: 'text', value: a.sunucu || '' });
   const port = el('input', { type: 'number', value: a.port || 1433 });
   const kullanici = el('input', { type: 'text', value: a.kullanici || '' });
@@ -5639,8 +5683,10 @@ ekranlar.ayarlar = async function () {
     'kullanıldığı için klasör sınırsız büyümez.'
   ]));
 
-  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Yönetici PIN\'i' }));
-  icerik.appendChild(pinBolumu());
+  if (yonetici()) {
+    icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Yönetici PIN\'i' }));
+    icerik.appendChild(pinBolumu());
+  }
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: "Vega'ya yazma" }));
   icerik.appendChild(el('div', {
