@@ -144,6 +144,10 @@ async function hesapla(secim) {
   const onbellek = new Map();
   const satirlar = [];
   for (const k of kartListesi) {
+    // Pasif kartlar hesabın İÇİNDE kalır (17'si hâlâ aktif reçetelerde
+    // bileşen; çıkarılırsa üst mamulün maliyeti eksik çıkar) ama listeye
+    // ve yazılacak kümeye girmez.
+    if (k.pasif) continue;
     const h = maliyetHesapla(k.stokNo, kartlar, receteler, onbellek, new Set());
     const kartMaliyeti = Number(k.kartMaliyeti || 0);
     const yeni = h.deger;

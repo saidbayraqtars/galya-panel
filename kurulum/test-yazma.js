@@ -1033,19 +1033,25 @@ if (process.argv.includes('--kur')) {
     stokNolar: [stoklar[1].stokNo], pasif: true, kullanici: 'test'
   }));
   const pSonra = await sql.sorgu(
-    `SELECT ISNULL(KOD8, '') AS k FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
+    `SELECT ISNULL(KOD8, '') AS k, ISNULL(STATUS, 1) AS d
+     FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
     { s: stoklar[1].stokNo }
   );
   kontrol('Kart KOD8 alanına PASİF yazıldı', pSonra[0].k === 'PASİF');
+  // Vega kartı ancak STATUS = 2 iken pasif sayıyor; yalnız KOD8 yazmak
+  // panelde gizliyordu ama Vega'da kart aktif kalıyordu.
+  kontrol("Vega'nın pasif alanı STATUS = 2 yapıldı", Number(pSonra[0].d) === 2);
 
   await yazma.stokPasifYap(Object.assign({}, SECIM, {
     stokNolar: [stoklar[1].stokNo], pasif: false, kullanici: 'test'
   }));
   const pGeri = await sql.sorgu(
-    `SELECT ISNULL(KOD8, '') AS k FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
+    `SELECT ISNULL(KOD8, '') AS k, ISNULL(STATUS, 1) AS d
+     FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR WHERE IND = @s`,
     { s: stoklar[1].stokNo }
   );
   kontrol('Pasiften çıkarınca işaret silindi', pGeri[0].k === '');
+  kontrol('Pasiften çıkarınca STATUS = 1 oldu', Number(pGeri[0].d) === 1);
 
   // Bizim yazmadığımız bir KOD8 değeri pasiften çıkarmada korunmalı.
   await sql.calistir(

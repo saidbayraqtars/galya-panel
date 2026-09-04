@@ -57,6 +57,7 @@ const EKRANLAR = [
 
 let basarili = 0;
 let basarisiz = 0;
+let atlanan = 0;
 
 function kontrol(ad, kosul, ayrinti) {
   if (kosul) {
@@ -156,15 +157,30 @@ app.whenReady().then(async () => {
 
   console.log('\n== Pencereler ==');
   // Katman (modal) açan yollar: hepsi kendi verisini okuyor.
+  //
+  // Üçüncü alan, pencerenin okuduğu ucun istediği yetki. Panelde kullanıcı
+  // tanımlıysa sınama oturumu GİRİŞ YAPMAMIŞ sayılır ve o uçlar haklı olarak
+  // "yetkiniz yok" döner; bu bir arayüz hatası değil, o yüzden atlanıyor.
+  // Gerçek kullanımda düğme zaten yetkisiz kişiye çizilmiyor.
   const katmanlar = [
-    ['Giriş penceresi', 'girisPenceresi()'],
-    ['Yeni zayi', 'zayiPenceresi(null)'],
-    ['Yeni kullanıcı', 'kullaniciPenceresi(null, [{deger:"BAR",adet:5},{deger:"MUTFAK",adet:9}])'],
-    ['Yeni fatura', 'alisFaturaPenceresi(null)'],
-    ['Yeni tutanak', 'tutanakPenceresi()'],
-    ['Sayım listesi', 'sayimListesiDuzenle()']
+    ['Giriş penceresi', 'girisPenceresi()', null],
+    ['Yeni zayi', 'zayiPenceresi(null)', 'zayi'],
+    ['Yeni kullanıcı', 'kullaniciPenceresi(null, [{deger:"BAR",adet:5},{deger:"MUTFAK",adet:9}])', null],
+    ['Yeni fatura', 'alisFaturaPenceresi(null)', 'alisFatura'],
+    ['Yeni tutanak', 'tutanakPenceresi()', 'tutanak'],
+    ['Sayım listesi', 'sayimListesiDuzenle()', 'sayim']
   ];
-  for (const [ad, cagri] of katmanlar) {
+  for (const [ad, cagri, gerekenYetki] of katmanlar) {
+    if (gerekenYetki) {
+      const yetkili = await pencere.webContents.executeJavaScript(
+        `durum.rol === 'yonetici' || !!(durum.yetkiler && durum.yetkiler[${JSON.stringify(gerekenYetki)}])`
+      ).catch(() => true);
+      if (!yetkili) {
+        console.log('  ATLA ' + ad + '  (oturum açık değil, "' + gerekenYetki + '" yetkisi yok)');
+        atlanan++;
+        continue;
+      }
+    }
     try {
       const sonuc = await pencere.webContents.executeJavaScript(`
         (async () => {
@@ -191,6 +207,9 @@ app.whenReady().then(async () => {
     for (const h of hatalar.slice(0, 20)) console.log('  ' + h);
   }
 
-  console.log(`\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı\n`);
+  console.log(
+    `\nSonuç: ${basarili} başarılı, ${basarisiz} hatalı` +
+    (atlanan ? `, ${atlanan} atlandı (oturum açık değil)` : '') + '\n'
+  );
   app.exit(basarisiz ? 1 : 0);
 });

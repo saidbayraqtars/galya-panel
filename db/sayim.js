@@ -25,7 +25,7 @@ const { sorgu, calistir } = require('./sql');
 const { ayarOku } = require('./ayar');
 const { dogrula, kart, tablo } = require('./firma');
 const panel = require('./panel');
-const { kodSuzgeciKur } = require('./vega');
+const { kodSuzgeciKur, stokPasifHaric } = require('./vega');
 
 function vt() {
   return ayarOku().vegaVeritabani;
@@ -196,9 +196,9 @@ async function sayimEkraniGetir(secim) {
     )`;
 
   if (tam) {
-    // Tam sayım. Pasif kartlar (KOD8 = 'PASİF') listeye alınmaz — firma
-    // artık kullanmadığı 373 kartı böyle işaretlemiş, sayım föyünde
-    // görünmeleri sayan kişiyi boş yere oyalar.
+    // Tam sayım. Pasif kartlar listeye alınmaz — sayım föyünde görünmeleri
+    // sayan kişiyi boş yere oyalar. Pasif ölçütü db/vega.js'de: Vega'nın
+    // STATUS = 2 alanı ya da firmanın KOD8 = 'PASİF' işareti.
     return sorgu(
       `
       ${envanter}
@@ -217,7 +217,7 @@ async function sayimEkraniGetir(secim) {
       WHERE ISNULL(S.DELETED, 0) = 0
         AND S.IND >= 100
         AND S.STOKTIPI NOT IN (3, 7, 9)
-        AND ISNULL(S.KOD8, '') <> N'PASİF'
+        AND ${stokPasifHaric()}
         ${kapsam.kosul ? 'AND ' + kapsam.kosul : ''}
         ${kod.kosullar.length ? 'AND ' + kod.kosullar.join(' AND ') : ''}
         ${durumKosulu ? 'AND ' + durumKosulu : ''}

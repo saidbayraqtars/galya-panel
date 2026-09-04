@@ -39,6 +39,7 @@ async function stokSayilari(firma, donem, depo, ust, aktifGun) {
     JOIN A ON A.STOKNO = S.IND
     LEFT JOIN K ON K.STOKNO = S.IND
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100 AND S.STOKTIPI NOT IN (3, 7, 9)
+      AND ${vega.stokPasifHaric()}
   `,
     { depo, ust, aktifGun }
   );
@@ -52,6 +53,7 @@ async function maliyetSayisi(firma) {
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
       AND S.STOKTIPI NOT IN (3, 7, 9)
+      AND ${vega.stokPasifHaric()}
       AND ISNULL(S.ALISFIYATI, 0) > 0
       AND (ISNULL(S.MALIYET, 0) = 0
            OR ABS(ISNULL(S.MALIYET,0) - S.ALISFIYATI) / S.ALISFIYATI > 0.10)

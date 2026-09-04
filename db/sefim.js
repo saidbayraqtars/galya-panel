@@ -8,6 +8,7 @@ const { sorgu, calistir } = require('./sql');
 const { ayarOku } = require('./ayar');
 const { dogrula, kart, tabloVarMi } = require('./firma');
 const panel = require('./panel');
+const { stokPasifHaric } = require('./vega');
 
 function sf() {
   return ayarOku().sefimVeritabani;
@@ -168,6 +169,7 @@ async function eslesmeOnerisi(secim) {
       ISNULL(S.MALIYET, 0) AS maliyet
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
+      AND ${stokPasifHaric()}
       AND (S.MALINCINSI LIKE @tam OR S.MALINCINSI LIKE @parca)
     ORDER BY
       CASE WHEN S.MALINCINSI = @urun THEN 0

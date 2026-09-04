@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 25.08.2026 · Sürüm 1.7.1
+Son güncelleme: 04.09.2026 · Sürüm 1.8.0
 
 ---
 
@@ -117,7 +117,7 @@ Dönemli tablo  : F{firma}D{dönem}TBL{ad}   → F0103D0015TBLSTOKHAREKETLERI
 Firma ve dönem listesi **çalışma anında** `sys.tables` taranarak bulunuyor;
 hiçbir yere sabit yazılmadı. Veritabanı değişince panel kendini uyduruyor.
 
-### Dört sert kural
+### Beş sert kural
 
 1. **`DELETED = 0` yazmayın.** Alan satırların neredeyse tamamında `NULL`.
    `ISNULL(S.DELETED, 0) = 0` kullanın. Bu yüzden bir ara cari bakiye ve
@@ -133,6 +133,27 @@ hiçbir yere sabit yazılmadı. Veritabanı değişince panel kendini uyduruyor.
 4. **`TBLURERECETE.EVRAKNO`, reçete BAŞLIĞININ IND'ini tutar** — mamulün
    stok IND'ini değil. Bu varsayımla yazılan satır hatasız ekleniyor ama
    hiçbir yerde görünmüyor. Bir kez bu hataya düşüldü.
+
+5. **Pasif kart iki yerde işaretli: `STATUS = 2` ve `KOD8 = 'PASİF'`.**
+   Vega'nın kendi alanı **STATUS**'tür (stokta da caride de); `KOD8` firmanın
+   kendi işareti ve yalnız stokta var. 04.09.2026 sayımı (F0102): 617 stok
+   kartı `STATUS = 2`, bunların 360'ında `KOD8` da 'PASİF' — yani **257 kart
+   yalnız Vega'da**, 13 kart yalnız KOD8'de pasif. Panel bir süre sadece
+   KOD8'e baktığı için o 257 kart listelere ve ana ekran sayılarına sızdı.
+   `TBLSTOKLAR.AKTIF` alanı ise kullanılmıyor (0/NULL karışık, pasiflikle
+   ilgisi yok) — ona bakmayın.
+
+   Süzgeç tek yerde: `db/vega.js` → `stokPasifHaric()`, `cariPasifHaric()`,
+   `pasifIfadesi()`. Yeni bir stok/cari listesi yazan herkes bunları
+   kullanmalı; elle `KOD8 <> 'PASİF'` yazmak eksik süzgeçtir.
+
+   Pasife alma da (`db/yazma.js` → `stokPasifYap`) iki alanı birden yazar;
+   yalnız KOD8 yazıldığında kart Vega arayüzünde aktif kalıyordu.
+
+   Maliyet motoru (`db/vega.js` → `sonAlisFiyatlari`) burada bir istisnadır:
+   pasif kartları **süzmez**, işaretler. 17 pasif kart hâlâ aktif reçetelerde
+   bileşen; süzülürse üst mamulün maliyeti eksik çıkar. Listeden ve yazmadan
+   çıkarma işi `db/maliyet.js`'te yapılır.
 
 Belge yazma deseninin tamamı `kurulum/BELGE-DESENI.md` içinde. Yazma koduna
 dokunmadan önce o dosya okunmalı.

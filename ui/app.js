@@ -2415,6 +2415,16 @@ async function receteAgaciGoster(mamul) {
       for (const b of maliyet.bilesenler) maliyetHaritasi.set(Number(b.stokNo), b);
     }
 
+    // Bu ağaçtaki kartlar: mamulün kendisi + alt reçetesi olan bileşenler
+    // (ara mamuller). Hammaddeler dahil değil — onların maliyeti zaten son
+    // alış fiyatından geliyor, reçete değişikliğinden etkilenmez.
+    const agacStokNolar = mamul.mamulStokNo
+      ? Array.from(new Set([
+          Number(mamul.mamulStokNo),
+          ...agac.filter((s) => s.altRecetesiVar).map((s) => Number(s.stokNo))
+        ]))
+      : [];
+
     bosalt(kap);
 
     if (maliyet) {
@@ -2430,6 +2440,22 @@ async function receteAgaciGoster(mamul) {
         'Bileşen maliyetleri son alış fiyatından gelir; alt reçetesi olan ' +
         'bileşenler kendi reçetelerinden hesaplanır. Kaynak: ' + maliyet.kaynakAdi + '.'
       ]));
+      // Düğme maliyet yetkisi ister: yazan uç 'maliyet:yaz'. Reçete yetkisi
+      // olup maliyet yetkisi olmayan kullanıcı düğmeyi görmesin, tıklayıp
+      // yetki hatası almasın.
+      if (durum.yazmaAcik && yetkiVar('maliyet') && agacStokNolar.length) {
+        kap.appendChild(el('div', { sinif: 'form-satir' }, [
+          el('button', {
+            sinif: 'dugme-ana',
+            metin: 'Bu reçete ağacını maliyetlendir',
+            tikla: () => agacMaliyetlendir(
+              agacStokNolar,
+              mamul.mamulAdi || ('Reçete ' + mamul.receteNo),
+              ciz
+            )
+          })
+        ]));
+      }
     }
 
     if (!agac.length) {
@@ -4738,6 +4764,30 @@ async function maliyetYaz(stokNolar, adet) {
     const s = await cagir('maliyet:yaz', { stokNolar });
     bildir(s.yazilan ? `${sayiYaz(s.yazilan)} ürünün maliyeti güncellendi.` : s.mesaj, 'iyi');
     ekranAc('maliyetlendirme');
+  } catch (e) { hataGoster(e); }
+}
+
+// Reçete ağacı ekranından çağrılır: bütün katalog değil, yalnızca bu
+// mamul ve alt reçetesi olan bileşenleri yazar. Vega'nın kendi "reçeteyi
+// maliyetlendir" düğmesiyle aynı işi görür ama bütün kartları teker teker
+// gezmediği için (izleyicide 866 kilit satırı olarak görüldü) hızlıdır.
+async function agacMaliyetlendir(stokNolar, ad, tazele) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: 'Reçete ağacını maliyetlendir',
+    mesaj:
+      `"${ad}" ve alt reçetesi olan bileşenlerinin maliyeti ` +
+      `(${stokNolar.length} kart) yeniden hesaplanıp karta yazılacak.`,
+    detay:
+      'Yalnızca bu ağaçtaki kartlar güncellenir, bütün katalog değil. ' +
+      'Stok hareketi, envanter ve cari değişmez. İşlem tek tuşla geri alınabilir.',
+    evet: 'Yaz',
+    hayir: 'Vazgeç'
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    const s = await cagir('maliyet:yaz', { stokNolar });
+    bildir(s.yazilan ? `${sayiYaz(s.yazilan)} kartın maliyeti güncellendi.` : s.mesaj, 'iyi');
+    await tazele();
   } catch (e) { hataGoster(e); }
 }
 

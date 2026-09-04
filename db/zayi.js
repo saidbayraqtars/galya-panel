@@ -18,6 +18,7 @@ const { sorgu, calistir, islem } = require('./sql');
 const { ayarOku } = require('./ayar');
 const { dogrula, kart, tablo } = require('./firma');
 const panel = require('./panel');
+const { cariPasifHaric } = require('./vega');
 
 function p() {
   return panel.p();
@@ -53,6 +54,7 @@ async function cariler(secim) {
     FROM ${kart(v, firma, 'TBLCARI')} C
     LEFT JOIN KULLANIM K ON K.FIRMANO = C.IND
     WHERE ISNULL(C.DELETED, 0) = 0
+      AND ${cariPasifHaric()}
       AND (
         @arama <> '' AND (C.FIRMAKODU LIKE @desen OR C.FIRMAADI LIKE @desen)
         OR (@arama = '' AND K.adet IS NOT NULL)

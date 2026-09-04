@@ -82,6 +82,7 @@ async function stokDurumu(secim) {
     WHERE ISNULL(S.DELETED, 0) = 0
       AND S.IND >= 100
       AND S.STOKTIPI NOT IN (3, 7, 9)
+      AND ${stokPasifHaric()}
       AND (@sadeceSorunlu = 0 OR
            ISNULL(K.KALAN, 0) <= CASE WHEN ISNULL(S.KRITIKSEVIYE,0) > 0
                                       THEN S.KRITIKSEVIYE ELSE @ust END)
@@ -125,11 +126,44 @@ const KOD_ALANLARI = [
   { no: 10, ad: '10. Kod' }
 ];
 
-// Pasif kart işareti. Firma kullanmadığı 373 kartı KOD8 alanına "PASİF"
-// yazarak işaretlemiş; panel de aynı alanı kullanıyor (db/yazma.js →
-// stokPasifYap). Pasifler listelerde varsayılan olarak GÖRÜNMEZ.
+// Pasif kart işareti. Pasifler listelerde varsayılan olarak GÖRÜNMEZ.
+//
+// İşaret İKİ ayrı yerde duruyor ve ikisi tam örtüşmüyor:
+//
+//   1. Vega'nın kendi alanı : STATUS = 2   (stok kartında da, cari kartında da)
+//   2. Firmanın el işareti  : KOD8 = 'PASİF'  (yalnızca stokta)
+//
+// 04.09.2026 sayımı (F0102): 617 stok kartı STATUS = 2, bunların 360'ında
+// KOD8 de 'PASİF'. Yani 257 kart YALNIZCA Vega'da pasif, 13 kart yalnızca
+// KOD8 ile işaretli. Panel bir süre sadece KOD8'e baktığı için Vega'da
+// pasife alınmış 257 kart listelere ve ana ekran sayılarına sızıyordu.
+// Bu yüzden süzgeç ikisini birden sorar.
+//
+// Cari tarafında KOD alanlarının hepsi boş; orada tek ölçüt STATUS = 2
+// (F0102'de 39/106 kart, F0101'de 26/99).
 const PASIF_KODU = 'PASİF';
 const PASIF_ALANI = 'KOD8';
+const PASIF_DURUMU = 2;
+
+// Kart pasif mi? Listelerde gösterilen 1/0 sütunu.
+function pasifIfadesi(t) {
+  const takma = t || 'S';
+  return `CASE WHEN ISNULL(${takma}.STATUS, 1) = ${PASIF_DURUMU}
+                 OR LTRIM(RTRIM(ISNULL(${takma}.${PASIF_ALANI}, ''))) = N'${PASIF_KODU}'
+              THEN 1 ELSE 0 END`;
+}
+
+// WHERE'e eklenen "pasifleri getirme" koşulu.
+function stokPasifHaric(t) {
+  const takma = t || 'S';
+  return `ISNULL(${takma}.STATUS, 1) <> ${PASIF_DURUMU}
+      AND LTRIM(RTRIM(ISNULL(${takma}.${PASIF_ALANI}, ''))) <> N'${PASIF_KODU}'`;
+}
+
+function cariPasifHaric(t) {
+  const takma = t || 'C';
+  return `ISNULL(${takma}.STATUS, 1) <> ${PASIF_DURUMU}`;
+}
 
 // Sınıflandırma süzgeci.
 //
@@ -237,8 +271,7 @@ async function stokKontrolListesi(secim) {
       ISNULL(S.KRITIKSEVIYE, 0) AS kritikSeviye,
       ISNULL(S.MALIYET, 0)      AS birimMaliyet,
       ${kalan} * ISNULL(S.MALIYET, 0) AS deger,
-      CASE WHEN LTRIM(RTRIM(ISNULL(S.${PASIF_ALANI}, ''))) = N'${PASIF_KODU}'
-           THEN 1 ELSE 0 END AS pasif,
+      ${pasifIfadesi()} AS pasif,
       CASE
         WHEN ${kalan} < 0 THEN 'eksi'
         WHEN ${kalan} = 0 THEN 'sifir'
@@ -254,7 +287,7 @@ async function stokKontrolListesi(secim) {
       AND S.IND >= 100
       AND S.STOKTIPI NOT IN (${giderDahil ? '7, 9' : '3, 7, 9'})
       AND (${suzgecler[suzgec] || suzgecler.sorunlu})
-      ${pasifGizle ? `AND LTRIM(RTRIM(ISNULL(S.${PASIF_ALANI}, ''))) <> N'${PASIF_KODU}'` : ''}
+      ${pasifGizle ? `AND ${stokPasifHaric()}` : ''}
       ${kod.kosullar.length ? 'AND ' + kod.kosullar.join(' AND ') : ''}
     ORDER BY ${kalan} ASC, S.MALINCINSI ASC
   `,
@@ -352,8 +385,8 @@ async function giderHizmetStoklari(secim) {
     return '@sinif' + i;
   });
 
-  // Pasif kartlar (KOD8 = PASİF) listeye girmiyor; firma kullanmadığı 373
-  // kartı böyle işaretlemiş, sıfırlanacak bir şeyleri yok.
+  // Pasif kartlar listeye girmiyor; kullanımdan kalkmış kartın sıfırlanacak
+  // bir şeyi yok.
   const kapsamKosulu = sadeceGider
     ? 'S.STOKTIPI = 3'
     : `(S.STOKTIPI = 3 OR LTRIM(RTRIM(ISNULL(S.KOD2, ''))) NOT IN (${sinifAdlari.join(', ')}))`;
@@ -379,7 +412,7 @@ async function giderHizmetStoklari(secim) {
     WHERE ISNULL(S.DELETED, 0) = 0
       AND S.IND >= 100
       AND ${kapsamKosulu}
-      AND LTRIM(RTRIM(ISNULL(S.${PASIF_ALANI}, ''))) <> N'${PASIF_KODU}'
+      AND ${stokPasifHaric()}
       AND (@sadeceDolu = 0 OR ISNULL(K.KALAN, 0) <> 0)
     ORDER BY ABS(ISNULL(K.KALAN, 0)) DESC, S.MALINCINSI
   `,
@@ -412,6 +445,7 @@ async function stokAra(secim) {
     LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
+      AND ${stokPasifHaric()}
       AND (S.MALINCINSI LIKE @terim OR S.STOKKODU LIKE @terim)
     ORDER BY S.MALINCINSI
   `,
@@ -573,6 +607,7 @@ async function thirdAdaylari(secim) {
     ) R ON R.STOKNO = S.IND
     LEFT JOIN K ON K.STOKNO = S.IND
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
+      AND ${stokPasifHaric()}
     ORDER BY ISNULL(K.KALAN, 0) ASC, S.MALINCINSI
   `,
     { depo }
@@ -607,6 +642,7 @@ async function maliyetiEskimisler(secim) {
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
       AND S.STOKTIPI NOT IN (3, 7, 9)
+      AND ${stokPasifHaric()}
       AND ISNULL(S.ALISFIYATI, 0) > 0
       AND (
             ISNULL(S.MALIYET, 0) = 0
@@ -639,7 +675,11 @@ async function sonAlisFiyatlari(secim) {
       ISNULL(S.MALIYET, 0)     AS kartMaliyeti,
       ISNULL(S.ALISFIYATI, 0)  AS kartAlisFiyati,
       A.birimFiyat             AS sonAlisFiyati,
-      A.tarih                  AS sonAlisTarihi
+      A.tarih                  AS sonAlisTarihi,
+      -- Pasif kartlar burada SÜZÜLMÜYOR: 17 pasif kart hâlâ aktif reçetelerde
+      -- bileşen olarak duruyor, süzülürse üst mamulün maliyeti eksik çıkar.
+      -- Yalnızca işaretleniyor; listeden/yazmadan çıkarmak db/maliyet.js'in işi.
+      ${pasifIfadesi()}        AS pasif
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
@@ -682,6 +722,7 @@ async function cariBakiye(secim) {
           AND H.IZAHAT NOT IN (18, 19, 30, 31)
     WHERE ISNULL(C.DELETED, 0) = 0 AND C.IND >= 100
       AND C.FIRMATIPI NOT IN (11, 12)
+      AND ${cariPasifHaric()}
     GROUP BY C.IND, C.FIRMAKODU, C.FIRMAADI
     HAVING @hepsi = 1 OR ISNULL(SUM(H.BORC - H.ALACAK), 0) <> 0
     ORDER BY ISNULL(SUM(H.BORC - H.ALACAK), 0) DESC
@@ -704,6 +745,7 @@ async function cariAra(secim) {
       ISNULL(C.VERGINO, '') AS vergiNo
     FROM ${kart(v, firma, 'TBLCARI')} C
     WHERE ISNULL(C.DELETED, 0) = 0 AND C.IND >= 100
+      AND ${cariPasifHaric()}
       AND (C.FIRMAADI LIKE @terim OR C.FIRMAKODU LIKE @terim)
     ORDER BY C.FIRMAADI
   `,
@@ -823,5 +865,9 @@ module.exports = {
   KOD_ALANLARI,
   kodSuzgeciKur,
   PASIF_KODU,
-  PASIF_ALANI
+  PASIF_ALANI,
+  PASIF_DURUMU,
+  pasifIfadesi,
+  stokPasifHaric,
+  cariPasifHaric
 };

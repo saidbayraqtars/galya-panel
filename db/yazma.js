@@ -1560,12 +1560,19 @@ async function zayiFisiGeriAl(kayit) {
 
 // --- Stok kartını pasife alma ---------------------------------------------
 //
-// Firma pasif kartları KOD8 alanına "PASİF" yazarak işaretliyor (373 kart).
-// Panel aynı alanı kullanıyor: yeni bir alan uydurmak Vega'nın kendi
-// raporlarında görünmezdi. THIRD yazması gibi tek alanlık, hareketsiz bir
-// güncelleme; envanteri ve maliyeti etkilemez.
+// Pasiflik iki yerde birden tutuluyor ve ikisi de yazılıyor:
+//
+//   STATUS = 2  → Vega'nın kendi pasif alanı. Vega arayüzü kartı pasif
+//                 sayması için bu şart; panel bir süre yalnızca KOD8'e
+//                 yazdığı için "pasife alınan" kartlar Vega'da aktif kaldı.
+//   KOD8 = 'PASİF' → firmanın kendi işareti, kendi raporlarında görünüyor.
+//
+// Hareketsiz bir güncelleme; envanteri, maliyeti, cariyi etkilemez.
+// Geri alırken iki alan da kartın önceki değerine döner.
 const PASIF_KODU = 'PASİF';
 const PASIF_ALANI = 'KOD8';
+const PASIF_DURUMU = 2;
+const AKTIF_DURUMU = 1;
 
 async function stokPasifYap(kayit) {
   kilitKontrol();
@@ -1580,19 +1587,26 @@ async function stokPasifYap(kayit) {
   // Geri alınabilsin diye önceki değerler okunuyor: kartta KOD8 başka bir şey
   // yazıyorsa pasiften çıkarken ona dokunulmaz.
   const oncesi = await sorgu(
-    `SELECT IND AS stokNo, MALINCINSI AS ad, ISNULL(${PASIF_ALANI}, '') AS onceki
+    `SELECT IND AS stokNo, MALINCINSI AS ad, ISNULL(${PASIF_ALANI}, '') AS onceki,
+            ISNULL(STATUS, ${AKTIF_DURUMU}) AS oncekiDurum
      FROM ${kart(v, firma, 'TBLSTOKLAR')} WHERE IND IN (${stokNolar.join(',')})`
   );
   if (!oncesi.length) throw new Error('Stok kartı bulunamadı.');
 
   let etkilenen = 0;
   for (const k of oncesi) {
-    if (!pasif && k.onceki !== PASIF_KODU) continue;
+    // Pasiften çıkarırken: iki işaretten hiçbiri yoksa dokunulacak bir şey yok.
+    const pasifti = k.onceki === PASIF_KODU || Number(k.oncekiDurum) === PASIF_DURUMU;
+    if (!pasif && !pasifti) continue;
     const r = await calistir(
       `UPDATE ${kart(v, firma, 'TBLSTOKLAR')}
-       SET ${PASIF_ALANI} = @deger, GUNCELLEMETARIHI = GETDATE()
+       SET ${PASIF_ALANI} = @deger, STATUS = @durum, GUNCELLEMETARIHI = GETDATE()
        WHERE IND = @stokNo`,
-      { deger: pasif ? PASIF_KODU : '', stokNo: Number(k.stokNo) }
+      {
+        deger: pasif ? PASIF_KODU : '',
+        durum: pasif ? PASIF_DURUMU : AKTIF_DURUMU,
+        stokNo: Number(k.stokNo)
+      }
     );
     etkilenen += r[0] || 0;
   }
@@ -1600,7 +1614,15 @@ async function stokPasifYap(kayit) {
   await panel.kayit(
     'Stok',
     pasif ? 'Stok kartı pasife alındı' : 'Stok kartı pasiften çıkarıldı',
-    { firma, stoklar: oncesi.map((k) => ({ stokNo: k.stokNo, ad: k.ad, onceki: k.onceki })) },
+    {
+      firma,
+      stoklar: oncesi.map((k) => ({
+        stokNo: k.stokNo,
+        ad: k.ad,
+        onceki: k.onceki,
+        oncekiDurum: Number(k.oncekiDurum)
+      }))
+    },
     kayit.kullanici
   );
 
