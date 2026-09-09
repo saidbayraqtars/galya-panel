@@ -303,6 +303,17 @@ td.sayi {
   text-align: right;
   white-space: nowrap;
 }
+/* Vega'nın belge ekranlarındaki gibi tablonun altındaki toplam satırı:
+   kaç kayıt, toplam miktar, toplam tutar. Gövde satırlarının çizgili/hover
+   biçimini almasın diye ayrıca tanımlı. */
+tbody tr.toplam-satir,
+tbody tr.toplam-satir:hover,
+tbody tr.toplam-satir:nth-child(even) {
+  background: var(--yuzey2);
+  font-weight: 600;
+  border-top: 2px solid var(--cizgi);
+}
+
 td.eksi { color: var(--kritik); font-weight: 600; }
 td.arti { color: var(--iyi); font-weight: 600; }
 tbody tr:nth-child(even) { background: #fbfcfd; }

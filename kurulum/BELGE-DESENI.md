@@ -875,9 +875,12 @@ zayi fişi kesmiyor, fireyi bir çıktı sayıyor. İkisi bir arada yapılsaydı
 fire **iki kez** düşerdi. Reçetesiz manuel üretimde eski akış (önce zayi
 fişi) müşterinin 22.08.2026'daki isteği gereği duruyor.
 
-`db/uretim.js` → `receteCiktilari()` reçetenin çıktılarını okuyor; arayüz
-mamul seçilir seçilmez çağırıyor ve birden fazla satır dönerse miktar
-kutularını açıyor. `fireliUret()` `ciktilar` aldığında zayi fişi kesmiyor.
+`db/uretim.js` → `receteCiktilari()` reçetenin çıktılarını okuyor.
+`isEmri()` bunu reçete bileşenleri, birim maliyetler ve kalanlarla
+birleştirip arayüze tek parça veriyor; ekran mamul seçilir seçilmez onu
+çağırıp Vega'nın İş Emri ekranındaki iki sekmeyi (Üretim Girdileri /
+Üretim Çıktıları) dolduruyor. `fireliUret()` `ciktilar` aldığında zayi
+fişi kesmiyor.
 
 ## Stok kartını pasife alma
 

@@ -486,9 +486,41 @@ kesilmiyor, cari borcu oluşmuyor. Reçetesiz manuel üretimde eski akış (önc
 zayi fişi) 22.08'deki isteğe uygun olarak duruyor. İkisi bir arada
 yapılsaydı fire iki kez düşerdi.
 
-Ekranda mamul seçilir seçilmez `uretim:receteCiktilari` çağrılıyor; birden
-fazla çıktı varsa her biri için miktar kutusu açılıyor, fire kutuları ve
-fire carisi bölümü gizleniyor.
+Ekranda mamul seçilir seçilmez `uretim:isEmri` çağrılıyor (09.09.2026'ya
+kadar `uretim:receteCiktilari`'ydı, o uç okuma tarafında duruyor). Birden
+fazla çıktı varsa fire kutuları ve fire carisi bölümü gizleniyor; fire
+çıktı satırlarından biri oluyor.
+
+#### 2b. Ekran Vega'nın İş Emri ekranına göre yeniden yazıldı (09.09.2026)
+
+08.09'daki düzeltme arka uçta doğruydu ama **ekranda görünmüyordu**: çıktı
+tablosu yalnız çok çıktılı 7 reçetede açılıyordu, kalan 426 üründe ekran
+hiç değişmiyordu. Müşteri 1.9.0'a güncelledikten sonra "frontend'de hiçbir
+değişiklik yok" dedi ve haklıydı.
+
+`uretimFireliBolumu()` silinip ekran kaydındaki İş Emri ekranına göre
+yeniden yazıldı:
+
+- **Çıktı tablosu her üründe görünüyor.** Tek çıktılı reçetede tek satır.
+  Üretilen miktar da o satırdan giriliyor; ayrı "çıkan miktar" kutusu
+  kaldırıldı (Vega'da da başlıktaki miktar çıktı satırından gelir).
+- **Girdiler reçeteden doluyor.** Vega mamulü seçer seçmez "Üretim
+  Girdileri" sekmesini dolduruyor; panel de artık öyle. Reçetesiz üründe
+  hammadde elle seçiliyor, eski akış sürüyor.
+- **Kolonlar Vega'nınkiyle aynı:** Çıktı Türü, Stok, Miktar, Birim Maliyet,
+  Toplam Maliyet, Maliyet Oranı. Tablonun altında Vega'daki gibi kayıt
+  sayısı / toplam miktar / toplam tutar / oran toplamı satırı var.
+- **Maliyet ekranda anlık hesaplanıyor**, yukarıdaki formülle. Videodaki
+  fişin sayıları birebir çıkıyor.
+
+Yeni uç `uretim:isEmri` (`db/uretim.js`): mamul kartı, reçete bileşenleri
+(birim maliyet + kalan), çıktı satırları ve oran toplamı tek çağrıda.
+
+> **Tuş vuruşunda tablo yeniden çizilmemeli.** İlk yazımda her `input`
+> olayında tablo baştan kuruluyordu; miktar kutusu DOM'dan söküldüğü için
+> odak kayboluyor ve ilk rakamdan sonrası yazılamıyordu. Çizim ile hesap
+> ayrıldı: tablolar yalnız satır eklenip çıkarıldığında kuruluyor,
+> `hesaplariTazele()` yalnız sayı hücrelerinin metnini değiştiriyor.
 
 #### 3. Reçete açarken ana mamul çıktı satırı yazılmıyordu
 

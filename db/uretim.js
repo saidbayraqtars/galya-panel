@@ -213,6 +213,7 @@ async function urunAra(secim) {
       ISNULL(S.STOKKODU,'') AS kod,
       ISNULL(S.KOD2, '')    AS sinif,
       ISNULL(B.BIRIMADI,'') AS birim,
+      ISNULL(S.MALIYET, 0)  AS birimMaliyet,
       ISNULL(K.KALAN, 0)    AS kalan
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     LEFT JOIN K ON K.STOKNO = S.IND
@@ -289,6 +290,107 @@ async function receteCiktilari(secim) {
     receteNo,
     satirlar,
     oranToplami: satirlar.reduce((t, s) => t + s.oran, 0)
+  };
+}
+
+// Vega'nın İŞ EMRİ ekranının panel karşılığı: bir mamul seçildiğinde ekranın
+// ihtiyacı olan HER ŞEY tek çağrıda dönüyor.
+//
+// Vega'da kullanıcı mamulü seçtiği anda İş Emri ekranı reçeteden iki sekmeyi
+// birden dolduruyor: "Üretim Girdileri" (ne tüketilecek) ve "Üretim Çıktıları"
+// (ne çıkacak, hangi maliyet oranıyla). Kullanıcı yalnız MİKTARLARI yazıyor.
+// 08.09.2026 ekran kaydında yapılan iş bu: DANA ANTRIKOT reçetesi açıldı,
+// girdi 1 → 25 KG yapıldı, dört çıktıya 18 / 3 / 3 / 1 yazıldı.
+//
+// Panel bunu iki ayrı uçtan (urunAra + receteCiktilari) toplayıp ekranda
+// birleştiriyordu; girdiler hiç okunmuyordu, kullanıcı hammaddeyi her seferinde
+// elle arıyordu. Tek uç hem ekranı Vega'nınkine benzetiyor hem de birim
+// maliyetleri getiriyor — ekran artık tutarları Vega'nın yazacağı sayıyla
+// birebir gösterebiliyor.
+//
+// Reçetesi olmayan mamulde receteNo 0 döner; girdiler ve çıktılar boştur.
+// Ekran o zaman reçetesiz manuel üretime düşüyor (hammaddeyi kullanıcı seçer,
+// fire zayi fişine yazılır) — o akış korunuyor.
+async function isEmri(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
+  const mamulStokNo = Number(secim.mamulStokNo);
+  if (!mamulStokNo) throw new Error('Ürün seçilmeli.');
+
+  const kartlar = await sorgu(
+    `SELECT S.IND AS stokNo, S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
+            ISNULL(S.MALIYET, 0) AS birimMaliyet, ISNULL(B.BIRIMADI,'') AS birim
+     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
+     LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+     WHERE S.IND = @stokNo`,
+    { stokNo: mamulStokNo }
+  );
+  if (!kartlar.length) throw new Error('Üretilecek mamulün stok kartı bulunamadı.');
+  const mamul = {
+    stokNo: mamulStokNo,
+    ad: kartlar[0].ad,
+    kod: kartlar[0].kod,
+    birim: kartlar[0].birim,
+    birimMaliyet: Number(kartlar[0].birimMaliyet),
+    kalan: await kalanMiktar(v, firma, donem, mamulStokNo, depo)
+  };
+
+  const basliklar = await sorgu(
+    `SELECT TOP 1 IND AS receteNo, ISNULL(MIKTAR, 1) AS verim
+     FROM ${kart(v, firma, 'TBLURERECETELIST')}
+     WHERE STOKNO = @stokNo ORDER BY IND`,
+    { stokNo: mamulStokNo }
+  );
+  if (!basliklar.length) {
+    return { mamul, receteNo: 0, verim: 1, girdiler: [], ciktilar: [], oranToplami: 0 };
+  }
+  const receteNo = Number(basliklar[0].receteNo);
+  const verim = Number(basliklar[0].verim) > 0 ? Number(basliklar[0].verim) : 1;
+
+  // Reçetenin bileşenleri = Vega'nın "Üretim Girdileri" sekmesi. FIREORANI
+  // yüzde: %5 fire, 100 birimlik reçetede 105 birim tüketim demek. Ekran
+  // miktarı buradan başlatıp kullanıcıya bırakıyor.
+  const girdiler = (await sorgu(
+    `SELECT R.STOKNO AS stokNo, ISNULL(R.MIKTAR, 0) AS receteMiktari,
+            ISNULL(R.FIREORANI, 0) AS fireOrani,
+            S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
+            ISNULL(S.MALIYET, 0) AS birimMaliyet,
+            ISNULL(B.BIRIMADI,'') AS birim,
+            ISNULL(E.KALAN, 0) AS kalan
+     FROM ${kart(v, firma, 'TBLURERECETE')} R
+     JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = R.STOKNO
+     LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+     OUTER APPLY (
+       SELECT SUM(D.ENVANTER) AS KALAN
+       FROM ${tablo(v, firma, donem, 'TBLDEPOENVANTER')} D
+       WHERE D.STOKNO = R.STOKNO AND D.BELGETIPI <> 67
+         AND (@depo = 0 OR D.DEPO = @depo)
+     ) E
+     WHERE R.EVRAKNO = @receteNo
+     ORDER BY R.DETAY`,
+    { receteNo, depo }
+  )).map((g) => ({
+    stokNo: Number(g.stokNo),
+    ad: g.ad,
+    kod: g.kod,
+    birim: g.birim,
+    kalan: Number(g.kalan),
+    birimMaliyet: Number(g.birimMaliyet),
+    receteMiktari: Number(g.receteMiktari),
+    fireOrani: Number(g.fireOrani)
+  }));
+
+  const cikti = await receteCiktilari(secim);
+  return {
+    mamul,
+    receteNo,
+    verim,
+    girdiler,
+    ciktilar: cikti.satirlar,
+    oranToplami: cikti.oranToplami
   };
 }
 
@@ -655,6 +757,7 @@ module.exports = {
   hepsiniSifirla,
   urunAra,
   receteCiktilari,
+  isEmri,
   fireliUret,
   gecmis,
   geriAl

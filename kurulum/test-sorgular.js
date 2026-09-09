@@ -338,6 +338,100 @@ async function dene(ad, isFn) {
     }
     return kendini.length + ' kart kendini tüketiyor';
   });
+  // İş Emri ucu: ekranın mamul seçildiği anda çağırdığı tek uç. Girdiler,
+  // çıktılar ve birim maliyetler bir arada dönmezse ekran Vega'nın İş Emri
+  // ekranını dolduramaz.
+  await dene('İş emri girdi + çıktı + birim maliyet döndürüyor', async () => {
+    const adaylar = await uretim.urunAra(Object.assign({}, SECIM, { arama: '' }));
+    let receteli = 0;
+    let denenen = 0;
+    for (const u of adaylar) {
+      if (denenen >= 25) break;
+      const e = await uretim.isEmri(Object.assign({}, SECIM, { mamulStokNo: u.stokNo }));
+      denenen++;
+      if (!e.mamul || Number(e.mamul.stokNo) !== Number(u.stokNo)) {
+        throw new Error('mamul kartı dönmedi: ' + u.ad);
+      }
+      if (!e.receteNo) {
+        if (e.girdiler.length || e.ciktilar.length) {
+          throw new Error('reçetesiz mamulde satır döndü: ' + u.ad);
+        }
+        continue;
+      }
+      receteli++;
+      // Reçeteli mamulde çıktı satırlarının içinde ana mamul olmalı ve oran
+      // toplamı satırların toplamına eşit olmalı.
+      const ana = e.ciktilar.filter((c) => c.anaMamul);
+      if (e.ciktilar.length && ana.length !== 1) {
+        throw new Error('ana mamul çıktısı tek değil: ' + u.ad + ' (' + ana.length + ')');
+      }
+      const toplam = e.ciktilar.reduce((t, c) => t + Number(c.oran), 0);
+      if (Math.abs(toplam - e.oranToplami) > 0.0001) {
+        throw new Error('oran toplamı tutmuyor: ' + u.ad);
+      }
+      for (const g of e.girdiler) {
+        if (!(Number(g.birimMaliyet) >= 0)) throw new Error('birim maliyet yok: ' + g.ad);
+      }
+    }
+    return denenen + ' mamul denendi, ' + receteli + ' reçeteli';
+  });
+
+  // Ekranın gösterdiği maliyet Vega'nın kendi yazdığı fişle aynı formülden
+  // çıkmalı (URETIM-BULGU-08-09-2026.md):
+  //
+  //   satır.TUTAR = toplamMaliyet × ORAN / 100
+  //   satır.FIYAT = satır.TUTAR / satır.MIKTAR
+  //
+  // Vega'nın gerçek çok çıktılı fişleri üzerinde doğrulanıyor: bir fişteki
+  // ORAN'ı sıfırdan büyük herhangi bir satırdan toplam maliyet geri
+  // hesaplanıp bütün satırlar onunla karşılaştırılıyor.
+  await dene('Vega fişlerinde TUTAR = toplam × ORAN / 100', async () => {
+    const v = require(path.join(kok, 'db', 'ayar')).ayarOku().vegaVeritabani;
+    const on = `[${v}].dbo.${SECIM.firma}${SECIM.donem}`;
+    const satirlar = await sql.sorgu(
+      `SELECT TOP 400 C.EVRAKNO, ISNULL(C.MIKTAR,0) AS miktar, ISNULL(C.ORAN,0) AS oran,
+              ISNULL(C.FIYAT,0) AS fiyat, ISNULL(C.TUTAR,0) AS tutar
+       FROM ${on}TBLUREURETIMCIKTI C
+       WHERE C.EVRAKNO IN (
+         SELECT EVRAKNO FROM ${on}TBLUREURETIMCIKTI
+         GROUP BY EVRAKNO HAVING COUNT(*) > 1
+       )
+       ORDER BY C.EVRAKNO DESC`,
+      {}
+    );
+    if (!satirlar.length) return 'çok çıktılı fiş yok';
+
+    const fisler = new Map();
+    for (const r of satirlar) {
+      if (!fisler.has(r.EVRAKNO)) fisler.set(r.EVRAKNO, []);
+      fisler.get(r.EVRAKNO).push(r);
+    }
+
+    let denetlenen = 0;
+    for (const [evrakNo, grup] of fisler) {
+      const oranli = grup.find((r) => Number(r.oran) > 0 && Number(r.tutar) > 0);
+      if (!oranli) continue;
+      const toplam = Number(oranli.tutar) * 100 / Number(oranli.oran);
+      for (const r of grup) {
+        const beklenen = toplam * Number(r.oran) / 100;
+        // Vega tutarı altı basamağa yuvarlıyor; oransal sapma payı bırakıldı.
+        if (Math.abs(Number(r.tutar) - beklenen) > Math.max(0.02, beklenen * 1e-6)) {
+          throw new Error(
+            `fiş ${evrakNo}: tutar ${r.tutar} != ${beklenen.toFixed(6)} (oran ${r.oran})`
+          );
+        }
+        if (Number(r.miktar) > 0) {
+          const birim = Number(r.tutar) / Number(r.miktar);
+          if (Math.abs(birim - Number(r.fiyat)) > Math.max(0.01, birim * 1e-6)) {
+            throw new Error(`fiş ${evrakNo}: fiyat ${r.fiyat} != ${birim.toFixed(6)}`);
+          }
+        }
+      }
+      denetlenen++;
+    }
+    return denetlenen + ' çok çıktılı fiş denetlendi';
+  });
+
   await dene('THIRD süzgeci adayları daraltıyor', async () => {
     const hepsi = await uretim.sifirAdaylari(Object.assign({}, SECIM));
     const dar = await uretim.sifirAdaylari(Object.assign({}, SECIM, { thirdSadece: 1 }));

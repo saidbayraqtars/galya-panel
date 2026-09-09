@@ -4167,63 +4167,103 @@ async function uretimSifirlamaBolumu(p) {
   ciz();
 }
 
-// --- Manuel (fireli) üretim ------------------------------------------------
+// --- Manuel üretim — Vega'nın İŞ EMRİ ekranının aynısı ----------------------
 //
-// Müşterinin Vega'da yaptığı işin aynısı, aynı sadelikte:
+// 08.09.2026 ekran kaydındaki iş bu ekranda bire bir yapılabiliyor:
 //
-//   1. Ne üretilecek?    somon      → çıkan miktar 3
-//   2. Neyden üretilecek? ham somon → giren miktar 10
-//   3. Fire = giren − çıkan = 7     (program hesaplar, elle değiştirilebilir)
+//   1. Ne üretilecek?      DANA ANTRIKOT seçilir. Reçetesi varsa GİRDİ ve
+//                          ÇIKTI satırları kendiliğinden dolar (Vega da
+//                          mamulü seçer seçmez iki sekmeyi birden dolduruyor).
+//   2. Neyden üretilecek?  HAM DANA ANTRİKOT 1 → 25 KG yazılır.
+//                          (Vega'daki "Üretim Girdileri" sekmesi)
+//   3. Ne çıktı?           18 antrikot + 3 kuşbaşı + 3 kıyma + 1 fire.
+//                          (Vega'daki "Üretim Çıktıları" sekmesi)
 //
-// Reçete gerekmez. Program iki belge kesiyor: önce firenin zayi çıkış fişi,
-// sonra üretim fişi (kalan 3 kg hammadde tüketilir, 3 kg mamul girer).
-// Üretim yazılamazsa fire fişi geri alınır.
+// ÇIKTI TABLOSU ARTIK HER ÜRÜNDE GÖRÜNÜYOR. 09.09.2026'ya kadar yalnız çok
+// çıktılı 7 reçetede açılıyordu; kalan 426 üründe ekran hiç değişmediği için
+// güncelleme yapılmamış gibi duruyordu. Tek çıktılı reçetede tablo tek satır
+// gösteriyor — üretilen miktar da o satırdan giriliyor, ayrı "çıkan miktar"
+// kutusu yok (Vega'da da öyle: başlıktaki miktar çıktı satırından gelir).
 //
-// Fire carisi / alt hesap / sebep / maliyet alanları KAPALI bir bölümde
-// duruyor: kullanıcı çoğu zaman varsayılanı (FİRE ya da ZAYİ kartı)
-// kullanıyor ve ekranın başında dört alan daha görmek işi zorlaştırıyordu.
+// MALİYET yazarken değil, siz yazarken ekranda hesaplanıyor; formül Vega'nın
+// kendi fişlerinden çıkarıldı (kurulum/URETIM-BULGU-08-09-2026.md):
+//
+//   toplamMaliyet = Σ (tüketilen miktar × girdinin birim maliyeti)
+//   satır.tutar   = toplamMaliyet × ORAN / 100
+//   satır.birim   = satır.tutar / satır.miktar
+//
+// ORAN toplamı 100 olmak zorunda değil: DANA ANTRIKOT reçetesinde 200 ve Vega
+// bunu uyarmadan uyguluyor (23.750 TL hammadde 47.500 TL mamule dönüyor).
+// Panel aynı sayıyı yazıyor — yoksa Vega'nınkiyle tutmaz — ama tablonun
+// altında uyarı gösteriyor.
+//
+// FİRE iki ayrı şey; karıştırılırsa hammadde stoktan iki kez düşer:
+//   - Çok çıktılı reçetede fire bir ÇIKTIDIR; FİRE stok kartına 96 girişi
+//     olarak yazılır, zayi fişi kesilmez, cari borcu oluşmaz.
+//   - Tek çıktılı / reçetesiz üretimde eski akış duruyor: fire girdi
+//     satırında yazılır, önce zayi çıkış fişi kesilir, sonra üretim yazılır.
+//
+// ÇİZİM İLE HESAP AYRI. Tablolar yalnız satır eklenip çıkarıldığında yeniden
+// kuruluyor; her tuş vuruşunda yalnız sayı hücrelerinin metni değişiyor.
+// Baştaki sürümde her `input` olayında tablo baştan çiziliyordu: miktar kutusu
+// DOM'dan söküldüğü için ODAK KAYBOLUYOR ve ilk rakamdan sonrasını yazmak
+// mümkün olmuyordu.
 async function uretimFireliBolumu() {
   const cariler = await cagir('zayi:cariler').catch(() => []);
 
-  let mamul = null;
+  let mamul = null;        // uretim:isEmri'den gelen mamul kartı
+  let isEmriVerisi = null; // { receteNo, girdiler, ciktilar, oranToplami }
+
+  const girdiler = [];     // { urun, miktarKutu, fireKutu, fireEtiket, elleFire, … }
+  const ciktilar = [];     // { stok, tur, oran, anaMamul, miktarKutu, … }
+
   const mamulYazi = el('div', { sinif: 'secim-yazi', metin: 'Henüz seçilmedi' });
-  const cikanKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.001', min: '0' });
-
-  // Hammadde satırları. Tek satır olağan hâl ("ham somondan somon"); ikinci
-  // bir hammadde eklenirse fire otomatik hesaplanamaz, kullanıcı yazar.
-  const satirlar = [];
-  const satirKap = el('div');
-  const ozetYazi = el('div', { sinif: 'aciklama-kutu' });
-  const hammaddeDugme = el('button', {
-    sinif: 'dugme-sade',
-    metin: 'Hammadde seç',
-    tikla: () => uretimUrunSecPenceresi('Hammadde', hammaddeEkle)
-  });
-
-  // --- Çok çıktılı reçeteler ---
-  //
-  // Bir üretimden birden fazla ürün çıkabiliyor: DANA ANTRIKOT reçetesinde
-  // ana mamulün yanında DANA KUŞBAŞI, DANA KIYMA ve FİRE de var. Müşteri
-  // Vega'da 25 kg ham etten 18 antrikot + 3 kuşbaşı + 3 kıyma + 1 fire
-  // çıkarıyor. Mamul seçilir seçilmez reçetenin çıktıları okunuyor; birden
-  // fazlaysa aşağıda miktar kutuları açılıyor.
-  //
-  // Bu kipte fire ZAYİ FİŞİNE YAZILMAZ; reçetedeki FİRE kartına üretim
-  // çıktısı olarak girer (Vega'nın yaptığı bu). Fire kutuları ve fire carisi
-  // bölümü bu yüzden gizleniyor — ikisi bir arada çalışsaydı fire iki kez
-  // düşerdi.
-  let receteCikti = null;
-  let ciktiSatirlari = [];
+  const receteYazi = el('div', { sinif: 'alt-not', metin: '' });
+  const girdiKap = el('div');
   const ciktiKap = el('div');
-  const ciktiBasligi = el('div', { sinif: 'bolum-basligi', metin: '3. Bu üretimden ne çıktı' });
   const ciktiUyari = el('div', { sinif: 'aciklama-kutu uyari' });
+  const ozetYazi = el('div', { sinif: 'aciklama-kutu' });
 
-  function cokCiktiliMi() {
-    return !!receteCikti && receteCikti.satirlar.length > 1;
+  // Tablo altlarındaki toplam hücreleri; hesap tazelenirken metinleri
+  // değişiyor, DOM'a bir kez konuyor.
+  let girdiToplamHucre = null;
+  let ciktiToplamHucre = null;
+
+  // Fire zayi fişine yalnız TEK çıktılı işte yazılır. Çok çıktılıda fire
+  // çıktı satırlarından biridir; ikisi bir arada çalışsaydı hammadde stoktan
+  // iki kez düşerdi.
+  function zayiAkisi() {
+    return ciktilar.length <= 1;
   }
 
-  function tekSatirMi() {
-    return satirlar.length === 1;
+  function anaCikti() {
+    return ciktilar.find((c) => c.anaMamul) || ciktilar[0] || null;
+  }
+
+  function uretilenMiktar() {
+    const a = anaCikti();
+    return a ? (Number(a.miktarKutu.value) || 0) : 0;
+  }
+
+  // Üretimde gerçekten tüketilen miktar. Tek çıktılı kipte fire zayi fişiyle
+  // ayrı düştüğü için üretim fişine giren = giren − fire; çok çıktılıda
+  // hammaddenin tamamı tüketilir. db/uretim.js → fireliUret aynı hesabı
+  // yapıyor; ekrandaki tutar Vega'ya yazılanla aynı olsun diye burada da
+  // aynısı duruyor.
+  function tuketilen(g) {
+    const m = Number(g.miktarKutu.value) || 0;
+    const f = zayiAkisi() ? (Number(g.fireKutu.value) || 0) : 0;
+    return Math.max(0, m - f);
+  }
+
+  function toplamMaliyet() {
+    return girdiler.reduce(
+      (t, g) => t + tuketilen(g) * (Number(g.urun.birimMaliyet) || 0), 0
+    );
+  }
+
+  function tekGirdiMi() {
+    return girdiler.length === 1;
   }
 
   // Fire = giren − çıkan, ama yalnızca bu çıkarma ANLAMLIYSA. Üç şart:
@@ -4232,211 +4272,372 @@ async function uretimFireliBolumu() {
   //      düştüğü bilinemezdi.
   //   2. Kullanıcı fire kutusuna elle dokunmamış.
   //   3. Hammadde ile mamulün BİRİMİ aynı. "10 kg ham somondan 3 kg somon"
-  //      işinde doğru; "10 kg hamurdan 40 adet ekmek" işinde çıkarma
-  //      anlamsız (40 adet − 10 kg diye bir şey yok) ve fireyi 30 gibi
-  //      uydurma bir sayıya çekerdi.
-  function otomatikFireMi(r) {
-    if (cokCiktiliMi()) return false;
-    if (!tekSatirMi() || r.elleFire) return false;
+  //      işinde doğru; "10 kg hamurdan 40 adet ekmek" işinde çıkarma anlamsız
+  //      (40 adet − 10 kg diye bir şey yok) ve fireyi 30 gibi uydurma bir
+  //      sayıya çekerdi.
+  function otomatikFireMi(g) {
+    if (!zayiAkisi()) return false;
+    if (!tekGirdiMi() || g.elleFire) return false;
     if (!mamul) return false;
-    const hb = (r.urun.birim || '').trim().toLocaleUpperCase('tr');
+    const hb = (g.urun.birim || '').trim().toLocaleUpperCase('tr');
     const mb = (mamul.birim || '').trim().toLocaleUpperCase('tr');
     return !!hb && hb === mb;
   }
 
   function fireyiHesapla() {
-    if (!tekSatirMi()) return;
-    const r = satirlar[0];
-    if (!otomatikFireMi(r)) return;
-    const giren = Number(r.miktarKutu.value) || 0;
-    const cikan = Number(cikanKutu.value) || 0;
-    const fire = giren - cikan;
-    r.fireKutu.value = fire > 0 ? String(Number(fire.toFixed(3))) : '0';
+    if (!tekGirdiMi()) return;
+    const g = girdiler[0];
+    if (!otomatikFireMi(g)) return;
+    const fire = (Number(g.miktarKutu.value) || 0) - uretilenMiktar();
+    g.fireKutu.value = fire > 0 ? String(Number(fire.toFixed(3))) : '0';
   }
 
-  function ozetiTazele() {
+  // Fire kutusunun etiketi kutuyla birlikte değişiyor. Eskiden etiket yalnız
+  // ekran yeniden çizilirken hesaplanıyordu: kullanıcı fireye elle
+  // dokunduğunda otomatik hesap kapanıyor ama etiket "(otomatik)" demeye
+  // devam ediyordu.
+  function fireEtiketiTazele(g) {
+    g.fireEtiket.textContent = otomatikFireMi(g)
+      ? 'Fire (otomatik: giren − çıkan)'
+      : 'Fire';
+  }
+
+  // --- Hesap: DOM kurulmadan yalnız sayılar tazeleniyor ----------------------
+  function hesaplariTazele() {
     fireyiHesapla();
-    const giren = satirlar.reduce((t, r) => t + (Number(r.miktarKutu.value) || 0), 0);
-    const fire = satirlar.reduce((t, r) => t + (Number(r.fireKutu.value) || 0), 0);
-    const cikan = Number(cikanKutu.value) || 0;
-    if (!satirlar.length || !mamul) {
-      ozetYazi.textContent = cokCiktiliMi()
-        ? 'Hammaddeyi seçin ve her çıktının miktarını yazın.'
-        : 'Üretilecek ürünü ve hammaddeyi seçin; fire kendiliğinden hesaplanır.';
-      return;
-    }
+    const toplam = toplamMaliyet();
 
-    if (cokCiktiliMi()) {
-      // Çok çıktılı kipte hammaddenin tamamı tüketilir; denge kontrolü
-      // "toplam çıktı = toplam girdi" üzerinden yapılıyor.
-      const ciktiToplam = cikan + ciktiSatirlari.reduce(
-        (t, c) => t + (Number(c.kutu.value) || 0), 0
+    for (const g of girdiler) {
+      const birim = Number(g.urun.birimMaliyet) || 0;
+      if (g.birimHucre) g.birimHucre.textContent = birim ? paraYaz(birim) + ' TL' : '—';
+      if (g.tutarHucre) g.tutarHucre.textContent = paraYaz(tuketilen(g) * birim) + ' TL';
+      if (g.fireEtiket) fireEtiketiTazele(g);
+    }
+    if (girdiToplamHucre) {
+      girdiToplamHucre.kayit.textContent = sayiYaz(girdiler.length) + ' kayıt';
+      girdiToplamHucre.miktar.textContent = miktarYaz(
+        girdiler.reduce((t, g) => t + (Number(g.miktarKutu.value) || 0), 0)
       );
-      const fark = ciktiToplam - giren;
-      ozetYazi.textContent =
-        `${miktarYaz(giren)} giren hammadde → toplam ${miktarYaz(ciktiToplam)} çıktı` +
-        (Math.abs(fark) > 0.0001
-          ? ` — ${miktarYaz(Math.abs(fark))} ${fark > 0 ? 'fazla' : 'eksik'}.`
-          : ' — denk.');
-      return;
+      if (girdiToplamHucre.fire) {
+        girdiToplamHucre.fire.textContent = miktarYaz(
+          girdiler.reduce((t, g) => t + (Number(g.fireKutu.value) || 0), 0)
+        );
+      }
+      girdiToplamHucre.tutar.textContent = paraYaz(toplam) + ' TL';
     }
 
-    ozetYazi.textContent =
-      `${miktarYaz(giren)} giren hammadde → ${miktarYaz(cikan)} ` +
-      `${mamul ? mamul.ad : 'mamul'} + ${miktarYaz(fire)} fire ` +
-      `(üretimde tüketilecek ${miktarYaz(giren - fire)}).`;
-  }
-
-  // Reçetenin çıktı satırlarını ekrana koyar. Ana mamulün miktarı yukarıdaki
-  // "Çıkan miktar" kutusundan geliyor; burada yalnız yansıtılıyor ki iki
-  // ayrı kutu aynı sayıyı tutmaya çalışmasın.
-  function ciktiCiz() {
-    bosalt(ciktiKap);
-    ciktiBasligi.hidden = !cokCiktiliMi();
-    ciktiKap.hidden = !cokCiktiliMi();
-    ciktiUyari.hidden = true;
-    ayrinti.hidden = cokCiktiliMi();
-    if (!cokCiktiliMi()) { ciktiSatirlari = []; ozetiTazele(); return; }
-
-    const anaSatir = receteCikti.satirlar.find((c) => c.anaMamul);
-    ciktiKap.appendChild(el('div', { sinif: 'form-satir' }, [
-      el('div', { style: 'flex:1' }, [
-        el('div', { sinif: 'ad-satir', metin: (anaSatir ? anaSatir.ad : mamul.ad) + ' (ana mamul)' }),
-        el('div', { sinif: 'alt-not', metin:
-          `maliyet oranı %${sayiYaz(anaSatir ? anaSatir.oran : 100, 2)}` })
-      ]),
-      el('div', null, [
-        el('label', { metin: 'Miktar' }),
-        el('div', { sinif: 'secim-yazi', metin: 'yukarıdaki "Çıkan miktar" kutusundan' })
-      ])
-    ]));
-
-    ciktiSatirlari = receteCikti.satirlar
-      .filter((c) => !c.anaMamul)
-      .map((c) => {
-        const kutu = el('input', {
-          type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: '0'
-        });
-        kutu.addEventListener('input', ozetiTazele);
-        ciktiKap.appendChild(el('div', { sinif: 'form-satir' }, [
-          el('div', { style: 'flex:1' }, [
-            el('div', { sinif: 'ad-satir', metin: c.ad }),
-            el('div', { sinif: 'alt-not', metin:
-              `${c.kod || ''} ${c.birim || ''} · maliyet oranı %${sayiYaz(c.oran, 2)}` })
-          ]),
-          el('div', null, [el('label', { metin: 'Miktar' }), kutu])
-        ]));
-        return { s: c, kutu };
-      });
+    let toplamCikan = 0;
+    let toplamTutar = 0;
+    let oranToplami = 0;
+    for (const c of ciktilar) {
+      const m = Number(c.miktarKutu.value) || 0;
+      const tutar = toplam * (Number(c.oran) || 0) / 100;
+      toplamCikan += m;
+      toplamTutar += tutar;
+      oranToplami += Number(c.oran) || 0;
+      if (c.birimHucre) c.birimHucre.textContent = m > 0 ? paraYaz(tutar / m) + ' TL' : '—';
+      if (c.tutarHucre) c.tutarHucre.textContent = paraYaz(tutar) + ' TL';
+    }
+    if (ciktiToplamHucre) {
+      ciktiToplamHucre.kayit.textContent = sayiYaz(ciktilar.length) + ' kayıt';
+      ciktiToplamHucre.miktar.textContent = miktarYaz(toplamCikan);
+      ciktiToplamHucre.tutar.textContent = paraYaz(toplamTutar) + ' TL';
+      ciktiToplamHucre.oran.textContent = '%' + sayiYaz(oranToplami, 2);
+    }
 
     // Maliyet oranlarının toplamı 100 değilse mamullere yazılan maliyet
-    // tüketilen maliyete eşit çıkmaz. Vega bunu uyarmadan yapıyor; panel
-    // aynı sayıyı yazıyor ama kullanıcıya söylüyor.
-    const oranToplami = receteCikti.oranToplami;
-    if (Math.abs(oranToplami - 100) > 0.01) {
-      ciktiUyari.hidden = false;
+    // tüketilen maliyete eşit çıkmaz. Vega bunu uyarmadan yapıyor; panel aynı
+    // sayıyı yazıyor ama kullanıcıya söylüyor.
+    const oranSapmasi = ciktilar.length > 1 && Math.abs(oranToplami - 100) > 0.01;
+    ciktiUyari.hidden = !oranSapmasi;
+    if (oranSapmasi) {
       ciktiUyari.textContent =
-        `Bu reçetede maliyet oranlarının toplamı %${sayiYaz(oranToplami, 2)}. ` +
+        'Bu reçetede maliyet oranlarının toplamı %' + sayiYaz(oranToplami, 2) + '. ' +
         (oranToplami > 100
           ? 'Yani tüketilen hammaddenin maliyeti çıktılara birden fazla kez yazılacak; ' +
             'mamullerin toplam maliyeti hammadde maliyetinden yüksek çıkar. '
           : 'Yani hammadde maliyetinin bir kısmı hiçbir çıktıya yazılmayacak. ') +
-        "Vega da bu reçeteyle aynı sonucu üretiyor; düzeltmek için reçetedeki " +
+        'Vega da bu reçeteyle aynı sonucu üretiyor; düzeltmek için reçetedeki ' +
         'maliyet oranları değiştirilmeli.';
     }
-    ozetiTazele();
+
+    ayrinti.hidden = !zayiAkisi();
+    ozetiTazele(toplam, toplamCikan);
   }
 
-  // Fire kutusunun etiketi kutuyla birlikte değişiyor. Eskiden etiket
-  // yalnızca ekran yeniden çizilirken hesaplanıyordu: kullanıcı fireye elle
-  // dokunduğunda otomatik hesap kapanıyor ama etiket "(otomatik)" demeye
-  // devam ediyordu. Giren/çıkan sonradan değişince fire olduğu yerde
-  // kalıyor ve ekran yalan söylüyordu.
-  function fireEtiketiTazele(r) {
-    if (otomatikFireMi(r)) {
-      r.fireEtiket.textContent = 'Fire (otomatik: giren − çıkan)';
-    } else if (r.elleFire) {
-      r.fireEtiket.textContent = 'Fire (elle — boşaltırsanız otomatiğe döner)';
-    } else if (tekSatirMi() && mamul) {
-      // Birimler tutmuyor: çıkarma anlamsız, kullanıcı yazacak.
-      r.fireEtiket.textContent = 'Fire (elle yazın — birimler farklı)';
-    } else {
-      r.fireEtiket.textContent = 'Fire (elle yazın)';
-    }
-  }
-
-  function satirCiz() {
-    bosalt(satirKap);
-    hammaddeDugme.textContent = satirlar.length ? 'Başka hammadde ekle' : 'Hammadde seç';
-    if (!satirlar.length) {
-      satirKap.appendChild(el('div', { sinif: 'secim-yazi', metin: 'Henüz seçilmedi' }));
-      ozetiTazele();
+  function ozetiTazele(toplam, toplamCikan) {
+    if (!mamul || !girdiler.length) {
+      ozetYazi.textContent = mamul
+        ? 'Neyden üretileceğini seçin.'
+        : 'Üretilecek ürünü seçin; reçetesi varsa girdi ve çıktı satırları ' +
+          'kendiliğinden dolar.';
       return;
     }
-    for (const r of satirlar) {
-      const alanlar = [
-        el('div', { style: 'flex:1' }, [
-          el('div', { sinif: 'ad-satir', metin: r.urun.ad }),
+
+    const giren = girdiler.reduce((t, g) => t + (Number(g.miktarKutu.value) || 0), 0);
+
+    if (!zayiAkisi()) {
+      // Çok çıktılı kipte hammaddenin tamamı tüketilir; denge kontrolü
+      // "toplam çıktı = toplam girdi" üzerinden yapılıyor.
+      const fark = toplamCikan - giren;
+      ozetYazi.textContent =
+        miktarYaz(giren) + ' giren hammadde (' + paraYaz(toplam) + ' TL) → toplam ' +
+        miktarYaz(toplamCikan) + ' çıktı' +
+        (Math.abs(fark) > 0.0001
+          ? ' — ' + miktarYaz(Math.abs(fark)) + (fark > 0 ? ' fazla.' : ' eksik.')
+          : ' — denk.');
+      return;
+    }
+
+    const fire = girdiler.reduce((t, g) => t + (Number(g.fireKutu.value) || 0), 0);
+    ozetYazi.textContent =
+      miktarYaz(giren) + ' giren hammadde → ' + miktarYaz(uretilenMiktar()) + ' ' +
+      mamul.ad + ' + ' + miktarYaz(fire) + ' fire (üretimde tüketilecek ' +
+      miktarYaz(giren - fire) + ', ' + paraYaz(toplam) + ' TL).';
+  }
+
+  // --- 2. Üretim girdileri: tablo kurulumu -----------------------------------
+  function girdiTablosunuKur() {
+    bosalt(girdiKap);
+    girdiToplamHucre = null;
+
+    if (!girdiler.length) {
+      girdiKap.appendChild(el('div', { sinif: 'bos-mesaj', metin:
+        mamul && isEmriVerisi && isEmriVerisi.receteNo
+          ? 'Reçetede bileşen yok; hammaddeyi elle ekleyin.'
+          : 'Hammadde seçilmedi.' }));
+      return;
+    }
+
+    const fireVar = zayiAkisi();
+    const govde = el('tbody');
+    for (const g of girdiler) {
+      g.birimHucre = el('td', { sinif: 'sayi' });
+      g.tutarHucre = el('td', { sinif: 'sayi' });
+      const hucreler = [
+        el('td', null, [
+          el('div', { sinif: 'ad-satir', metin: g.urun.ad }),
           el('div', { sinif: 'alt-not', metin:
-            `${r.urun.kod || ''} · kalan ${sayiYaz(r.urun.kalan, 2)} ${r.urun.birim || ''}` })
+            (g.urun.kod && g.urun.kod !== g.urun.ad ? g.urun.kod + ' · ' : '') +
+            'kalan ' + miktarYaz(g.urun.kalan) + ' ' + (g.urun.birim || '') })
         ]),
-        el('div', null, [el('label', { metin: 'Giren miktar' }), r.miktarKutu])
+        el('td', { sinif: 'sayi' }, [g.miktarKutu])
       ];
-      // Çok çıktılı kipte fire ayrı bir kutu değil, aşağıdaki çıktı
-      // satırlarından biri; hammaddenin tamamı tüketiliyor.
-      if (!cokCiktiliMi()) {
-        alanlar.push(el('div', null, [r.fireEtiket, r.fireKutu]));
-        fireEtiketiTazele(r);
-      }
-      if (satirlar.length > 1) {
-        alanlar.push(el('button', {
-          sinif: 'dugme-kucuk',
+      if (fireVar) hucreler.push(el('td', { sinif: 'sayi' }, [g.fireEtiket, g.fireKutu]));
+      hucreler.push(g.birimHucre, g.tutarHucre);
+      hucreler.push(el('td', null, [
+        el('button', {
+          sinif: 'dugme-kucuk tehlike',
           metin: 'Çıkar',
           tikla: () => {
-            satirlar.splice(satirlar.indexOf(r), 1);
-            satirCiz();
+            girdiler.splice(girdiler.indexOf(g), 1);
+            girdiTablosunuKur();
+            hesaplariTazele();
           }
-        }));
-      }
-      satirKap.appendChild(el('div', { sinif: 'form-satir' }, alanlar));
+        })
+      ]));
+      govde.appendChild(el('tr', null, hucreler));
     }
-    if (satirlar.length > 1 && !cokCiktiliMi()) {
-      satirKap.appendChild(el('div', { sinif: 'alt-not' }, [
+
+    // Alt satır Vega'nın belge ekranlarındaki gibi: kaç kayıt, toplam miktar,
+    // toplam tutar.
+    girdiToplamHucre = {
+      kayit: el('td'),
+      miktar: el('td', { sinif: 'sayi' }),
+      fire: fireVar ? el('td', { sinif: 'sayi' }) : null,
+      tutar: el('td', { sinif: 'sayi' })
+    };
+    const altSatir = [girdiToplamHucre.kayit, girdiToplamHucre.miktar];
+    if (fireVar) altSatir.push(girdiToplamHucre.fire);
+    altSatir.push(el('td'), girdiToplamHucre.tutar, el('td'));
+    govde.appendChild(el('tr', { sinif: 'toplam-satir' }, altSatir));
+
+    const basliklar = ['Hammadde', 'Giren miktar']
+      .concat(fireVar ? ['Fire'] : [])
+      .concat(['Birim maliyet', 'Tutar', '']);
+
+    girdiKap.appendChild(el('div', { sinif: 'tablo-sarmal' }, [
+      el('table', null, [
+        el('thead', null, [el('tr', null, basliklar.map((b) => el('th', { metin: b })))]),
+        govde
+      ])
+    ]));
+
+    if (girdiler.length > 1 && fireVar) {
+      girdiKap.appendChild(el('div', { sinif: 'alt-not' }, [
         'Birden fazla hammadde varken fire kendiliğinden hesaplanmaz; ' +
         'her satırın firesini kendiniz yazın.'
       ]));
     }
-    ozetiTazele();
   }
 
-  function hammaddeEkle(urun) {
-    if (satirlar.some((r) => Number(r.urun.stokNo) === Number(urun.stokNo))) {
-      bildir('Bu hammadde listede zaten var.', 'kotu');
+  // --- 3. Üretim çıktıları: tablo kurulumu -----------------------------------
+  //
+  // Vega'nın "Üretim Çıktıları" sekmesindeki kolonların aynısı: Çıktı Türü,
+  // Stok, Miktar, Birim Maliyet, Toplam Maliyet, Maliyet Oranı.
+  function ciktiTablosunuKur() {
+    bosalt(ciktiKap);
+    ciktiToplamHucre = null;
+    ciktiUyari.hidden = true;
+
+    if (!ciktilar.length) {
+      ciktiKap.appendChild(el('div', { sinif: 'bos-mesaj', metin:
+        'Önce üretilecek ürünü seçin.' }));
       return;
     }
-    const miktarKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.001', min: '0' });
-    const fireKutu = el('input', { type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: '0' });
-    const fireEtiket = el('label', { metin: 'Fire (otomatik: giren − çıkan)' });
-    const satir = { urun, miktarKutu, fireKutu, fireEtiket, elleFire: false };
-    miktarKutu.addEventListener('input', ozetiTazele);
+
+    const govde = el('tbody');
+    for (const c of ciktilar) {
+      c.birimHucre = el('td', { sinif: 'sayi' });
+      c.tutarHucre = el('td', { sinif: 'sayi' });
+      govde.appendChild(el('tr', null, [
+        el('td', null, [el('span', {
+          sinif: 'etiket ' + (c.anaMamul ? 'mavi' : 'gri'),
+          metin: c.anaMamul ? 'Ana mamul' : 'Yan mamul'
+        })]),
+        el('td', null, [
+          el('div', { sinif: 'ad-satir', metin: c.stok.ad }),
+          el('div', { sinif: 'alt-not', metin:
+            (c.stok.kod && c.stok.kod !== c.stok.ad ? c.stok.kod + ' · ' : '') +
+            (c.stok.birim || '') })
+        ]),
+        el('td', { sinif: 'sayi' }, [c.miktarKutu]),
+        c.birimHucre,
+        c.tutarHucre,
+        el('td', { sinif: 'sayi', metin: '%' + sayiYaz(c.oran, 2) })
+      ]));
+    }
+
+    ciktiToplamHucre = {
+      kayit: el('td'),
+      miktar: el('td', { sinif: 'sayi' }),
+      tutar: el('td', { sinif: 'sayi' }),
+      oran: el('td', { sinif: 'sayi' })
+    };
+    govde.appendChild(el('tr', { sinif: 'toplam-satir' }, [
+      ciktiToplamHucre.kayit,
+      el('td'),
+      ciktiToplamHucre.miktar,
+      el('td'),
+      ciktiToplamHucre.tutar,
+      ciktiToplamHucre.oran
+    ]));
+
+    ciktiKap.appendChild(el('div', { sinif: 'tablo-sarmal' }, [
+      el('table', null, [
+        el('thead', null, [el('tr', null, [
+          'Çıktı türü', 'Stok', 'Miktar', 'Birim maliyet', 'Toplam maliyet', 'Maliyet oranı'
+        ].map((b) => el('th', { metin: b })))]),
+        govde
+      ])
+    ]));
+  }
+
+  function tablolariKur() {
+    girdiTablosunuKur();
+    ciktiTablosunuKur();
+    hesaplariTazele();
+  }
+
+  // --- Satır kurucular -------------------------------------------------------
+  function girdiSatiriYap(urun, baslangicMiktar) {
+    const miktarKutu = el('input', {
+      type: 'number', sinif: 'miktar', step: '0.001', min: '0',
+      value: baslangicMiktar != null ? String(baslangicMiktar) : ''
+    });
+    const fireKutu = el('input', {
+      type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: '0'
+    });
+    const fireEtiket = el('label', { metin: 'Fire' });
+    const g = { urun, miktarKutu, fireKutu, fireEtiket, elleFire: false };
+
+    miktarKutu.addEventListener('input', hesaplariTazele);
     // Kullanıcı fire kutusuna dokunduğu an otomatik hesap devreden çıkıyor;
     // yazdığı sayı ekran her tazelendiğinde silinseydi kimse güvenmezdi.
     // Kutuyu boşaltmak otomatiğe döndürüyor — kilitlenip kalmasın diye.
     fireKutu.addEventListener('input', () => {
-      satir.elleFire = fireKutu.value.trim() !== '';
-      fireEtiketiTazele(satir);
-      ozetiTazele();
+      g.elleFire = fireKutu.value.trim() !== '';
+      hesaplariTazele();
     });
-    satirlar.push(satir);
-    satirCiz();
+    return g;
+  }
+
+  function ciktiSatiriYap(stok, tur, oran, anaMamul) {
+    const miktarKutu = el('input', {
+      type: 'number', sinif: 'miktar', step: '0.001', min: '0', value: ''
+    });
+    miktarKutu.addEventListener('input', hesaplariTazele);
+    return { stok, tur, oran, anaMamul, miktarKutu };
+  }
+
+  function hammaddeEkle(urun) {
+    if (girdiler.some((g) => Number(g.urun.stokNo) === Number(urun.stokNo))) {
+      bildir('Bu hammadde listede zaten var.', 'kotu');
+      return;
+    }
+    girdiler.push(girdiSatiriYap(urun, null));
+    tablolariKur();
     katmanKapat();
   }
 
-  cikanKutu.addEventListener('input', ozetiTazele);
+  // Mamul seçilince reçete okunur: girdi ve çıktı satırları Vega'nın İş Emri
+  // ekranındaki gibi kendiliğinden dolar. Reçete yoksa çıktı tablosunda tek
+  // satır (mamulün kendisi, %100) kalır ve eski reçetesiz akış sürer.
+  async function mamulSec(u) {
+    katmanKapat();
+    let cevap = null;
+    try {
+      cevap = await cagir('uretim:isEmri', { mamulStokNo: u.stokNo });
+    } catch (e) {
+      hataGoster(e);
+    }
 
-  // --- Fire carisi ve ayrıntılar (kapalı bölüm) ---
+    isEmriVerisi = cevap;
+    mamul = (cevap && cevap.mamul) || u;
+    mamulYazi.textContent = mamul.ad + (mamul.birim ? ' (' + mamul.birim + ')' : '');
+
+    girdiler.length = 0;
+    ciktilar.length = 0;
+
+    if (cevap && cevap.receteNo) {
+      receteYazi.textContent =
+        'Reçete ' + cevap.receteNo + ' · ' + cevap.girdiler.length + ' bileşen · ' +
+        cevap.ciktilar.length + ' çıktı · kalan ' + miktarYaz(mamul.kalan) +
+        ' ' + (mamul.birim || '');
+      for (const g of cevap.girdiler) {
+        girdiler.push(girdiSatiriYap(g, g.receteMiktari > 0 ? g.receteMiktari : null));
+      }
+      for (const c of cevap.ciktilar) {
+        ciktilar.push(ciktiSatiriYap(c, c.tur, c.oran, !!c.anaMamul));
+      }
+    } else {
+      receteYazi.textContent =
+        'Reçetesiz üretim · kalan ' + miktarYaz(mamul.kalan) + ' ' + (mamul.birim || '');
+    }
+
+    // Reçetede ana mamul çıktı satırı yoksa (Vega dışında açılmış eski
+    // reçeteler) satırı ekran ekliyor: üretilen miktar hep buradan giriliyor.
+    if (!ciktilar.some((c) => c.anaMamul)) {
+      ciktilar.unshift(ciktiSatiriYap(mamul, 0, ciktilar.length ? 0 : 100, true));
+    }
+
+    tablolariKur();
+  }
+
+  const hammaddeDugme = el('button', {
+    sinif: 'dugme-sade',
+    metin: 'Hammadde ekle',
+    tikla: () => uretimUrunSecPenceresi('Hammadde', hammaddeEkle)
+  });
+
+  // --- Fire carisi ve ayrıntılar (kapalı bölüm) ------------------------------
+  //
+  // Fire carisi / alt hesap / sebep / maliyet alanları KAPALI duruyor:
+  // kullanıcı çoğu zaman varsayılanı (FİRE ya da ZAYİ kartı) kullanıyor ve
+  // ekranın başında dört alan daha görmek işi zorlaştırıyordu. Çok çıktılı
+  // üretimde zayi fişi hiç kesilmediği için bölüm tamamen gizleniyor.
   const cariKutu = el('select', { sinif: 'form' },
-    cariler.map((c) => el('option', { value: String(c.cariNo), metin: `${c.kod || c.ad}` }))
+    cariler.map((c) => el('option', { value: String(c.cariNo), metin: (c.kod || c.ad) }))
   );
   const fireKarti = cariler.find(
     (c) => /^F[İI]RE/i.test(c.kod || '') || /^F[İI]RE/i.test(c.ad || '')
@@ -4474,40 +4675,44 @@ async function uretimFireliBolumu() {
 
   uretDugme.addEventListener('click', async () => {
     if (!mamul) { bildir('Önce üretilecek ürünü seçin.', 'kotu'); return; }
-    if (!satirlar.length) { bildir('Neyden üretileceğini seçin.', 'kotu'); return; }
+    if (!girdiler.length) { bildir('Neyden üretileceğini seçin.', 'kotu'); return; }
 
-    const cikan = Number(cikanKutu.value);
-    if (!(cikan > 0)) { bildir('Çıkan miktar sıfırdan büyük olmalı.', 'kotu'); return; }
+    const cikan = uretilenMiktar();
+    if (!(cikan > 0)) {
+      bildir('Çıktı tablosunda "' + mamul.ad + '" miktarı sıfırdan büyük olmalı.', 'kotu');
+      return;
+    }
 
-    const cokCiktili = cokCiktiliMi();
+    const cokCiktili = !zayiAkisi();
     const hammaddeler = [];
-    for (const r of satirlar) {
-      const miktar = Number(r.miktarKutu.value);
+    for (const g of girdiler) {
+      const miktar = Number(g.miktarKutu.value);
       // Çok çıktılı kipte hammaddenin tamamı tüketilir; fire çıktı satırıdır.
-      const fire = cokCiktili ? 0 : (Number(r.fireKutu.value) || 0);
+      const fire = cokCiktili ? 0 : (Number(g.fireKutu.value) || 0);
       if (!(miktar > 0)) {
-        bildir(`"${r.urun.ad}" için giren miktar yazılmalı.`, 'kotu');
+        bildir('"' + g.urun.ad + '" için giren miktar yazılmalı.', 'kotu');
         return;
       }
       if (fire < 0 || fire > miktar) {
-        bildir(`"${r.urun.ad}" firesi 0 ile giren miktar arasında olmalı.`, 'kotu');
+        bildir('"' + g.urun.ad + '" firesi 0 ile giren miktar arasında olmalı.', 'kotu');
         return;
       }
-      hammaddeler.push({ stokNo: r.urun.stokNo, miktar, fire });
+      hammaddeler.push({ stokNo: g.urun.stokNo, miktar, fire });
     }
 
-    let ciktilar = null;
+    // Yan mamullerin hepsi sıfır bırakılmışsa iş tek çıktılıya döner: fişe
+    // yalnız ana mamul yazılır ve eski (zayi fişli) akış geçerli olur.
+    let gonderilecek = null;
     if (cokCiktili) {
-      ciktilar = [{ stokNo: mamul.stokNo, miktar: cikan }];
-      for (const c of ciktiSatirlari) {
-        const m = Number(c.kutu.value) || 0;
-        if (m < 0) {
-          bildir(`"${c.s.ad}" miktarı eksi olamaz.`, 'kotu');
-          return;
-        }
-        if (m > 0) ciktilar.push({ stokNo: c.s.stokNo, miktar: m });
+      const dolu = [];
+      for (const c of ciktilar) {
+        const m = Number(c.miktarKutu.value) || 0;
+        if (m < 0) { bildir('"' + c.stok.ad + '" miktarı eksi olamaz.', 'kotu'); return; }
+        if (m > 0) dolu.push({ stokNo: c.stok.stokNo, miktar: m });
       }
+      if (dolu.length > 1) gonderilecek = dolu;
     }
+    const cokYazilacak = !!gonderilecek;
 
     const fireToplam = hammaddeler.reduce((t, h) => t + h.fire, 0);
     if (fireToplam > 0 && !cariKutu.value) {
@@ -4516,32 +4721,31 @@ async function uretimFireliBolumu() {
     }
 
     const secilenCari = cariler.find((c) => String(c.cariNo) === cariKutu.value);
-    const girdiYazi = satirlar
-      .map((r, i) => `${r.urun.ad} ${miktarYaz(hammaddeler[i].miktar)}`)
+    const girdiYazi = girdiler
+      .map((g, i) => g.urun.ad + ' ' + miktarYaz(hammaddeler[i].miktar))
       .join(' + ');
 
     const onay = await window.galya.cagir('sistem:onay', {
-      baslik: cokCiktili ? 'Reçeteli üretim' : 'Manuel üretim',
-      mesaj: cokCiktili
-        ? `${girdiYazi} → ` +
-          ciktilar
+      baslik: cokYazilacak ? 'Reçeteli üretim' : 'Manuel üretim',
+      mesaj: cokYazilacak
+        ? girdiYazi + ' → ' +
+          gonderilecek
             .map((c) => {
-              const ad = c.stokNo === mamul.stokNo
-                ? mamul.ad
-                : (ciktiSatirlari.find((x) => x.s.stokNo === c.stokNo) || { s: {} }).s.ad;
-              return `${ad || ''} ${miktarYaz(c.miktar)}`;
+              const s = ciktilar.find((x) => Number(x.stok.stokNo) === Number(c.stokNo));
+              return ((s && s.stok.ad) || '') + ' ' + miktarYaz(c.miktar);
             })
             .join(' + ')
         : girdiYazi +
-          ` → ${mamul.ad} ${miktarYaz(cikan)} ${mamul.birim || ''}` +
-          (fireToplam > 0 ? ` + ${miktarYaz(fireToplam)} fire` : ''),
-      detay: cokCiktili
+          ' → ' + mamul.ad + ' ' + miktarYaz(cikan) + ' ' + (mamul.birim || '') +
+          (fireToplam > 0 ? ' + ' + miktarYaz(fireToplam) + ' fire' : ''),
+      detay: cokYazilacak
         ? 'Hammaddenin tamamı tüketilir, çıktıların hepsi kendi stok kartına ' +
           'girer. Fire de bir çıktıdır: zayi fişi KESİLMEZ, cari borcu ' +
           'oluşmaz. Vega bu üretimi aynı şekilde yazıyor. Geri alınabilir.'
         : (fireToplam > 0
-            ? `Önce ${miktarYaz(fireToplam)} fire için stok çıkış fişi kesilir ` +
-              `(${(secilenCari && (secilenCari.kod || secilenCari.ad)) || 'seçilen cari'}). Sonra `
+            ? 'Önce ' + miktarYaz(fireToplam) + ' fire için stok çıkış fişi kesilir (' +
+              ((secilenCari && (secilenCari.kod || secilenCari.ad)) || 'seçilen cari') +
+              '). Sonra '
             : 'Fire yok, zayi fişi kesilmez. ') +
           'kalan hammadde tüketilip mamul stoğa girer. Üretim yazılamazsa fire ' +
           'fişi geri alınır. İki adım da geri alınabilir.',
@@ -4556,7 +4760,7 @@ async function uretimFireliBolumu() {
         mamulStokNo: mamul.stokNo,
         uretilenMiktar: cikan,
         hammaddeler,
-        ciktilar,
+        ciktilar: gonderilecek,
         cariNo: Number(cariKutu.value) || null,
         cariAdi: secilenCari ? secilenCari.ad : null,
         altHesap: altHesapKutu.value.trim(),
@@ -4564,12 +4768,13 @@ async function uretimFireliBolumu() {
         maliyetliMi: maliyetKutu.checked
       });
       bildir(
-        (s.zayiBelgeNo ? `Fire fişi ${s.zayiBelgeNo} kesildi, ` : '') +
-        `${miktarYaz(s.uretilenMiktar)} ${mamul.birim || ''} ${s.mamulAdi} üretildi ` +
+        (s.zayiBelgeNo ? 'Fire fişi ' + s.zayiBelgeNo + ' kesildi, ' : '') +
+        miktarYaz(s.uretilenMiktar) + ' ' + (mamul.birim || '') + ' ' + s.mamulAdi +
+        ' üretildi ' +
         (s.cokCiktili && s.ciktilar
-          ? `ve ${s.ciktilar.length - 1} yan çıktı yazıldı `
+          ? 've ' + (s.ciktilar.length - 1) + ' yan çıktı yazıldı '
           : '') +
-        `(fiş ${s.fisNo}).`,
+        '(fiş ' + s.fisNo + ').',
         'iyi'
       );
       ekranAc('uretim', { kip: 'fireli' });
@@ -4579,48 +4784,33 @@ async function uretimFireliBolumu() {
     }
   });
 
-  // --- Ekran düzeni: iki satır, Vega'daki gibi ---
+  // --- Ekran düzeni ----------------------------------------------------------
   icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-    'Ne ürettiğinizi ve neyden ürettiğinizi yazın. Örnek: 10 kg ham somon ' +
-    'girer, 3 kg somon çıkar — kalan 7 kg fire olarak yazılır. Fireyi program ' +
-    'hesaplar, isterseniz değiştirebilirsiniz. Reçete gerekmez.'
+    'Vega’nın İş Emri ekranının aynısı. Üretilecek ürünü seçin: reçetesi varsa ' +
+    'neyin tüketileceği ve neyin çıkacağı kendiliğinden dolar, siz yalnız ' +
+    'miktarları yazarsınız. Reçetesi olmayan üründe hammaddeyi kendiniz ' +
+    'seçersiniz ve kalan miktar fire olarak zayi fişine yazılır.'
   ]));
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '1. Ne üretilecek' }));
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [
     el('div', { style: 'flex:1' }, [
       el('label', { metin: 'Üretilen ürün' }),
-      mamulYazi
+      mamulYazi,
+      receteYazi
     ]),
     el('div', null, [
       el('label', { metin: ' ' }),
-      el('button', {
-        sinif: 'dugme-sade',
-        metin: 'Ürün seç',
-        tikla: () => uretimUrunSecPenceresi('Üretilecek ürün', async (u) => {
-          mamul = u;
-          mamulYazi.textContent = `${u.ad}${u.birim ? ' (' + u.birim + ')' : ''}`;
-          katmanKapat();
-          // Reçetenin çıktıları. Okunamazsa tek çıktılı sayılıyor —
-          // ekran eski hâlinde çalışmaya devam eder.
-          receteCikti = await cagir('uretim:receteCiktilari', { mamulStokNo: u.stokNo })
-            .catch(() => null);
-          ciktiCiz();
-          // satirCiz, ozetiTazele'yi de çağırıyor. Mamul değişince fire
-          // etiketleri yeniden yazılmalı: otomatik hesap mamulün birimine
-          // bağlı.
-          satirCiz();
-        })
-      })
-    ]),
-    el('div', null, [el('label', { metin: 'Çıkan miktar' }), cikanKutu])
+      el('button', { sinif: 'dugme-sade', metin: 'Ürün seç',
+        tikla: () => uretimUrunSecPenceresi('Üretilecek ürün', mamulSec) })
+    ])
   ]));
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '2. Neyden üretilecek' }));
-  icerik.appendChild(satirKap);
+  icerik.appendChild(girdiKap);
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [hammaddeDugme]));
 
-  icerik.appendChild(ciktiBasligi);
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '3. Bu üretimden ne çıktı' }));
   icerik.appendChild(ciktiKap);
   icerik.appendChild(ciktiUyari);
 
@@ -4628,8 +4818,7 @@ async function uretimFireliBolumu() {
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [ayrinti]));
   icerik.appendChild(el('div', { sinif: 'form-satir', style: 'margin-top:16px' }, [uretDugme]));
 
-  ciktiCiz();
-  satirCiz();
+  tablolariKur();
 }
 
 // Üretim ekranının ürün seçicisi. Reçete şartı yok, bütün aktif kartlar

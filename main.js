@@ -445,6 +445,7 @@ kayitEt('maliyet:mamul', async (g) => maliyet.mamulMaliyeti(g));
 kayitEt('uretim:sifirAdaylari', async (g) => uretim.sifirAdaylari(g));
 kayitEt('uretim:urunAra', async (g) => uretim.urunAra(g));
 kayitEt('uretim:receteCiktilari', async (g) => uretim.receteCiktilari(g));
+kayitEt('uretim:isEmri', async (g) => uretim.isEmri(g));
 kayitEt('uretim:sifiraKadar', async (g, k) =>
   uretim.sifiraKadarUret(Object.assign({}, g, { kullanici: k.kullanici }))
 );

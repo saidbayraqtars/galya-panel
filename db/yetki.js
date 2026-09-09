@@ -103,6 +103,7 @@ const KANAL_YETKILERI = {
   'uretim:sifirAdaylari': 'uretim',
   'uretim:urunAra': 'uretim',
   'uretim:receteCiktilari': 'uretim',
+  'uretim:isEmri': 'uretim',
   'uretim:sifiraKadar': 'uretim',
   'uretim:hepsiniSifirla': 'uretim',
   'uretim:fireli': 'uretim',

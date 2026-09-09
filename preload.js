@@ -41,6 +41,7 @@ const kanallar = [
   'uretim:sifirAdaylari',
   'uretim:urunAra',
   'uretim:receteCiktilari',
+  'uretim:isEmri',
   'uretim:sifiraKadar',
   'uretim:hepsiniSifirla',
   'uretim:fireli',
