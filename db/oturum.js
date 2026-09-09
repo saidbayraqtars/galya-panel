@@ -30,14 +30,91 @@ const KULLANICI = 'kullanici';
 // Eski adı; dışarıdaki çağrılar kırılmasın diye duruyor.
 const SAYIMCI = KULLANICI;
 
-// Program açıkken geçerli tek oturum. Program kapanınca düşer.
-const oturum = {
-  rol: KULLANICI,
-  kullaniciId: null,
-  kullaniciAdi: null,
-  yetkiler: bosYetki(),
-  girisTarihi: null
-};
+// OTURUMLAR
+//
+// Masaüstü programında tek pencere, tek kişi var; oturum uzun süre modül
+// seviyesinde tek bir nesneydi. Panel ağdan da açılabildiği için (bkz.
+// db/sunucu.js) bu yetmiyor: iki kişi aynı anda bağlanırsa tek nesneyi
+// paylaşır, biri giriş yapınca diğeri de onun yetkilerini alırdı. Artık
+// oturumlar JETONLA ayrılıyor.
+//
+//   'yerel'  → Electron penceresinin oturumu (programda tek kişi var)
+//   <jeton>  → ağdan bağlanan her tarayıcının kendi oturumu
+//
+// Jeton, tarayıcıya HttpOnly çerezle veriliyor; sunucu her istekte
+// jetonCoz() ile kimin konuştuğunu buradan çözüyor.
+const YEREL = 'yerel';
+const OTURUM_OMRU_DK = 12 * 60;
+
+function yeniOturum() {
+  return {
+    rol: KULLANICI,
+    kullaniciId: null,
+    kullaniciAdi: null,
+    yetkiler: bosYetki(),
+    girisTarihi: null,
+    sonErisim: Date.now()
+  };
+}
+
+const oturumlar = new Map([[YEREL, yeniOturum()]]);
+
+// Masaüstü tarafındaki eski çağrıları bozmamak için 'yerel' oturum bu adla
+// duruyor; jeton verilmeyen her çağrı onu kullanıyor.
+function oturumNesnesi(jeton) {
+  const anahtar = jeton || YEREL;
+  let o = oturumlar.get(anahtar);
+  if (!o) {
+    o = yeniOturum();
+    oturumlar.set(anahtar, o);
+  }
+  o.sonErisim = Date.now();
+  return o;
+}
+
+// Uzun süre dokunulmayan ağ oturumları düşer. Yerel oturum hiç düşmez —
+// programı açık bırakan kişiyi durduk yere dışarı atmak faydasız.
+function eskiOturumlariTemizle() {
+  const sinir = Date.now() - OTURUM_OMRU_DK * 60 * 1000;
+  for (const [anahtar, o] of oturumlar) {
+    if (anahtar !== YEREL && o.sonErisim < sinir) oturumlar.delete(anahtar);
+  }
+}
+
+function jetonUret() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+// Sunucunun her istekte çağırdığı çözücü: jeton geçerliyse oturumu tazeler.
+function jetonGecerliMi(jeton) {
+  eskiOturumlariTemizle();
+  return !!(jeton && jeton !== YEREL && oturumlar.has(jeton));
+}
+
+function jetonDus(jeton) {
+  if (jeton && jeton !== YEREL) oturumlar.delete(jeton);
+}
+
+// Bir kullanıcının AÇIK OLAN BÜTÜN oturumları. Yetkisi değişen ya da silinen
+// kişi ağdan da bağlanmış olabilir; tek bir "geçerli oturum" varsayımı artık
+// doğru değil.
+function kullanicininOturumlari(kullaniciId) {
+  const sonuc = [];
+  for (const [jeton, o] of oturumlar) {
+    if (o.kullaniciId != null && Number(o.kullaniciId) === Number(kullaniciId)) {
+      sonuc.push({ jeton, o });
+    }
+  }
+  return sonuc;
+}
+
+function oturumuKapat(o) {
+  o.rol = KULLANICI;
+  o.kullaniciId = null;
+  o.kullaniciAdi = null;
+  o.yetkiler = bosYetki();
+  o.girisTarihi = null;
+}
 
 // Kullanıcı listesi önbelleği. undefined = henüz okunmadı.
 let kullaniciOnbellek;
@@ -115,52 +192,68 @@ async function kilitVarMi() {
   return liste.some((k) => k.aktif);
 }
 
-async function rolAl() {
+async function rolAl(jeton) {
   if (!(await kilitVarMi())) return YONETICI;
-  return oturum.rol;
+  return oturumNesnesi(jeton).rol;
 }
 
 // Kanal süzgecinin kullandığı hâl: rol + yetkiler bir arada.
-async function oturumAl() {
+async function oturumAl(jeton) {
+  // HİÇ KULLANICI YOKSA kilit yoktur — ama bu YALNIZ masaüstü penceresi için
+  // geçerli. Ağdan bağlanan biri için geçerli olsaydı, kullanıcı tanımlanmamış
+  // bir kurulumda ağdaki herkes yönetici olurdu. Sunucu zaten en az bir
+  // yönetici tanımlı değilse hiç açılmıyor (db/sunucu.js), bu ikinci emniyet.
   if (!(await kilitVarMi())) {
+    if (jeton && jeton !== YEREL) {
+      return { rol: KULLANICI, kullaniciId: null, kullaniciAdi: null, yetkiler: bosYetki() };
+    }
     const y = bosYetki();
     for (const k of YETKILER) y[k.anahtar] = true;
     return { rol: YONETICI, kullaniciId: null, kullaniciAdi: null, yetkiler: y };
   }
+  const o = oturumNesnesi(jeton);
   return {
-    rol: oturum.rol,
-    kullaniciId: oturum.kullaniciId,
-    kullaniciAdi: oturum.kullaniciAdi,
-    yetkiler: oturum.yetkiler
+    rol: o.rol,
+    kullaniciId: o.kullaniciId,
+    kullaniciAdi: o.kullaniciAdi,
+    yetkiler: o.yetkiler
   };
 }
 
 // Sayım kapsamı: kullanıcının sayabileceği KOD2 sınıfları. Boş dizi =
 // sınırsız. Yönetici her zaman sınırsızdır.
-async function kapsamAl() {
-  const o = await oturumAl();
+async function kapsamAl(jeton) {
+  const o = await oturumAl(jeton);
   if (o.rol === YONETICI) return [];
   return (o.yetkiler && o.yetkiler.siniflar) || [];
 }
 
-async function yetkiVarMi(anahtar) {
-  const o = await oturumAl();
+async function yetkiVarMi(anahtar, jeton) {
+  const o = await oturumAl(jeton);
   if (o.rol === YONETICI) return true;
   return !!(o.yetkiler && o.yetkiler[anahtar]);
 }
 
 async function durumAl(kim) {
+  const jeton = kim && kim.jeton;
   const kilit = await kilitVarMi();
-  const o = await oturumAl();
+  const o = await oturumAl(jeton);
+  const ham = oturumNesnesi(jeton);
   return {
     rol: o.rol,
     // Arayüz "Yönetici girişi" düğmesini buna bakarak çiziyor.
     pinVar: kilit,
+    // Giriş yapılmış mı? Zorunlu giriş ekranı buna bakıyor: kilit varken
+    // girişsiz hiçbir ekran çizilmiyor.
+    girisYapildi: !kilit || !!o.kullaniciId,
+    // Hiç kullanıcı tanımlı değilse ilk yöneticinin açılabilmesi gerekiyor;
+    // arayüz giriş ekranında bunu söylüyor.
+    kullaniciYok: !kilit,
     kullaniciId: o.kullaniciId,
     kullaniciAdi: o.kullaniciAdi,
     yetkiler: o.yetkiler,
     yetkiTanimlari: YETKILER,
-    girisTarihi: oturum.girisTarihi,
+    girisTarihi: ham.girisTarihi,
     kullanici: kim ? kim.kullanici : null
   };
 }
@@ -176,9 +269,21 @@ async function giris(girdi, kim) {
     throw e;
   }
 
+  const jeton = kim && kim.jeton;
+  const oturum = oturumNesnesi(jeton);
+
   const liste = (await kullanicilariOku()).filter((k) => k.aktif);
   if (!liste.length) {
-    // Kullanıcı hiç tanımlanmamış; zaten herkes yönetici.
+    // Kullanıcı hiç tanımlanmamış. Masaüstünde zaten herkes yönetici; ağdan
+    // bağlanan için böyle bir kapı açılmıyor.
+    if (jeton && jeton !== YEREL) {
+      const e = new Error(
+        'Bu kurulumda hiç kullanıcı tanımlı değil. Ağdan giriş yapabilmek için ' +
+        'önce programın kurulu olduğu bilgisayarda bir yönetici tanımlanmalı.'
+      );
+      e.kod = 'KULLANICI_YOK';
+      throw e;
+    }
     oturum.rol = YONETICI;
     return durumAl(kim);
   }
@@ -227,6 +332,8 @@ async function giris(girdi, kim) {
 }
 
 async function cikis(girdi, kim) {
+  const jeton = kim && kim.jeton;
+  const oturum = oturumNesnesi(jeton);
   const oncekiAd = oturum.kullaniciAdi;
   oturum.rol = KULLANICI;
   oturum.kullaniciId = null;
@@ -236,7 +343,10 @@ async function cikis(girdi, kim) {
   await panel
     .kayit('Güvenlik', 'Oturum kapatıldı', { ad: oncekiAd }, kim && kim.kullanici, kim && kim.bilgisayar)
     .catch(() => {});
-  return durumAl(kim);
+  const cevap = await durumAl(kim);
+  // Ağ oturumunun jetonu artık geçersiz; çerez kalsa da tanınmıyor.
+  jetonDus(jeton);
+  return cevap;
 }
 
 // --- Kullanıcı yönetimi (yönetici kanalları) -------------------------------
@@ -258,8 +368,8 @@ async function kullaniciListesi() {
     kayitTarihi: k.kayitTarihi,
     degisimTarihi: k.degisimTarihi,
     yetkiler: yetkiCoz(k.yetkiler),
-    // Şu an bu bilgisayarda giriş yapmış kişi mi?
-    acikOturum: oturum.kullaniciId === k.id
+    // Şu anda açık bir oturumu var mı (bu bilgisayarda ya da ağdan)?
+    acikOturum: kullanicininOturumlari(k.id).length > 0
   }));
 }
 
@@ -323,11 +433,17 @@ async function kullaniciKaydet(girdi, kim) {
   onbellekTemizle();
   // Giriş yapmış kişinin kendi yetkisi değiştiyse oturumu da tazele; yoksa
   // ekran yeni yetkiyi ancak yeniden girişte görür.
-  if (oturum.kullaniciId && Number(oturum.kullaniciId) === Number(sonucId)) {
-    oturum.rol = rol;
-    oturum.kullaniciAdi = ad;
-    oturum.yetkiler = yetkiCoz(yetkiler);
-    if (!aktif) await cikis({}, kim);
+  // Ağdan bağlı ikinci bir oturumu olabilir; hepsi tazeleniyor. Pasife
+  // alındıysa hepsi kapanıyor — yetkisi alınan kişi açık sekmesiyle çalışmaya
+  // devam etmemeli.
+  for (const { jeton, o } of kullanicininOturumlari(sonucId)) {
+    o.rol = rol;
+    o.kullaniciAdi = ad;
+    o.yetkiler = yetkiCoz(yetkiler);
+    if (!aktif) {
+      oturumuKapat(o);
+      jetonDus(jeton);
+    }
   }
 
   await panel
@@ -366,7 +482,10 @@ async function kullaniciSil(girdi, kim) {
 
   await calistir(`DELETE FROM [${p}].dbo.Kullanici WHERE Id = @id`, { id });
   onbellekTemizle();
-  if (oturum.kullaniciId === id) await cikis({}, kim);
+  for (const { jeton, o } of kullanicininOturumlari(id)) {
+    oturumuKapat(o);
+    jetonDus(jeton);
+  }
 
   await panel
     .kayit('Kullanıcılar', 'Kullanıcı silindi', { id, ad: kayit.ad }, kim && kim.kullanici, kim && kim.bilgisayar)
@@ -400,6 +519,7 @@ async function pinBelirle(girdi, kim) {
   // PIN'i belirleyen kişi yönetici kalsın, kendi kendini kilitlemesin.
   const tazelenmis = (await kullanicilariOku()).find((k) => k.rol === YONETICI);
   if (tazelenmis) {
+    const oturum = oturumNesnesi(kim && kim.jeton);
     oturum.rol = YONETICI;
     oturum.kullaniciId = tazelenmis.id;
     oturum.kullaniciAdi = tazelenmis.ad;
@@ -421,10 +541,16 @@ async function pinKaldir(girdi, kim) {
     { kullanici: (kim && kim.kullanici) || null }
   );
   onbellekTemizle();
-  oturum.rol = YONETICI;
-  oturum.kullaniciId = null;
-  oturum.kullaniciAdi = null;
-  oturum.yetkiler = bosYetki();
+  // Kilit kalktı: bütün ağ oturumları düşüyor (artık kimin ne yetkisi olduğu
+  // tanımsız), yerel oturum yöneticiye dönüyor.
+  for (const jeton of [...oturumlar.keys()]) {
+    if (jeton !== YEREL) oturumlar.delete(jeton);
+  }
+  const yerel = oturumNesnesi(YEREL);
+  yerel.rol = YONETICI;
+  yerel.kullaniciId = null;
+  yerel.kullaniciAdi = null;
+  yerel.yetkiler = bosYetki();
   await panel
     .kayit('Güvenlik', 'Kullanıcı kilidi kaldırıldı', null, kim && kim.kullanici, kim && kim.bilgisayar)
     .catch(() => {});
@@ -446,6 +572,11 @@ module.exports = {
   KULLANICI,
   SAYIMCI,
   YETKILER,
+  YEREL,
+  jetonUret,
+  jetonGecerliMi,
+  jetonDus,
+  kilitVarMi,
   rolAl,
   oturumAl,
   kapsamAl,

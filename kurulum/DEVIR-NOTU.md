@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 08.09.2026 · Sürüm 1.8.0
+Son güncelleme: 09.09.2026 · Sürüm 1.9.1
 
 ---
 
@@ -77,6 +77,8 @@ rapor programı (galya)/
     sayim.js         Ara ve tam sayım, kapsam süzgeci, onay akışı
     oturum.js        Kullanıcılar, PIN'le giriş, roller ve yetkiler
     zayi.js          Zayi / personel çıkışı taslağı (panel veritabanında)
+    aktarim.js       Şefim günlük satış aktarımı (okuma + mutabakat + yazma çağrısı)
+    sunucu.js        Ağdan erişim için HTTP sunucusu
     maliyet.js       Maliyet hesabı (son alış fiyatı + reçete)
     fatura.js        Alış faturası taslağı (panel veritabanında)
     uretim.js        Üretim: manuel (fireli) ve sıfıra kadar
@@ -97,8 +99,12 @@ rapor programı (galya)/
     test-yazma.js           150 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
     test-kolon-denetimi.js  panelin doldurduğu kolonları Vega'nınkiyle karşılaştırır
     canli-belge-sinamasi.js lisanslı bir Vega veritabanına örnek belge yazar (--geri-al ile siler)
-    test-yetki.js            41 kullanıcı / kapsam / onay sınaması
+    test-yetki.js            42 kullanıcı / kapsam / onay sınaması
     test-arayuz.js           35 arayüz duman sınaması, 28 ekran (Electron ile)
+    test-aktarim.js          Şefim aktarımı mutabakatı (yalnız okur)
+    test-aktarim-kolon-denetimi.js  aktarım kolonları (yalnız okur)
+    test-aktarim-yazma.js    uçtan uca aktarım + geri alma (GALYA_TEST)
+    test-ag.js               ağ sunucusu ve oturum ayrımı
     izleyici-kur.sql / izleyici-kapat.sql / izleyici-oku.js   (eski, elle sürüm)
 ```
 
@@ -1322,7 +1328,13 @@ tablo tutuyor ve firmalar şöyle:
 
 ## 11b. Uzaktan erişim (mobil / web) — 18.08.2026 kararı
 
-**Karar: yapılmadı, masaüstü programıyla devam.** Müşteri kullanmaya
+> **09.09.2026: bu karar değişti, ağdan erişim YAPILDI.** Aşağısı o günkü
+> araştırma; hâlâ geçerli olan kısmı "yorucu olan kod değil, şunlar"
+> bölümüdür. Ne yapıldığı **§14**'te. Kısaca: tam web paneli değil, aynı
+> arayüz aynı kanallar üzerinden HTTP'ye açıldı; tünel/TLS yapılmadı, yalnız
+> yerel ağ.
+
+**Karar (18.08.2026): yapılmadı, masaüstü programıyla devam.** Müşteri kullanmaya
 başlasın, uzaktan neye ihtiyaç duyduğu ortaya çıkınca yeniden bakılır.
 Aşağısı o gün baştan araştırılmasın diye.
 
@@ -1379,23 +1391,134 @@ sayım ekranı 2-3 gün, okuma ekranları 1 gün, tünel+TLS yarım gün, test
 
 ## 12. Şefim tarafı (bilinmesi gereken)
 
-Gerçek veriyle ölçüldü (14.08.2026, `F0102` / `D0002`):
+### DÜZELTME (09.09.2026): aktarım kopuk DEĞİL
 
-| | |
-|---|---|
-| Aktarılan satış | 121.533 |
-| **Aktarılmayan satış** | **20.451** |
-| En eski bekleyen | 12.06.2026 |
-| Ürün eşleşmesi | 326'da 321 otomatik eşleşti, 5 eşleşmedi |
+Bu bölümde uzun süre şu yazdı: *"12.06.2026'dan beri biriken 20.451 satış
+Vega'ya hiç geçmemiş."* **Yanlıştı.** Ölçüm `Bill.Aktarildi` alanına
+bakıyordu; o alan `bit` tipinde ve **141.984 satırın hepsinde 1**. Farklı
+olan `AktarimDurumu` kolonuydu: 12.06.2026'da bir Şefim sürümüyle gelmiş,
+0 varsayılanıyla duruyor ve entegrasyon programı onu hiç doldurmuyor.
 
-Yani sorun **isim eşleşmesi değil, aktarımın kendisi**: 12.06.2026'dan beri
-biriken 20.451 satış Vega'ya hiç geçmemiş. Teorik stok bu yüzden gerçeğin
-gerisinde. Panel bunu gizlemiyor, ekranda gösteriyor.
+Vega tarafı doğruluyor: `F0102/D0002` içinde **184 gün için** ŞEFSATIŞ stok
+çıkış belgesi var. Dönem içinde eksik olan yalnız 4 gün:
+`20.01`, `22.04`, `02.06`, `29.07`.
+
+`db/sefim.js` → `aktarimDurumu()` hâlâ `Aktarildi`'ye bakıyor ve bu yüzden
+her zaman "0 bekleyen" diyor — yanlış rakam göstermiyor ama gerçek eksiği de
+göstermiyor. Doğru ölçüt Şefim satış günü ↔ Vega belgesi karşılaştırmasıdır;
+`db/aktarim.js` → `gunler()` bunu yapıyor. Ana ekrandaki kutu bir gün
+`aktarim:gunler`e taşınmalı.
+
+### Ürün eşleşmesi
+
+326 üründe 321'i otomatik eşleşiyor. Sorun isim eşleşmesi değil; birkaç ürün
+firma tarafından bilerek BAŞKA bir karta bağlanmış (birkaç bira
+`BAŞLANGIÇ İKRAM`a, `Karpuz Tabağı` `FİX 7 YAŞ ALTI`na). Panel bu eşleşmeyi
+Vega'nın geçmiş belgelerinden öğreniyor — bkz. `BELGE-DESENI.md` → "Ürün →
+stok kartı eşleşmesi".
 
 > Daha önceki devir notunda "eşleşme 324'te 1" yazıyordu. O ölçüm, VEGADB
-> geçici olarak ÖZDEMİRKAYA verisi tutarken alınmıştı — Şefim ürünleri
-> başka bir müşterinin stok kartlarıyla karşılaştırılıyordu. Gerçek Galya
-> verisinde eşleşme sorunu yok.
+> geçici olarak ÖZDEMİRKAYA verisi tutarken alınmıştı.
 
-Stok sayılarına dayanan bir özellik eklemeden önce aktarım açığı akılda
-tutulmalı.
+---
+
+## 13. Şefim günlük aktarımı — panele taşındı (09.09.2026)
+
+Müşteri her sabah Vega'nın kendi **"Şefim Entegrasyon"** programını
+çalıştırıp dünkü satışı Vega'ya aktarıyor, hemen ardından eksiye düşen
+mamulleri üretiyordu. İkisi de panele girdi.
+
+**Kullanıcı kararı:** panel aktarımı KENDİSİ yapacak (Vega'nın programını
+açmak değil). Belge deseninin tamamı `kurulum/BELGE-DESENI.md` → "Şefim
+günlük satış aktarımı" bölümünde; yazma koduna dokunmadan önce orası
+okunmalı.
+
+### Dosyalar
+
+```
+db/aktarim.js                          okuma, mutabakat, önizleme, aktar, geri al
+db/yazma.js  -> sefimAktarimYaz()      belgeleri yazan kısım
+ui/app.js    -> ekranlar.gunlukAktarim ekran
+GALYA_PANEL.dbo.SefimAktarim           hangi gün kim aktardı, hangi belgeler
+```
+
+### Doğrulama durumu
+
+| Ne | Nasıl | Sonuç |
+|---|---|---|
+| Mutabakat | `test-aktarim.js` — Vega'nın 11.08 belgesiyle karşılaştırma | **kuruşu kuruşuna** (142.910,21 = 142.910,21), 104 satırın 103'ü birebir |
+| Kolon doluluğu | `test-aktarim-kolon-denetimi.js` | 268 zorunlu kolon, **0 eksik** |
+| Uçtan uca yazma | `test-aktarim-yazma.js` — GALYA_TEST'e gerçek aktarım + geri alma | **30/30**, 7 belge, geri almada 0 kalıntı |
+
+**Canlı VEGADB'ye henüz tek aktarım yazılmadı.** İlk gerçek kullanımda:
+
+- Önce **eski ve küçük bir gün** seçin (eksik günlerden `20.01` gibi).
+- Yazdıktan sonra Vega'nın **Stok Çıkış Fişi** ve **Cari Ekstre** ekranlarını
+  açıp belgenin göründüğünü kontrol edin.
+- Sonra **geri alın** ve stoğun döndüğünü doğrulayın.
+- Aktarım 33/13/11 belge tiplerini kullanıyor; üretim 96/97 sayacına
+  dokunmuyor, yani yoğun saat kısıtı yok.
+
+### Bilinmesi gerekenler
+
+1. **`sefim` veritabanında UPDATE yetkisi gerekiyor.** Panel yazdığı satırları
+   `Bill.Aktarildi = 1` diye işaretliyor. Yetki yoksa işaretleme atlanıyor ve
+   ekranda uyarı çıkıyor — o gün Vega'nın kendi programı çalıştırılırsa satış
+   stoktan **iki kez** düşer. `kurulum/sql-yazma-yetkisi-ver.sql` içinde.
+2. **Aynı gün iki kez aktarılamıyor**; üç kapı var (panel kaydı, Vega
+   tarafındaki belge, rezervasyon kilidi). Ayrıntı BELGE-DESENI'nde.
+3. **Dönem dışı günler aktarılamıyor.** Şefim'in satış geçmişi (341 gün) Vega
+   dönemininkinden (184 gün) uzun; eski günler `kapsamDisi` diye işaretlenip
+   düğmesiz gösteriliyor.
+4. **Mutabakat tutmuyorsa aktarım engelleniyor.** Eşleşmeyen ya da "yoksay"
+   işaretli ürün belgeye girmiyor; fark kuruş mertebesini aşarsa yazma
+   reddediliyor.
+
+---
+
+## 14. Zorunlu giriş ve ağdan erişim (09.09.2026)
+
+### Zorunlu giriş
+
+Program açılırken **tam ekran PIN ekranı** geliyor. Öncesinde hiçbir ekran
+çizilmiyor ve hiçbir veri okunmuyor (eskiden ana ekran açılıyor, giriş yalnız
+işlem yaparken isteniyordu).
+
+Hiç kullanıcı tanımlı değilse giriş ekranı yine çıkıyor ama "kullanıcı
+tanımlamadan devam et" geçişi veriyor — aksi hâlde yeni kurulum hiç
+açılamazdı. **Ağdan bağlanan için bu geçiş yok.**
+
+### Ağdan erişim
+
+```
+Ayarlar -> Ağdan erişim -> "Ağ erişimini aç"
+http://192.168.1.50:51234
+```
+
+`db/sunucu.js`, Node'un kendi `http` modülüyle; dış bağımlılık yok. Aynı
+arayüz, aynı kanallar, aynı yetki süzgeci.
+
+**En pahalı kısım oturum ayrımıydı.** `db/oturum.js` oturumu modül seviyesinde
+TEK bir nesnede tutuyordu; ağda iki kişi bağlanınca ikisi aynı oturumu
+paylaşır, biri giriş yapınca diğeri de onun yetkilerini alırdı. Oturumlar
+artık **jetonla** ayrılıyor (`yerel` = Electron penceresi, jeton = her
+tarayıcı). `kurulum/test-ag.js` bunu sınıyor.
+
+`main.js` içindeki `kayitEt` bir `KANALLAR` haritasına ayrıldı;
+`calistirKanal(kanal, girdi, jeton)` hem IPC hem HTTP tarafından çağrılıyor.
+Yetki denetimi tek yerde kaldı.
+
+**Güvenlik sınırı — okunmadan açılmamalı:**
+
+1. Trafik **şifresiz** (düz HTTP). PIN ağ üzerinden açık geçer. Yalnız
+   güvenilen yerel ağda açın; **internete port yönlendirmesi yapmayın.**
+2. Aktif bir **yönetici kullanıcı yoksa sunucu hiç açılmıyor**. Panel,
+   kullanıcı tanımlı olmayan kurulumda herkesi yönetici sayıyor; ağ için bu
+   felaket olurdu.
+3. Makineye bağlı kanallar ağdan reddediliyor: yazdırma, klasör açma, Vega
+   programını başlatma, güncelleme, onay kutusu. Tarayıcı onay kutusunu
+   sayfa içinde çiziyor.
+4. Oturum çerezi `HttpOnly` + `SameSite=Strict`. 12 saat dokunulmayan ağ
+   oturumu düşüyor.
+
+`ayarlar.json`: `agErisimiAktif`, `agPort` (51234), `agAdresi` (`0.0.0.0`).

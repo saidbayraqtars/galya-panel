@@ -558,3 +558,130 @@ input.miktar {
 .yetki-secim input {
   margin-top: 2px;
 }
+
+/* ---------- Zorunlu giriş ekranı ----------
+   Program açılırken tam ekran. Üst çubuktaki firma/depo seçicileri ve
+   düğmeler giriş yapılmadan işe yaramaz; giriş modunda gizleniyor. */
+
+body.giris-modu #ustBar .ust-sol select,
+body.giris-modu #ustBar .ust-sag button,
+body.giris-modu #uyariSeridi {
+  display: none;
+}
+
+.giris-perde {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 120px);
+  padding: 24px 16px;
+}
+
+.giris-kutu {
+  width: 100%;
+  max-width: 420px;
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 10px;
+  padding: 36px 32px 32px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.10);
+  text-align: center;
+}
+
+.giris-logo {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #1c7ed6;
+  margin-bottom: 10px;
+}
+
+.giris-not {
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
+  margin-bottom: 18px;
+}
+
+/* PIN kutusu iri: depoda tabletle giren kişi için. */
+#girisPin {
+  width: 100%;
+  font-size: 30px;
+  text-align: center;
+  letter-spacing: 10px;
+  padding: 14px 10px;
+  border: 2px solid #ced4da;
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+
+#girisPin:focus {
+  outline: none;
+  border-color: #1c7ed6;
+}
+
+.giris-dugme {
+  width: 100%;
+  font-size: 17px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.giris-kutu .aciklama-kutu {
+  text-align: left;
+  margin-bottom: 14px;
+}
+
+/* ---------- Şefim günlük aktarımı ---------- */
+
+.aktarim-gun {
+  display: grid;
+  grid-template-columns: 120px 1fr 150px 150px 120px;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: #fff;
+}
+
+.aktarim-gun.eksik {
+  border-left: 4px solid #e03131;
+  background: #fff5f5;
+}
+
+.aktarim-gun.aktarildi {
+  border-left: 4px solid #2f9e44;
+}
+
+.aktarim-gun .gun {
+  font-weight: 600;
+}
+
+.aktarim-ozet {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.aktarim-ozet .kart {
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.aktarim-ozet .kart .etiket {
+  display: block;
+  font-size: 12px;
+  color: #666;
+}
+
+.aktarim-ozet .kart .deger {
+  display: block;
+  font-size: 19px;
+  font-weight: 600;
+  margin-top: 2px;
+}

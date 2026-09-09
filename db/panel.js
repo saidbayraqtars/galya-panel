@@ -261,6 +261,48 @@ async function kur() {
     -- buradan giriliyor. Vega karşılığı stok çıkış fişi (belge tipi 33) ve
     -- seçilen carinin (ZAYİ, FİRE ya da personel kartı) borç hareketi.
     -- Fatura gibi önce panelde taslak durur, ayrı onayla Vega'ya yazılır.
+    -- Şefim günlük satış aktarımı. Bir satır = bir iş gününün Vega'ya
+    -- aktarımı. Yazılan belgelerin IND'leri Belgeler alanında JSON olarak
+    -- duruyor; geri alma bunlara bakıyor. Tarih iş günüdür (04:00 kesimi),
+    -- takvim günü değil.
+    IF OBJECT_ID('dbo.SefimAktarim') IS NULL
+    CREATE TABLE dbo.SefimAktarim (
+      Id          INT IDENTITY(1,1) PRIMARY KEY,
+      Firma       NVARCHAR(10)  NOT NULL,
+      Donem       NVARCHAR(10)  NOT NULL,
+      Depo        INT           NOT NULL,
+      IsGunu      DATE          NOT NULL,
+      Tarih       DATETIME      NOT NULL DEFAULT GETDATE(),
+      SatisTutari DECIMAL(18,4) NOT NULL DEFAULT 0,
+      SatirSayisi INT           NOT NULL DEFAULT 0,
+      KasaGiris   DECIMAL(18,4) NOT NULL DEFAULT 0,
+      KasaCikis   DECIMAL(18,4) NOT NULL DEFAULT 0,
+      BillIdler   NVARCHAR(MAX) NULL,
+      Belgeler    NVARCHAR(MAX) NULL,
+      Kullanici   NVARCHAR(100) NULL,
+      Bilgisayar  NVARCHAR(100) NULL,
+      -- 'yaziliyor' → satır aktarım BAŞLAMADAN önce yer tutucu olarak
+      -- açılıyor; benzersizlik kısıtı ikinci kişiyi burada durduruyor.
+      -- 'tamam'     → belgeler yazıldı.
+      -- Yarım kalan (program çakıldı, ağ koptu) satır 'yaziliyor'da kalır ve
+      -- eskidiğinde temizlenebilir.
+      Durum       NVARCHAR(20)  NOT NULL DEFAULT 'tamam',
+      GeriAlindi  BIT           NOT NULL DEFAULT 0
+    );
+
+    -- Eski kurulumlarda tablo bu kolonlar olmadan açılmıştı.
+    IF COL_LENGTH('dbo.SefimAktarim', 'Durum') IS NULL
+      ALTER TABLE dbo.SefimAktarim ADD Durum NVARCHAR(20) NOT NULL DEFAULT 'tamam';
+    IF COL_LENGTH('dbo.SefimAktarim', 'Bilgisayar') IS NULL
+      ALTER TABLE dbo.SefimAktarim ADD Bilgisayar NVARCHAR(100) NULL;
+
+    -- Aynı iş günü iki kez aktarılmasın. Geri alınan kayıt için engel
+    -- olmamalı, o yüzden süzgeçli (filtered) benzersizlik.
+    IF OBJECT_ID('dbo.SefimAktarim') IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_SefimAktarim_Gun')
+      CREATE UNIQUE INDEX UQ_SefimAktarim_Gun
+        ON dbo.SefimAktarim (Firma, Donem, IsGunu) WHERE GeriAlindi = 0;
+
     IF OBJECT_ID('dbo.Zayi') IS NULL
     CREATE TABLE dbo.Zayi (
       Id            INT IDENTITY(1,1) PRIMARY KEY,

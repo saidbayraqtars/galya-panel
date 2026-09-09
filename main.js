@@ -23,6 +23,8 @@ const uretim = require('./db/uretim');
 const yedek = require('./db/yedek');
 const oturum = require('./db/oturum');
 const zayi = require('./db/zayi');
+const aktarim = require('./db/aktarim');
+const sunucu = require('./db/sunucu');
 const {
   YONETICI_KANALLARI,
   ACIK_KANALLAR,
@@ -67,12 +69,37 @@ function pencereAc() {
 app.whenReady().then(() => {
   pencereAc();
   guncelleme.baslat(pencere);
+  agErisiminiAc();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) pencereAc();
   });
 });
 
+// Ağ erişimi ayarda açıksa program açılırken başlatılıyor. Başlatılamazsa
+// (port dolu, yönetici tanımsız) program yine de açılıyor; sebep günlüğe ve
+// terminale yazılıyor, Ayarlar ekranında da görünüyor.
+async function agErisimiBaslatmaHatasi() {
+  return agHatasi;
+}
+let agHatasi = null;
+
+function agErisimiAc() {
+  if (!ayarlar.ayarOku().agErisimiAktif) return;
+  sunucu
+    .baslat(calistirKanal)
+    .then((bilgi) => {
+      agHatasi = null;
+      console.log('[ağ] panel şu adreslerden açılabilir: ' + bilgi.adresler.join(' , '));
+    })
+    .catch((e) => {
+      agHatasi = e.message || String(e);
+      console.log('[ağ] sunucu açılamadı: ' + agHatasi);
+      panel.kayit('Ağ Erişimi', 'Ağ sunucusu açılamadı', { hata: agHatasi }).catch(() => {});
+    });
+}
+
 app.on('window-all-closed', async () => {
+  await sunucu.durdur().catch(() => {});
   await sql.havuzKapat();
   if (process.platform !== 'darwin') app.quit();
 });
@@ -137,12 +164,16 @@ const YAZAN_KANALLAR = new Set([
   'recete:satirEkle',
   'recete:satirGuncelle',
   'recete:satirSil',
-  'stok:pasifYap'
+  'stok:pasifYap',
+  'aktarim:aktar',
+  'aktarim:geriAl'
 ]);
 
 // Kanal adlarının kullanıcıya gösterilecek karşılığı. Geri dönüş noktaları
 // listesinde "uretim:fireli" değil "Fireli üretim" yazsın diye.
 const KANAL_ADLARI = {
+  'aktarim:aktar': 'Şefim günlük aktarımı',
+  'aktarim:geriAl': 'Şefim aktarımını geri alma',
   'sayim:onayla': 'Sayım onayı',
   'sayim:vegayaYaz': "Sayımı Vega'ya yazma",
   'sayim:vegadanGeriAl': 'Sayımı geri alma',
@@ -196,59 +227,91 @@ async function islemOncesiYedekAl(kanal, kimlik) {
   }
 }
 
+// KANAL KAYIT DEFTERİ
+//
+// Kanallar iki yerden çağrılıyor: Electron penceresi (IPC) ve ağdan bağlanan
+// tarayıcı (db/sunucu.js → HTTP). İkisi de AYNI işleyiciyi ve AYNI yetki
+// süzgecini kullanıyor; yetki denetimi tek yerde duruyor.
+//
+// Ağ tarafı için tek fark, oturumun JETONLA çözülmesi: masaüstünde tek kişi
+// var, ağda her tarayıcının kendi oturumu var (bkz. db/oturum.js).
+const KANALLAR = new Map();
+
 function kayitEt(kanal, isFn) {
-  ipcMain.handle(kanal, async (olay, girdi) => {
+  KANALLAR.set(kanal, isFn);
+  ipcMain.handle(kanal, async (olay, girdi) => calistirKanal(kanal, girdi, null));
+}
+
+// jeton: masaüstü için null ('yerel' oturum), ağdan gelen istek için çerezdeki
+// oturum jetonu.
+async function calistirKanal(kanal, girdi, jeton) {
+  const isFn = KANALLAR.get(kanal);
+  if (!isFn) {
+    return { tamam: false, mesaj: 'Bilinmeyen kanal: ' + kanal, kod: 'KANAL_YOK' };
+  }
+  try {
+    let o;
     try {
-      let o;
-      try {
-        o = await oturum.oturumAl();
-      } catch (e) {
-        // Panel veritabanı okunamadı: kullanıcı tanımlı mı bilinemez.
-        // Program kendini kilitlemesin.
-        o = { rol: oturum.YONETICI, kullaniciAdi: null, yetkiler: {} };
-      }
-
-      const yoneticiMi = o.rol === oturum.YONETICI;
-      if (!yoneticiMi && YONETICI_KANALLARI.has(kanal)) {
-        return yetkisizCevap();
-      }
-      const gereken = KANAL_YETKILERI[kanal];
-      if (!yoneticiMi && gereken && !kullaniciYetkiliMi(o.yetkiler, gereken)) {
-        return yetkisizCevap(gereken);
-      }
-      if (!yoneticiMi && !gereken && !ACIK_KANALLAR.has(kanal)) {
-        return yetkisizCevap();
-      }
-
-      // İşlem günlüğüne Windows kullanıcısı değil, giriş yapmış kişi düşsün.
-      const kimlik = o.kullaniciAdi
-        ? Object.assign({}, kim, { kullanici: o.kullaniciAdi, windows: kim.kullanici })
-        : kim;
-
-      // YETKİ DENETİMİNDEN SONRA, işten ÖNCE. Yetkisiz bir istek yüzünden
-      // boşuna yedek alınmıyor; yetkili istek ise yedeksiz çalışmıyor.
-      let yedekBilgisi = null;
-      if (YAZAN_KANALLAR.has(kanal)) {
-        yedekBilgisi = await islemOncesiYedekAl(kanal, kimlik);
-      }
-
-      const veri = await isFn(girdi || {}, kimlik, o);
-      // Arayüz "geri dönebilirsiniz" diyebilsin diye yedek bilgisi yanıtta.
-      if (yedekBilgisi && veri && typeof veri === 'object' && !Array.isArray(veri)) {
-        veri.islemOncesiYedek = {
-          dosya: yedekBilgisi.dosya,
-          temelDosya: yedekBilgisi.temelDosya
+      o = await oturum.oturumAl(jeton);
+    } catch (e) {
+      // Panel veritabanı okunamadı: kullanıcı tanımlı mı bilinemez.
+      // Masaüstünde program kendini kilitlemesin diye yönetici varsayılıyor.
+      // AĞDAN gelen istekte bu varsayım yapılamaz — veritabanı okunamıyorsa
+      // ağdaki herkes yönetici olurdu.
+      if (jeton) {
+        return {
+          tamam: false,
+          kod: 'OTURUM_OKUNAMADI',
+          mesaj: 'Kullanıcı bilgisi okunamadı, istek reddedildi: ' + (e.message || e)
         };
       }
-      return { tamam: true, veri };
-    } catch (e) {
-      return {
-        tamam: false,
-        mesaj: anlasilirHata(e),
-        kod: e && e.kod ? e.kod : null
+      o = { rol: oturum.YONETICI, kullaniciAdi: null, yetkiler: {} };
+    }
+
+    const yoneticiMi = o.rol === oturum.YONETICI;
+    if (!yoneticiMi && YONETICI_KANALLARI.has(kanal)) {
+      return yetkisizCevap();
+    }
+    const gereken = KANAL_YETKILERI[kanal];
+    if (!yoneticiMi && gereken && !kullaniciYetkiliMi(o.yetkiler, gereken)) {
+      return yetkisizCevap(gereken);
+    }
+    if (!yoneticiMi && !gereken && !ACIK_KANALLAR.has(kanal)) {
+      return yetkisizCevap();
+    }
+
+    // İşlem günlüğüne Windows kullanıcısı değil, giriş yapmış kişi düşsün.
+    // Ağdan gelen istekte "windows" alanı sunucunun makinesidir; kim
+    // olduğunu söyleyen tek şey panel kullanıcı adıdır.
+    const kimlik = Object.assign({}, kim, { jeton: jeton || null });
+    if (o.kullaniciAdi) {
+      kimlik.kullanici = o.kullaniciAdi;
+      kimlik.windows = kim.kullanici;
+    }
+
+    // YETKİ DENETİMİNDEN SONRA, işten ÖNCE. Yetkisiz bir istek yüzünden
+    // boşuna yedek alınmıyor; yetkili istek ise yedeksiz çalışmıyor.
+    let yedekBilgisi = null;
+    if (YAZAN_KANALLAR.has(kanal)) {
+      yedekBilgisi = await islemOncesiYedekAl(kanal, kimlik);
+    }
+
+    const veri = await isFn(girdi || {}, kimlik, o);
+    // Arayüz "geri dönebilirsiniz" diyebilsin diye yedek bilgisi yanıtta.
+    if (yedekBilgisi && veri && typeof veri === 'object' && !Array.isArray(veri)) {
+      veri.islemOncesiYedek = {
+        dosya: yedekBilgisi.dosya,
+        temelDosya: yedekBilgisi.temelDosya
       };
     }
-  });
+    return { tamam: true, veri };
+  } catch (e) {
+    return {
+      tamam: false,
+      mesaj: anlasilirHata(e),
+      kod: e && e.kod ? e.kod : null
+    };
+  }
 }
 
 function yetkisizCevap(gereken) {
@@ -601,6 +664,40 @@ kayitEt('satis:eslestirmeKaydet', async (g, k) =>
 );
 kayitEt('satis:oneri', async (g) => sefim.eslesmeOnerisi(g));
 
+// Şefim günlük satış aktarımı — Vega'nın "Şefim Entegrasyon" programının
+// panel içindeki karşılığı. Deseni db/aktarim.js başında anlatılıyor.
+kayitEt('aktarim:gunler', async (g) => aktarim.gunler(g));
+kayitEt('aktarim:onizleme', async (g) => aktarim.onizleme(g));
+kayitEt('aktarim:aktar', async (g, k) => aktarim.aktar(g, k));
+kayitEt('aktarim:gecmis', async (g) => aktarim.gecmis(g));
+kayitEt('aktarim:geriAl', async (g, k) => aktarim.geriAl(g, k));
+// Yarıda kalmış aktarım kaydını temizler. Kilidi kaldırdığı için yönetici işi;
+// bkz. db/aktarim.js → kilitTemizle.
+kayitEt('aktarim:kilitTemizle', async (g, k) => aktarim.kilitTemizle(g, k));
+// Aktarımdan sonra "şimdi neyi üretmeliyiz" listesi. Üretim ekranındaki
+// sıfıra çekme adaylarının aynısı; aktarım ekranından da görünsün diye ayrı
+// bir kanal değil, aynı iş çağrılıyor.
+kayitEt('aktarim:uretilecekler', async (g) => uretim.sifirAdaylari(g));
+
+// Ağ erişimi. Sunucunun kendisi kanal yönlendiricisini kullanıyor; kanal
+// listesi ve yetki süzgeci tek yerde kalsın diye dışarıdan veriliyor.
+kayitEt('ag:durum', async () =>
+  Object.assign(sunucu.durum(), { baslatmaHatasi: await agErisimiBaslatmaHatasi() })
+);
+kayitEt('ag:baslat', async (g, k) => {
+  const bilgi = await sunucu.baslat(calistirKanal);
+  // "Bir dahaki açılışta da açık olsun" tercihi ayarda tutuluyor.
+  if (g.kalici) ayarlar.ayarYaz({ agErisimiAktif: true });
+  await panel.kayit('Ağ Erişimi', 'Ağ sunucusu elle açıldı', bilgi, k.kullanici, k.bilgisayar);
+  return Object.assign({ tamam: true }, bilgi);
+});
+kayitEt('ag:durdur', async (g, k) => {
+  const sonuc = await sunucu.durdur();
+  if (g.kalici) ayarlar.ayarYaz({ agErisimiAktif: false });
+  await panel.kayit('Ağ Erişimi', 'Ağ sunucusu elle kapatıldı', null, k.kullanici, k.bilgisayar);
+  return sonuc;
+});
+
 // Ara sayım
 kayitEt('sayim:liste', async (g) => sayim.listeGetir(g));
 // Sayım süzgeçlerinin seçenekleri (firmanın kendi TBLSTOKKODTAN tanımları).
@@ -633,7 +730,7 @@ kayitEt('sayim:ekran', async (g, k, o) => {
     throw e;
   }
 
-  const siniflar = await oturum.kapsamAl();
+  const siniflar = await oturum.kapsamAl(k && k.jeton);
   // Sınıflandırma süzgeçleri (kod1…kod10) arayüzden gelir ve yalnızca
   // listeyi DARALTIR. Kapsam (siniflar) oturumdan gelir ve süzgeç onu
   // genişletemez — ikisi AND'lenerek uygulanıyor.
@@ -669,7 +766,7 @@ kayitEt('sayim:kaydet', async (g, k, o) => {
     throw e;
   }
 
-  const siniflar = await oturum.kapsamAl();
+  const siniflar = await oturum.kapsamAl(k && k.jeton);
   const sonuc = await sayim.sayimKaydet(
     Object.assign({}, g, { tur, siniflar, sayan: g.sayan || k.kullanici })
   );

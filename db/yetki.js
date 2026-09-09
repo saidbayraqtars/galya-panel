@@ -19,6 +19,7 @@ const YETKILER = [
   { anahtar: 'alisFaturaOnay', ad: "Alış faturasını onaylama ve Vega'ya işleme" },
   { anahtar: 'maliyet', ad: 'Maliyetlendirme' },
   { anahtar: 'aktarim', ad: 'Şefim satış aktarımı ve eşleştirme' },
+  { anahtar: 'aktarimOnay', ad: "Şefim günlük aktarımını Vega'ya işleme" },
   { anahtar: 'yedek', ad: 'Yedekleme merkezi ve yedek alma' },
   { anahtar: 'yedekGeriYukle', ad: 'Yedekten geri yükleme (kritik)' },
   { anahtar: 'ayarlar', ad: 'Program ayarlarını değiştirme' }
@@ -27,6 +28,15 @@ const YETKILER = [
 // Kullanıcı rolüne hiçbir koşulda devredilmeyen işler. Kullanıcı yönetimini
 // devretmek kişinin kendisini yönetici yapabilmesine yol açar.
 const YONETICI_KANALLARI = new Set([
+  // Ağ erişimini açmak, paneli bütün yerel ağa açar. Yetki anahtarına
+  // bağlanmadı: bir kullanıcıya "ağ" yetkisi vermek, dolaylı olarak kendi
+  // yetkisinin çok ötesinde bir kapı açması demek.
+  // Aktarım kilidini kaldırmak, aynı günün iki kez aktarılmasına yol
+  // açabilecek tek iş; kullanıcı rolüne devredilmiyor.
+  'aktarim:kilitTemizle',
+  'ag:baslat',
+  'ag:durdur',
+  'ag:durum',
   'kullanici:liste',
   'kullanici:kaydet',
   'kullanici:sil',
@@ -158,6 +168,16 @@ const KANAL_YETKILERI = {
   'satis:eslestirmeDurumu': 'aktarim',
   'satis:eslestirmeKaydet': 'aktarim',
   'satis:oneri': 'aktarim',
+
+  // Günlük aktarım. Görme/önizleme ile Vega'ya YAZMA ayrı yetkiler — sayım
+  // (sayimOnay) ve alış faturasında (alisFaturaOnay) olduğu gibi. Aktarım
+  // stok ve cari hareketi oluşturuyor, muhasebe zincirine dokunuyor.
+  'aktarim:gunler': ['aktarim', 'aktarimOnay'],
+  'aktarim:onizleme': ['aktarim', 'aktarimOnay'],
+  'aktarim:gecmis': ['aktarim', 'aktarimOnay'],
+  'aktarim:uretilecekler': ['aktarim', 'uretim'],
+  'aktarim:aktar': 'aktarimOnay',
+  'aktarim:geriAl': 'aktarimOnay',
 
   'yedek:durum': 'yedek',
   'yedek:liste': 'yedek',

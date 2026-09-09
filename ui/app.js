@@ -3,6 +3,76 @@
 /* Galya Panel arayüzü.
    Kural: bir ekran = bir iş. Kullanıcı filtre kurmaz, hazır cevap görür. */
 
+// TARAYICI KÖPRÜSÜ
+//
+// Masaüstünde `window.galya` preload.js'ten geliyor (Electron IPC). Panel
+// ağdan tarayıcıyla açıldığında preload yok; aynı kanallar HTTP üzerinden
+// çağrılıyor. Arayüzün geri kalanı ikisini ayırt etmiyor.
+//
+// Oturum jetonu HttpOnly çerezde; buradaki kod ona erişemiyor (erişememesi
+// gerekiyor). `credentials: 'same-origin'` çerezin isteğe eklenmesini
+// sağlıyor.
+if (!window.galya) {
+  window.galya = {
+    agdan: true,
+    cagir: async (kanal, girdi) => {
+      // Onay kutusu Electron'da işletim sistemi penceresi açıyor; ağdan
+      // çağrılsaydı SUNUCUNUN ekranında açılır, isteyen kişi göremezdi.
+      // Tarayıcıda sayfa içi onay kutusuna düşüyor.
+      if (kanal === 'sistem:onay') {
+        const onay = await sayfaIciOnay(girdi || {});
+        return { tamam: true, veri: { onay } };
+      }
+      try {
+        const cevap = await fetch('/api/' + encodeURIComponent(kanal), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(girdi || {})
+        });
+        return await cevap.json();
+      } catch (e) {
+        return {
+          tamam: false,
+          kod: 'AG_HATASI',
+          mesaj: 'Sunucuya ulaşılamadı. Panelin kurulu olduğu bilgisayar açık mı?'
+        };
+      }
+    },
+    // Ağdan bağlanan tarayıcıya ana süreç bildirimi gitmiyor.
+    dinle: () => {}
+  };
+}
+
+// Sayfa içi onay kutusu (yalnız ağdan açıldığında kullanılıyor). Katman
+// yardımcıları aşağıda tanımlı; çağrıldığı an hazır oluyorlar.
+function sayfaIciOnay(secim) {
+  return new Promise((coz) => {
+    const kapatVe = (deger) => {
+      katmanKapat();
+      coz(deger);
+    };
+    const govde = el('div', null, [
+      el('div', { sinif: 'aciklama-kutu' + (secim.tehlikeli ? ' kritik' : '') },
+        [secim.mesaj || '']),
+      secim.detay ? el('div', { sinif: 'aciklama-kutu', metin: secim.detay }) : null,
+      el('div', { sinif: 'form-satir', style: 'margin-top:14px' }, [
+        el('button', {
+          sinif: 'dugme-ana',
+          metin: secim.evet || 'Evet',
+          tikla: () => kapatVe(true)
+        }),
+        el('button', {
+          sinif: 'dugme-sade',
+          metin: secim.hayir || 'Vazgeç',
+          tikla: () => kapatVe(false)
+        })
+      ])
+    ]);
+    katmanAc(secim.baslik || 'Onay', govde);
+  });
+}
+
 const durum = {
   firma: null,
   donem: null,
@@ -456,6 +526,7 @@ function yetkilerdenBiri() {
 
 const EKRAN_YETKILERI = {
   stok: 'stok',
+  gunlukAktarim: ['aktarim', 'aktarimOnay'],
   gider: 'gider',
   aktarim: 'aktarim',
   sayim: 'sayim',
@@ -490,9 +561,93 @@ async function oturumDurumuOku() {
       durum.kullaniciAdi = o.veri.kullaniciAdi || null;
       durum.yetkiler = o.veri.yetkiler || {};
       durum.yetkiTanimlari = o.veri.yetkiTanimlari || [];
+      durum.girisYapildi = o.veri.girisYapildi !== false;
+      durum.kullaniciYok = !!o.veri.kullaniciYok;
     }
   } catch (e) { /* okunamazsa yönetici varsayılır; kanal süzgeci yine çalışır */ }
   girisDugmesiniYaz();
+}
+
+// ---------- ZORUNLU GİRİŞ ----------
+//
+// Program açılırken tam ekran giriş isteniyor. Bunun öncesinde HİÇBİR ekran
+// çizilmiyor ve hiçbir veri okunmuyor — eskiden ana ekran açılıp özet
+// sayıları görünüyordu, giriş yalnız işlem yaparken isteniyordu.
+//
+// Kullanıcı hiç tanımlanmamışsa (yeni kurulum) giriş ekranı "ilk yöneticiyi
+// tanımlayın" diyerek geçiş veriyor; aksi hâlde program hiç açılamazdı.
+// Ağdan bağlanan için böyle bir geçiş YOK (db/oturum.js).
+function girisEkraniCiz(hataMesaji) {
+  document.body.classList.add('giris-modu');
+  bosalt(icerik);
+
+  const kutu = el('input', {
+    type: 'password',
+    id: 'girisPin',
+    placeholder: 'PIN',
+    autocomplete: 'off',
+    inputMode: 'numeric'
+  });
+  const uyari = el('div', { sinif: 'aciklama-kutu kritik' + (hataMesaji ? '' : ' hidden') },
+    [hataMesaji || '']);
+
+  async function dene() {
+    const cevap = await window.galya.cagir('oturum:giris', { pin: kutu.value });
+    if (!cevap.tamam) {
+      uyari.textContent = cevap.mesaj || 'PIN yanlış.';
+      uyari.classList.remove('hidden');
+      kutu.value = '';
+      kutu.focus();
+      return;
+    }
+    durum.rol = cevap.veri.rol;
+    durum.pinVar = !!cevap.veri.pinVar;
+    durum.kullaniciAdi = cevap.veri.kullaniciAdi || null;
+    durum.yetkiler = cevap.veri.yetkiler || {};
+    durum.yetkiTanimlari = cevap.veri.yetkiTanimlari || [];
+    durum.girisYapildi = true;
+    document.body.classList.remove('giris-modu');
+    girisDugmesiniYaz();
+    await panelYukle();
+  }
+
+  kutu.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') dene();
+  });
+
+  const govde = [
+    el('div', { sinif: 'giris-logo', metin: 'GALYA PANEL' }),
+    el('div', { sinif: 'giris-not' }, [
+      "PIN'inizi yazın. Kullanıcı adı seçmenize gerek yok — program PIN'in " +
+      'kime ait olduğunu kendisi bulur. Yaptığınız her iş adınıza kaydedilir.'
+    ]),
+    uyari,
+    kutu,
+    el('button', { sinif: 'dugme-ana giris-dugme', metin: 'Giriş yap', tikla: dene })
+  ];
+
+  // Hiç kullanıcı yoksa program kilitli kalamaz: ilk yöneticiyi tanımlamak
+  // için geçiş veriliyor. Ağdan bağlananda bu düğme çizilmiyor.
+  if (durum.kullaniciYok && !window.galya.agdan) {
+    govde.push(
+      el('div', { sinif: 'aciklama-kutu' }, [
+        'Bu kurulumda henüz kullanıcı tanımlı değil. Devam edip Ayarlar ' +
+        'ekranından ilk yöneticiyi tanımlayın; ondan sonra program her ' +
+        'açılışta PIN soracak.'
+      ]),
+      el('button', {
+        sinif: 'dugme-sade',
+        metin: 'Kullanıcı tanımlamadan devam et',
+        tikla: async () => {
+          document.body.classList.remove('giris-modu');
+          await panelYukle();
+        }
+      })
+    );
+  }
+
+  icerik.appendChild(el('div', { sinif: 'giris-perde' }, [el('div', { sinif: 'giris-kutu' }, govde)]));
+  setTimeout(() => kutu.focus(), 60);
 }
 
 function girisDugmesiniYaz() {
@@ -510,6 +665,11 @@ async function oturumdanCik() {
   try {
     await window.galya.cagir('oturum:cikis');
     await oturumDurumuOku();
+    // Kilit varsa çıkıştan sonra ekran açık kalmamalı; giriş ekranına dönülür.
+    if (durum.pinVar) {
+      girisEkraniCiz('Oturum kapatıldı.');
+      return;
+    }
     bildir('Oturum kapatıldı.', 'iyi');
     await ekranAc('ana');
   } catch (e) { hataGoster(e); }
@@ -622,6 +782,11 @@ ekranlar.ana = async function () {
   // Yetkisi olmayan kullanıcıya düğme hiç çizilmiyor. Asıl engel ana
   // süreçte; buradaki gizleme sadece boşuna tıklamayı önlüyor.
   const islemler = el('div', { sinif: 'islem-dugmeleri' }, [
+    yetkilerdenBiri('aktarim', 'aktarimOnay') && islemDugmesi(
+      'Şefim günlük aktarımı',
+      "Dünkü satışı Vega'ya aktar, sonra üretimi yap",
+      'gunlukAktarim'
+    ),
     yetkiVar('sayim') && islemDugmesi('Sayım', 'Ara ve tam sayım, onaya gönder', 'sayim'),
     yetkiVar('sayimOnay') && islemDugmesi('Sayım onayı', "Bekleyen sayımları Vega'ya işle", 'sayimOnay'),
     yetkiVar('zayi') && islemDugmesi('Zayi / personel çıkışı', 'Çalışanın zayi ettiği ürünü düş', 'zayi'),
@@ -1223,6 +1388,390 @@ const IZAHAT = {
 function izahatAdi(kod) { return IZAHAT[kod] || ('Kod ' + kod); }
 
 // ---------- SATIŞ AKTARIMI / EŞLEŞTİRME ----------
+
+// ---------- ŞEFİM GÜNLÜK AKTARIMI ----------
+//
+// Müşterinin her sabah yaptığı iş: Şefim'in dünkü satışını Vega'ya aktarmak,
+// hemen ardından eksiye düşen mamulleri üretmek. İkisi tek ekranda, sırayla.
+//
+// Ekran üç bölüm: (1) hangi gün aktarılmış hangi gün eksik, (2) seçilen günün
+// dökümü ve "Aktar" düğmesi, (3) aktarımdan sonra üretilmesi gerekenler.
+
+ekranlar.gunlukAktarim = async function (parametre) {
+  const gunler = await cagir('aktarim:gunler', { gun: 60 });
+  bosalt(icerik);
+  icerik.appendChild(ekranBasligi('Şefim günlük aktarımı'));
+
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Şefim\'in kapanmış adisyonları Vega\'ya buradan aktarılıyor: satılan mal ' +
+    'stoktan düşer, tahsilat ve kasa hareketleri cariye işlenir. İş günü ' +
+    'gece yarısını geçtiği için gün sınırı 04:00\'tür — 11.08 iş gününe ' +
+    '12.08 saat 04:00\'a kadarki kayıtlar dahildir.'
+  ]));
+
+  const eksikler = gunler.filter((g) => g.durum === 'eksik');
+  if (eksikler.length) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      `${eksikler.length} gün Vega'ya aktarılmamış. En eskisi: ` +
+      tarihYaz(eksikler[eksikler.length - 1].isGunu) + '. ' +
+      'Aktarım sırayla, en eskiden başlayarak yapılmalı.'
+    ]));
+  }
+
+  const disari = gunler.filter((g) => g.durum === 'kapsamDisi');
+  if (disari.length) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      `${disari.length} gün seçili dönemden (${durum.donem}) eski. Şefim'in ` +
+      'satış geçmişi Vega dönemininkinden uzun; o günler başka bir döneme ait ' +
+      've buradan aktarılamaz.'
+    ]));
+  }
+
+  if (!durum.yazmaAcik) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+      "Vega'ya yazma kapalı; aktarım düğmesi çalışmaz. Ayarlar ekranından açın."
+    ]));
+  }
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Günler' }));
+
+  const DURUM_YAZISI = {
+    eksik: "Vega'da belge yok",
+    kapsamDisi: 'Dönem dışı — aktarılamaz'
+  };
+
+  const liste = el('div');
+  for (const g of gunler) {
+    const eksik = g.durum === 'eksik';
+    liste.appendChild(el('div', { sinif: 'aktarim-gun ' + g.durum }, [
+      el('span', { sinif: 'gun', metin: tarihYaz(g.isGunu) }),
+      el('span', {
+        metin:
+          DURUM_YAZISI[g.durum] ||
+          `Aktarıldı — ${g.vegaBelgeNo || ''} (${g.belgeSayisi} belge)`
+      }),
+      el('span', { metin: 'Şefim: ' + paraYaz(g.hamTutar) + ' TL' }),
+      el('span', { metin: g.vegaTutari != null ? 'Vega: ' + paraYaz(g.vegaTutari) + ' TL' : '—' }),
+      g.durum === 'kapsamDisi'
+        ? el('span', { metin: '—' })
+        : el('button', {
+            sinif: eksik ? 'dugme-ana' : 'dugme-sade',
+            metin: eksik ? 'İncele ve aktar' : 'Görüntüle',
+            tikla: () => ekranAc('gunlukAktarim', { tarih: gunAnahtari(g.isGunu) })
+          })
+    ]));
+  }
+  icerik.appendChild(liste);
+
+  if (parametre && parametre.tarih) {
+    await aktarimGunuCiz(parametre.tarih);
+    // Aktarım biter bitmez "şimdi neyi üretmeliyiz" listesi. Aktarımdan önce
+    // gösterilmiyor: stok henüz düşmediği için liste yanıltıcı olurdu.
+    if (parametre.uretimGoster) await uretilecekleriCiz();
+  }
+};
+
+// Sunucudan gelen tarih 'YYYY-MM-DD' metnine çevriliyor; Date nesnesi saat
+// dilimi yüzünden bir gün kayabiliyor.
+function gunAnahtari(deger) {
+  if (typeof deger === 'string') return deger.slice(0, 10);
+  const t = new Date(deger);
+  return (
+    t.getUTCFullYear() + '-' +
+    String(t.getUTCMonth() + 1).padStart(2, '0') + '-' +
+    String(t.getUTCDate()).padStart(2, '0')
+  );
+}
+
+async function aktarimGunuCiz(tarih) {
+  let o;
+  try {
+    o = await cagir('aktarim:onizleme', { tarih });
+  } catch (e) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu kritik', metin: e.message }));
+    return;
+  }
+
+  icerik.appendChild(el('div', {
+    sinif: 'bolum-basligi',
+    metin: tarihYaz(o.isGunu) + ' — aktarılacaklar'
+  }));
+
+  for (const u of o.uyarilar || []) {
+    icerik.appendChild(el('div', {
+      sinif: 'aciklama-kutu ' + (u.engel ? 'kritik' : 'uyari'),
+      metin: u.mesaj
+    }));
+  }
+
+  const t = o.toplam;
+  icerik.appendChild(el('div', { sinif: 'aktarim-ozet' }, [
+    ozetKarti('Satış satırı', sayiYaz(t.satir) + ' kalem'),
+    ozetKarti('Satır toplamı', paraYaz(t.satirToplami) + ' TL'),
+    ozetKarti('Tahsilat', paraYaz(t.tahsilatToplami) + ' TL'),
+    ozetKarti('Kasa çıkışı', paraYaz(t.kasaCikis) + ' TL'),
+    ozetKarti('Kasa girişi', paraYaz(t.kasaGiris) + ' TL')
+  ]));
+
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    'Kesilecek belgeler: ' +
+    [
+      t.satir ? `stok çıkış fişi (${o.satisCarisi.kod})` : null,
+      o.tahsilat.satirlar.length
+        ? o.tahsilat.satirlar.map((x) => `cari giriş — ${x.kod} ${paraYaz(x.tutar)} TL`).join(', ')
+        : null,
+      t.kasaCikis ? `cari çıkış — ${o.kasaCarisi ? o.kasaCarisi.kod : 'kasa'}` : null,
+      t.kasaGiris ? `cari giriş — ${o.kasaCarisi ? o.kasaCarisi.kod : 'kasa'}` : null
+    ].filter(Boolean).join(' · ')
+  ]));
+
+  const engelli = (o.uyarilar || []).some((u) => u.engel);
+  const dugmeler = el('div', { sinif: 'form-satir', style: 'margin:10px 0' });
+
+  if (o.zatenAktarildi) {
+    dugmeler.appendChild(el('span', { sinif: 'liste-notu' }, [
+      'Bu gün ' + saatliTarih(o.zatenAktarildi.tarih) + ' tarihinde ' +
+      (o.zatenAktarildi.kullanici || 'bilinmeyen kullanıcı') + ' tarafından aktarılmış.'
+    ]));
+  } else {
+    dugmeler.appendChild(el('button', {
+      sinif: 'dugme-ana',
+      metin: "Vega'ya aktar",
+      disabled: engelli || !durum.yazmaAcik,
+      tikla: () => aktarimYap(o)
+    }));
+  }
+  dugmeler.appendChild(el('button', {
+    sinif: 'dugme-sade',
+    metin: 'Aktarım geçmişi',
+    tikla: aktarimGecmisi
+  }));
+  icerik.appendChild(dugmeler);
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Satırlar' }));
+  icerik.appendChild(tabloYap(
+    ['Şefim ürünü', 'Stok kartı', 'Miktar', 'Birim', 'KDV', 'Fiyat (KDV dahil)', 'Tutar'],
+    o.satirlar,
+    (r) => el('tr', null, [
+      hucre(r.urunler && r.urunler.length > 1 ? r.urunler.join(' + ') : r.urun),
+      hucre(r.stokAdi),
+      hucre(miktarYaz(r.miktar), 'sag'),
+      hucre(r.birim),
+      hucre('%' + sayiYaz(r.kdv), 'sag'),
+      hucre(paraYaz(r.kdvliFiyat), 'sag'),
+      hucre(paraYaz(r.kdvliTutar), 'sag')
+    ])
+  ));
+
+  if (o.kasaHareketleri.length) {
+    icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Kasa hareketleri' }));
+    icerik.appendChild(tabloYap(
+      ['Açıklama', 'Tutar'],
+      o.kasaHareketleri,
+      (r) => el('tr', null, [
+        hucre(r.aciklama),
+        hucre((r.tutar < 0 ? '−' : '+') + paraYaz(Math.abs(r.tutar)), 'sag')
+      ])
+    ));
+  }
+}
+
+function ozetKarti(etiket, deger) {
+  return el('div', { sinif: 'kart' }, [
+    el('span', { sinif: 'etiket', metin: etiket }),
+    el('span', { sinif: 'deger', metin: deger })
+  ]);
+}
+
+async function aktarimYap(o) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: 'Şefim aktarımı',
+    mesaj:
+      `${tarihYaz(o.isGunu)} iş günü Vega'ya aktarılacak: ${o.toplam.satir} kalem, ` +
+      `${paraYaz(o.toplam.tahsilatToplami)} TL tahsilat.`,
+    detay:
+      'Stok çıkış fişi ve cari belgeleri kesilir; satılan mal stoktan düşer. ' +
+      'İşlem tek seferde yapılır ve geri alınabilir. Aktarım öncesi otomatik ' +
+      'yedek alınır.',
+    evet: 'Aktar',
+    hayir: 'Vazgeç',
+    tehlikeli: true
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+
+  try {
+    yukleniyorGoster("Vega'ya yazılıyor…");
+    const sonuc = await cagir('aktarim:aktar', { tarih: o.isGunu });
+    bildir(
+      `${tarihYaz(sonuc.isGunu)} aktarıldı: ${sonuc.belgeler.length} belge, ` +
+      `${sayiYaz(sonuc.satir)} kalem.`,
+      'iyi'
+    );
+    if (sonuc.sefimIsaretiUyarisi) {
+      // Sessiz geçilemez: Vega'nın kendi programı aynı günü tekrar
+      // aktarabilir ve stok iki kez düşer.
+      await window.galya.cagir('sistem:onay', {
+        baslik: 'Dikkat — Şefim işareti konulamadı',
+        mesaj: sonuc.sefimIsaretiUyarisi,
+        evet: 'Anladım',
+        hayir: 'Kapat',
+        tehlikeli: true
+      });
+    }
+    await ekranAc('gunlukAktarim', { tarih: o.isGunu, uretimGoster: true });
+  } catch (e) {
+    hataGoster(e);
+    await ekranAc('gunlukAktarim', { tarih: o.isGunu });
+  }
+}
+
+async function aktarimGecmisi() {
+  const liste = await cagir('aktarim:gecmis');
+  const govde = el('div', null, [
+    el('div', { sinif: 'aciklama-kutu' }, [
+      'Geri alma, o aktarımda kesilen bütün belgeleri siler ve stok aktarım ' +
+      'öncesine döner.'
+    ]),
+    tabloYap(
+      ['İş günü', 'Aktarım', 'Kalem', 'Tutar', 'Kullanıcı', 'Durum', ''],
+      liste,
+      (r) => el('tr', null, [
+        hucre(tarihYaz(r.isGunu)),
+        hucre(saatliTarih(r.tarih)),
+        hucre(sayiYaz(r.satir), 'sag'),
+        hucre(paraYaz(r.tutar), 'sag'),
+        hucre((r.kullanici || '—') + (r.bilgisayar ? ' · ' + r.bilgisayar : '')),
+        hucre(
+          r.geriAlindi
+            ? 'Geri alındı'
+            : r.durum === 'yaziliyor'
+              ? (r.asiliKalmis ? 'Yarıda kalmış' : 'Aktarılıyor…')
+              : "Vega'da"
+        ),
+        el('td', null, [
+          r.geriAlindi
+            ? el('span', { metin: '—' })
+            : r.durum === 'yaziliyor'
+              ? (r.asiliKalmis && yonetici()
+                  ? el('button', {
+                      sinif: 'dugme-sade',
+                      metin: 'Kaydı temizle',
+                      tikla: () => aktarimKilidiTemizle(r)
+                    })
+                  : el('span', { metin: 'sürüyor' }))
+              : el('button', {
+                  sinif: 'dugme-sade',
+                  metin: 'Geri al',
+                  tikla: () => aktarimGeriAl(r)
+                })
+        ])
+      ])
+    )
+  ]);
+  katmanAc('Aktarım geçmişi', govde);
+}
+
+// Yarıda kalan aktarım kaydını temizler. Kilidi kaldırdığı için yönetici işi;
+// panel önce Vega'da o güne belge yazılıp yazılmadığına bakıyor.
+async function aktarimKilidiTemizle(kayit) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: 'Yarıda kalan aktarımı temizle',
+    mesaj: `${tarihYaz(kayit.isGunu)} aktarımı yarıda kalmış görünüyor.`,
+    detay:
+      "Panel önce Vega'ya bakar: o güne ait belge varsa aktarım aslında " +
+      'yapılmıştır, kayıt düzeltilir ve gün yeniden aktarılmaz. Belge yoksa ' +
+      'kayıt silinir ve gün yeniden aktarılabilir hâle gelir. ' +
+      'Aktarım hâlâ sürüyorsa bunu YAPMAYIN — aynı gün iki kez aktarılabilir.',
+    evet: 'Temizle',
+    hayir: 'Vazgeç',
+    tehlikeli: true
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    const s = await cagir('aktarim:kilitTemizle', { id: kayit.id });
+    katmanKapat();
+    bildir(s.mesaj, 'iyi');
+    await ekranAc('gunlukAktarim');
+  } catch (e) {
+    hataGoster(e);
+  }
+}
+
+async function aktarimGeriAl(kayit) {
+  const onay = await window.galya.cagir('sistem:onay', {
+    baslik: 'Aktarımı geri al',
+    mesaj: `${tarihYaz(kayit.isGunu)} aktarımının bütün belgeleri silinecek.`,
+    detay:
+      'Stok çıkış fişi, cari giriş/çıkış belgeleri, kasa ve envanter satırları ' +
+      'birlikte siliniyor. Stok aktarım öncesindeki hâline döner. Şefim\'deki ' +
+      'satırların aktarım işareti de kaldırılır, gün yeniden aktarılabilir.',
+    evet: 'Geri al',
+    hayir: 'Vazgeç',
+    tehlikeli: true
+  });
+  if (!onay.veri || !onay.veri.onay) return;
+  try {
+    const s = await cagir('aktarim:geriAl', { id: kayit.id });
+    katmanKapat();
+    bildir(`Aktarım geri alındı (${sayiYaz(s.silinenSatir)} satır silindi).`, 'iyi');
+    await ekranAc('gunlukAktarim');
+  } catch (e) {
+    hataGoster(e);
+  }
+}
+
+// ---------- AKTARIM SONRASI ÜRETİM ----------
+//
+// Müşterinin sabah rutininin ikinci yarısı: aktarım stoğu düşürünce eksiye
+// geçen mamuller üretiliyor. Ayrı bir hesap değil — Üretim ekranındaki
+// "sıfıra çekme adayları" listesinin aynısı; aktarımdan hemen sonra burada
+// görünüyor ki kullanıcı ekran değiştirmek zorunda kalmasın.
+async function uretilecekleriCiz() {
+  if (!yetkiVar('uretim')) return;
+  let liste;
+  try {
+    liste = await cagir('aktarim:uretilecekler');
+  } catch (e) {
+    return; // üretim yetkisi yoksa ya da okunamıyorsa bölüm hiç çizilmiyor
+  }
+  const receteli = liste.filter((x) => Number(x.receteNo));
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Aktarımdan sonra üretilecekler' }));
+  if (!receteli.length) {
+    icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+      'Reçetesi olup eksiye düşen mamul yok. Üretilecek bir şey görünmüyor.'
+    ]));
+    return;
+  }
+
+  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+    `${receteli.length} mamulün stoğu eksiye düştü. Üretim fişi kesilince ` +
+    'reçetedeki hammaddeler düşer, mamul stoğu sıfıra çıkar. Fişi Üretim ' +
+    'ekranından kesin — orada tek tek ya da toplu seçebiliyorsunuz.'
+  ]));
+
+  icerik.appendChild(el('div', { sinif: 'form-satir', style: 'margin:8px 0' }, [
+    el('button', {
+      sinif: 'dugme-ana',
+      metin: 'Üretim ekranını aç',
+      tikla: () => ekranAc('uretim')
+    })
+  ]));
+
+  icerik.appendChild(tabloYap(
+    ['Mamul', 'Sınıf', 'Kalan', 'Üretilecek', 'Birim', 'Reçete satırı'],
+    receteli,
+    (r) => el('tr', null, [
+      hucre(r.ad),
+      hucre(r.sinif),
+      hucre(miktarYaz(r.kalan), 'sag'),
+      hucre(miktarYaz(r.eksik), 'sag'),
+      hucre(r.birim),
+      hucre(sayiYaz(r.receteSatiri), 'sag')
+    ]),
+    50
+  ));
+}
 
 ekranlar.aktarim = async function () {
   const [d, liste] = await Promise.all([
@@ -5984,6 +6533,75 @@ function pinBolumu() {
   return kap;
 }
 
+// Ağdan erişim bölümü (Ayarlar → yalnız yönetici).
+//
+// Paneli aynı ağdaki başka bilgisayarlardan tarayıcıyla açmak için. Trafik
+// şifresiz olduğu için kutuda bunun ne anlama geldiği açıkça yazıyor;
+// "aç" düğmesi kurulumu yapan kişinin bilinçli kararı olmalı.
+async function agBolumu() {
+  const d = await cagir('ag:durum');
+  const kap = el('div');
+
+  kap.appendChild(el('div', { sinif: 'aciklama-kutu' + (d.calisiyor ? ' kritik' : '') }, [
+    d.calisiyor
+      ? 'Ağ erişimi AÇIK. Panel şu adreslerden açılabiliyor: ' +
+        (d.adresler.length ? d.adresler.join('  ·  ') : 'ağ adresi bulunamadı')
+      : 'Ağ erişimi kapalı. Panel yalnız bu bilgisayardan kullanılabiliyor.'
+  ]));
+
+  if (d.baslatmaHatasi) {
+    kap.appendChild(el('div', { sinif: 'aciklama-kutu kritik' }, [
+      'Program açılırken ağ sunucusu başlatılamadı: ' + d.baslatmaHatasi
+    ]));
+  }
+
+  kap.appendChild(el('div', { sinif: 'aciklama-kutu uyari' }, [
+    'Bağlantı ŞİFRESİZDİR (düz HTTP): PIN ağ üzerinden açık geçer. Yalnız ' +
+    'güvendiğiniz yerel ağda açın, modemde bu porta yönlendirme YAPMAYIN. ' +
+    "Ağdan bağlanan herkes PIN'iyle giriş yapmak zorundadır; yetkileri " +
+    'masaüstündekiyle aynıdır. Yazdırma, klasör açma ve Vega programını ' +
+    'başlatma ağdan çalışmaz — onlar bu bilgisayarın işleridir.'
+  ]));
+
+  const portKutusu = el('input', { type: 'number', min: '1024', max: '65535', value: d.port });
+  const kalici = el('select', { sinif: 'form' }, [
+    el('option', { value: 'evet', metin: 'Evet — program her açıldığında başlasın' }),
+    el('option', { value: 'hayir', metin: 'Hayır — yalnız şimdilik' })
+  ]);
+  kalici.value = d.otomatikAcilsin ? 'evet' : 'hayir';
+
+  kap.appendChild(el('div', { sinif: 'form-satir' }, [
+    el('div', null, [el('label', { metin: 'Port' }), portKutusu]),
+    el('div', null, [el('label', { metin: 'Açılışta otomatik başlasın mı?' }), kalici])
+  ]));
+
+  kap.appendChild(el('div', { sinif: 'form-satir', style: 'margin-top:10px' }, [
+    el('button', {
+      sinif: d.calisiyor ? 'dugme-sade' : 'dugme-ana',
+      metin: d.calisiyor ? 'Ağ erişimini kapat' : 'Ağ erişimini aç',
+      tikla: async () => {
+        try {
+          if (!d.calisiyor && Number(portKutusu.value) !== Number(d.port)) {
+            await cagir('ayar:yaz', { agPort: Number(portKutusu.value) });
+          }
+          if (d.calisiyor) {
+            await cagir('ag:durdur', { kalici: true });
+            bildir('Ağ erişimi kapatıldı.', 'iyi');
+          } else {
+            const s2 = await cagir('ag:baslat', { kalici: kalici.value === 'evet' });
+            bildir('Ağ erişimi açıldı: ' + s2.adresler.join(' , '), 'iyi');
+          }
+          await ekranAc('ayarlar');
+        } catch (e) {
+          hataGoster(e);
+        }
+      }
+    })
+  ]));
+
+  return kap;
+}
+
 ekranlar.ayarlar = async function () {
   const a = await cagir('ayar:oku');
   bosalt(icerik);
@@ -6072,6 +6690,8 @@ ekranlar.ayarlar = async function () {
   if (yonetici()) {
     icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Yönetici PIN\'i' }));
     icerik.appendChild(pinBolumu());
+    icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Ağdan erişim' }));
+    icerik.appendChild(await agBolumu());
   }
 
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: "Vega'ya yazma" }));
@@ -6245,6 +6865,22 @@ async function baslat() {
   // Rol, firma/depo listelerinden ÖNCE okunmalı: ekranlar buna göre çiziliyor.
   await oturumDurumuOku();
 
+  // GİRİŞ ZORUNLU. Kilit varken ve giriş yapılmamışken hiçbir ekran çizilmiyor,
+  // hiçbir veri okunmuyor. Kullanıcı hiç tanımlı değilse giriş ekranı yine
+  // çıkıyor ama "kullanıcı tanımlamadan devam et" geçişi veriyor.
+  if (!durum.girisYapildi || durum.kullaniciYok) {
+    durumRozet.textContent = 'Giriş bekleniyor';
+    durumRozet.className = 'rozet rozet-bekle';
+    girisEkraniCiz();
+    return;
+  }
+
+  await panelYukle();
+}
+
+// Giriş yapıldıktan sonraki asıl yükleme: firma/depo listeleri ve ana ekran.
+async function panelYukle() {
+  yukleniyorGoster('Yükleniyor…');
   try {
     const [firmalar, depolar, ayar, yazmaDurum] = await Promise.all([
       cagir('firma:liste', { yenile: true }),

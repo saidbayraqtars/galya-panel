@@ -937,9 +937,143 @@ Maliyetlendirme sırasında gider/hizmet (3), grup kartı (11) ve hizmet (26)
 tipindeki kartlar hesaba katılmaz; bu kartlarda alış fiyatı alanında fatura
 toplamı gibi anlamsız değerler duruyor.
 
+## Şefim günlük satış aktarımı (11 / 13 / 33)
+
+Vega'nın kendi **"Şefim Entegrasyon"** programının 184 gün boyunca yazdığı
+belgeler okunarak çıkarıldı; 11.08.2026 iş günü için kuruşu kuruşuna
+doğrulandı (`kurulum/test-aktarim.js`). Panel bu deseni `db/aktarim.js` +
+`db/yazma.js` → `sefimAktarimYaz()` içinde uyguluyor.
+
+### Bir günün belgeleri
+
+| Belge | Tip | Cari | Ne |
+|---|---|---|---|
+| Stok çıkış | 33 | ŞEFSATIŞ | Günün satışının stoktan düşmesi + cariye borç |
+| Cari giriş | 13 | ŞEFSATIŞ | Her tahsilat türü için AYRI belge (nakit, kredi kartı…) |
+| Cari çıkış | 11 | ŞEFİMKASA | Şefim'de girilen kasa giderleri |
+| Cari giriş | 13 | ŞEFİMKASA | Şefim'de girilen kasa girişleri |
+| Stok çıkış | 33 | *müşteri* | **Her veresiye müşterisi için ayrı fiş** |
+
+Hepsinde `OZELKOD4 = 'SEFIM'`. Panel de aynı işareti yazıyor; panelin kestiği
+belge `BELGENO` önekinden (`GP`) ayırt ediliyor.
+
+### Hangi satırlar giriyor
+
+```
+Bill ⋈ BillHeader
+  BillState = 1            kapanmış adisyon
+  Canceling = 0
+  iş günü 04:00 → 04:00    (ayarlarda sefimGunKesimSaati)
+  Payment.Debit = 0        veresiye adisyon ŞEFSATIŞ belgesine GİRMEZ
+```
+
+Vega satırı = **(stok kartı, KDV dahil fiyat)** grubu:
+
+```
+MIKTAR   = Σ Quantity
+FIYATI   = Price / (1 + KDV/100)     Bill.Price KDV DAHİLDİR
+KDV      = stok kartının KDV grubundan (TBLKDVGRUPLARI)
+AFIYATI  = kartın MALIYET'i
+```
+
+Başlıktaki `TUTAR` **günün tahsilatıdır** (nakit + kredi kartı), satır
+toplamı değil; ikisi arasındaki kuruş farkı `YUVARLAMA`'ya yazılır. Vega'nın
+kendi 11.08 belgesinde `ARATOPLAM 142.910,2397 / TUTAR 142.910,21 /
+YUVARLAMA −0,0299`.
+
+> Panel bu farkı bir **emniyet ölçüsü** olarak kullanıyor: fark kuruş
+> mertebesini aşarsa (>1 TL ya da >%0,05) aktarım engelleniyor. Büyük bir
+> "yuvarlama" yuvarlama değildir — eşleşmeyen ya da "yoksay" işaretli bir
+> ürün belgeye girmemiş demektir.
+
+### Ürün → stok kartı eşleşmesi
+
+Üç kademe, sırayla:
+
+1. Panelin kendi `UrunEslestirme` tablosu (kullanıcı elle bağladıysa).
+2. **Vega'nın geçmiş Şefim belgelerinde aynı ürün adına yazdığı kart — en
+   SON kullanılanı.** Firma zaman zaman bir ürünü başka bir karta bağlıyor
+   (birkaç bira `BAŞLANGIÇ İKRAM`a, `Karpuz Tabağı` `FİX 7 YAŞ ALTI`na
+   bağlanmış). En SIK kullanılan alınırsa eski eşleşme kazanıyor ve stok
+   yanlış karttan düşüyor.
+3. Birebir isim eşleşmesi (geçmişi olmayan yeni ürün).
+
+11.08 iş gününde bu zincir Vega'nın 104 satırının 103'ünü birebir üretiyor.
+
+### Veresiye adisyonlar
+
+`Payment.Debit <> 0` olan adisyon ŞEFSATIŞ belgesine girmiyor; parası
+alınmadığı için günün tahsilatına dahil değil. Kanıtı: 11.08'de üç adisyon
+veresiye kapanmıştı (950,00 + 835,00 + 750,00 = **2.535,00**); Şefim satır
+toplamı 145.445,21, ŞEFSATIŞ belgesi 142.910,21 — fark tam 2.535,00.
+
+Kaybolmuyorlar: her **müşteri** için ayrı stok çıkış fişi kesiliyor ve tutar
+o carinin borcuna yazılıyor. Cari kartı yoksa Şefim'deki müşteri adıyla
+açılıyor (`Payment.CustomerName`).
+
+> Borca yazılan tutar adisyonun **tam** tutarıdır, indirim düşülmez.
+> ONUR ÇEBİ'nin adisyonu 584,50 veresiye + 250,50 indirimdi; Vega 835,00
+> borç yazdı.
+
+### Kasa satırı ne zaman yazılır
+
+`TBLKASA` yalnız **fiziksel para** hareketinde:
+
+| Belge | ISLEM | Alan | Kasa satırı |
+|---|---|---|---|
+| Nakit tahsilat (13) | −2 | GELIR | var |
+| Kredi kartı tahsilatı (13) | — | — | **yok** |
+| Kasa gideri (11) | −3 | GIDER | var |
+
+Açıklama biçimi Vega'nınkiyle aynı: `ŞEFİMKASA\ekmek (Admin)` —
+cari kodu + `\` + Şefim'deki açıklama + ` (kullanıcı)`.
+
+### Vega'nın kendi programındaki kusur
+
+Şefim Entegrasyon, **aktarmadığı satırları da** `Bill.Aktarildi = 1` diye
+işaretliyor. Veresiye adisyonun satırları belgeye girmiyor ama bir daha da
+aday olmuyor. Panel bunu tekrarlamıyor: yalnızca gerçekten yazdığı `Bill`
+kimliklerini işaretliyor, kalanı ertesi gün yeniden aday oluyor.
+
+> `Bill.Aktarildi` yazabilmek için SQL kullanıcısının **sefim** veritabanında
+> UPDATE yetkisi gerekir (`kurulum/sql-yazma-yetkisi-ver.sql`). Yetki yoksa
+> panel işaretlemeyi atlıyor ve ekranda uyarı gösteriyor — o gün Vega'nın
+> kendi programı çalıştırılırsa satış stoktan iki kez düşer.
+
+### Aynı gün iki kez aktarılmasın
+
+Üç kapı var, üçü de gerekli:
+
+1. **Panelin kendi kaydı** (`GALYA_PANEL.dbo.SefimAktarim`) — o gün daha önce
+   aktarılmış mı.
+2. **Vega tarafı** — o güne ait ŞEFSATIŞ belgesi var mı. Panelde kaydı
+   olmayan ama Vega'nın kendi programının yaptığı aktarımı bu yakalıyor.
+3. **Rezervasyon kilidi** — Vega'ya tek satır yazılmadan önce gün
+   `Durum = 'yaziliyor'` ile rezerve ediliyor. `SefimAktarim` üzerindeki
+   süzgeçli benzersiz indeks (`Firma, Donem, IsGunu` · `GeriAlindi = 0`)
+   aynı anda gelen ikinci isteği veritabanı seviyesinde reddediyor.
+
+1 ve 2 tek başına yetmez: iki kişi aynı saniyede düğmeye basarsa ikisi de
+okuma kontrolünü geçer. Yarışı çözen 3'tür.
+
+Yazma hata verirse rezervasyon siliniyor, gün yeniden aday oluyor. Program
+çakarsa satır `yaziliyor`da asılı kalır; 15 dakika sonra **yönetici**
+temizleyebilir (`aktarim:kilitTemizle`) — panel önce Vega'ya bakıp belge
+yazılmış mı diye kontrol ediyor.
+
+### Sınama
+
+```
+node kurulum/test-aktarim.js                 mutabakat (yalnız okur)
+node kurulum/test-aktarim-kolon-denetimi.js  kolon doluluğu (yalnız okur)
+node kurulum/test-aktarim-yazma.js           uçtan uca yazma (GALYA_TEST)
+```
+
+---
+
 ## Henüz çıkarılmamış desenler
 
-Kalmadı: panelin yazdığı bütün belge tipleri (20 alış faturası, 32/33 stok
-giriş/çıkış, 38 depo transferi, 93/94 sayım, 96/97 üretim) gerçek fişlerden
-çıkarıldı, sınandı ve canlıda tek örnekle doğrulandı.
+Kalmadı: panelin yazdığı bütün belge tipleri (11/13 cari giriş-çıkış,
+20 alış faturası, 32/33 stok giriş/çıkış, 38 depo transferi, 93/94 sayım,
+96/97 üretim) gerçek fişlerden çıkarıldı ve sınandı.
 

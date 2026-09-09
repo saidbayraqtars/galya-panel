@@ -3240,6 +3240,597 @@ async function uretimFisiGeriAl(kayit) {
   return { tamam: true, silinenSatir: silinen };
 }
 
+// --- Şefim günlük satış aktarımı ------------------------------------------
+//
+// Bir iş gününün aktarımı üç tür belge kesiyor; hepsi TEK işlem içinde
+// yazılıyor, biri hata verirse hiçbiri kalmıyor:
+//
+//   33 (stok çıkış)  ŞEFSATIŞ carisine — satılan malın stoktan düşmesi
+//   13 (cari giriş)  ŞEFSATIŞ carisine — her tahsilat türü için bir belge
+//   11 (cari çıkış)  ŞEFİMKASA carisine — Şefim'de girilen kasa giderleri
+//   13 (cari giriş)  ŞEFİMKASA carisine — Şefim'de girilen kasa girişleri
+//
+// Desen `db/aktarim.js` başındaki notta ve kurulum/BELGE-DESENI.md'de.
+//
+// OZELKOD4 = 'SEFIM': Vega'nın kendi entegrasyon programı bütün belgelerine
+// bu işareti koyuyor, müşterinin raporları buna bakıyor olabilir. Panel de
+// aynısını yazıyor; panelin kestiği belge BELGENO önekinden (GP) ayırt
+// ediliyor.
+const SEFIM_ISARETI = 'SEFIM';
+const CARI_GIRIS_TIPI = 13;
+const CARI_CIKIS_TIPI = 11;
+const SEFIM_SATIS_TIPI = CIKIS_BELGE_TIPI; // 33
+
+function uid() {
+  return '{' + crypto.randomUUID().toUpperCase() + '}';
+}
+
+// Cari giriş/çıkış belgesi (tip 13 / 11). Dört tabloya yazar:
+// başlık, hareket, cari genel hareket ve — nakit ise — kasa.
+async function cariFisiYaz(t, a) {
+  const { v, firma, donem, giris, cariNo, cariAdi, tarih, satirlar, sube, userNo } = a;
+  const belgeTipi = giris ? CARI_GIRIS_TIPI : CARI_CIKIS_TIPI;
+  const baslikTablosu = tablo(v, firma, donem, giris ? 'TBLCARGIRBASLIK' : 'TBLCARCIKBASLIK');
+  const hareketTablosu = tablo(v, firma, donem, giris ? 'TBLCARGIRHAREKET' : 'TBLCARCIKHAREKET');
+  const belgeNo = await siradakiBelgeNo(t, baslikTablosu);
+  const toplam = satirlar.reduce((x, y) => x + Number(y.tutar), 0);
+
+  // OZELKOD5 yalnız cari GİRİŞ başlığında var (tahsilat türü); çıkışta yok.
+  const ekAlan = giris ? ', OZELKOD5' : '';
+  const ekDeger = giris ? ', @ozelkod5' : '';
+
+  const baslik = await t.sorgu(
+    `
+    INSERT INTO ${baslikTablosu}
+      (FIRMANO, BELGENO, TARIH, IADE, AYLIKVADE, TUTAR, PARABIRIMI, GIRIS, KUR,
+       BELGETIPI, IPTAL, USERNO, KDVISK, OZELKOD1, OZELKOD2, OZELKOD3, KONSOLIDE,
+       MUHASEBELESMEYECEK, OZELKOD4, CREDATE, KAYNAK, HESAPKAPATMADISI, UID${ekAlan})
+    OUTPUT INSERTED.IND AS ind
+    VALUES
+      (@cariNo, @belgeNo, @tarih, 0, 0, @toplam, 'TL', @giris, 1,
+       @belgeTipi, 0, @userNo, 0, @k1, @k2, '', 0,
+       0, @isaret, GETDATE(), 0, 0, @uid${ekDeger})
+  `,
+    Object.assign(
+      {
+        cariNo,
+        belgeNo,
+        tarih,
+        toplam,
+        giris: giris ? 1 : 0,
+        belgeTipi,
+        userNo,
+        k1: sube.k1,
+        k2: sube.k2,
+        isaret: SEFIM_ISARETI,
+        uid: uid()
+      },
+      giris ? { ozelkod5: (satirlar[0] && satirlar[0].kod) || null } : {}
+    )
+  );
+  const baslikInd = baslik[0].ind;
+
+  const yazilan = [];
+  for (const s of satirlar) {
+    const satir = await t.sorgu(
+      `
+      INSERT INTO ${hareketTablosu}
+        (IZAHAT, PORTNO, EVRAKNO, ACIKLAMA, VADE, TUTAR, PARABIRIMI, BELGENO,
+         BELGELINK, STATUS, KUR, BANKANO, FIRMANO, AYLIKVADE)
+      OUTPUT INSERTED.IND AS ind
+      VALUES
+        (@izahat, -1, @baslikInd, @aciklama, @tarih, @tutar, 'TL', '',
+         -1, 0, 1, 0, @cariNo, 0)
+    `,
+      {
+        izahat: Number(s.izahat) || 1,
+        baslikInd,
+        aciklama: String(s.aciklama || s.ad || '').substring(0, 100),
+        tarih,
+        tutar: Number(s.tutar),
+        cariNo
+      }
+    );
+    const satirInd = satir[0].ind;
+
+    // Cari genel hareket: girişte ALACAK (tahsilat), çıkışta BORÇ (ödeme).
+    await t.calistir(
+      `
+      INSERT INTO ${tablo(v, firma, donem, 'TBLCARIGENELHAREKET')}
+        (FIRMANO, TARIH, VADE, BELGEIND, ISLEMIND, BELGEIZAHAT, ISLEMIZAHAT,
+         BELGELINK, BORC, ALACAK, AYLIKVADE, BELGENO, ISLEMNO, CONVERTED, IPTAL,
+         SIRALAMATARIHI, GECIKMEHESAPLA, PARABIRIMI, KUR,
+         BASLIKPARABIRIMI, BASLIKKURU, ACIKLAMA, SIRALAMATARIHIEX)
+      VALUES
+        (@cariNo, @tarih, @tarih, @baslikInd, @satirInd, @belgeTipi, @izahat,
+         -1, @borc, @alacak, 0, @belgeNo, '', 0, 0,
+         GETDATE(), 1, 'TL', 1,
+         'TL', 1, @aciklama, CONVERT(FLOAT, GETDATE()))
+    `,
+      {
+        cariNo,
+        tarih,
+        baslikInd,
+        satirInd,
+        belgeTipi,
+        izahat: Number(s.izahat) || 1,
+        borc: giris ? 0 : Number(s.tutar),
+        alacak: giris ? Number(s.tutar) : 0,
+        belgeNo,
+        aciklama: String(s.aciklama || s.ad || '').substring(0, 100)
+      }
+    );
+
+    // Kasa satırı yalnız fiziksel para hareketinde yazılıyor. Vega'nın kendi
+    // belgelerinde kredi kartı tahsilatının kasa satırı YOK; nakit tahsilatın
+    // (ISLEM = -2, GELIR) ve kasa giderinin (ISLEM = -3, GIDER) var.
+    if (s.kasaya) {
+      await t.calistir(
+        `
+        INSERT INTO ${tablo(v, firma, donem, 'TBLKASA')}
+          (TARIH, ISLEM, GELIR, GIDER, PARABIRIMI, KUR, TRANSFER, SELECTED,
+           ACIKLAMA, BELGELINK, BELGEIZAHAT, LINELINK, USERNO, ISLEMTIPI,
+           ISLEMTARIHI, KDVDAHIL, SUBEADI, KASAADI, ENTEGRE, BELGENEVI, EVRAKNO)
+        VALUES
+          (@tarih, @islem, @gelir, @gider, 'TL', 1, 0, 0,
+           @aciklama, @baslikInd, @belgeTipi, @satirInd, @userNo, 1,
+           GETDATE(), 0, @k1, @k2, 0, @nevi, @belgeNo)
+      `,
+        {
+          tarih,
+          islem: giris ? -2 : -3,
+          gelir: giris ? Number(s.tutar) : 0,
+          gider: giris ? 0 : Number(s.tutar),
+          aciklama: (cariAdi + '\\' + (s.aciklama || s.ad || '')).substring(0, 100),
+          baslikInd,
+          belgeTipi,
+          satirInd,
+          userNo,
+          k1: sube.k1,
+          k2: sube.k2,
+          nevi: s.kod || null,
+          belgeNo
+        }
+      );
+    }
+    yazilan.push(satirInd);
+  }
+
+  return { belgeNo, baslikInd, belgeTipi, satir: yazilan.length, tutar: toplam };
+}
+
+// Günün satışının stoktan düşmesi: belge tipi 33, ŞEFSATIŞ carisine borç.
+async function sefimSatisFisiYaz(t, a) {
+  const { v, firma, donem, depo, cariNo, tarih, satirlar, toplam, sube, userNo } = a;
+  const baslikTablosu = tablo(v, firma, donem, 'TBLSTKCIKBASLIK');
+  const hareketTablosu = tablo(v, firma, donem, 'TBLSTKCIKHAREKET');
+  const belgeNo = await siradakiBelgeNo(t, baslikTablosu);
+
+  // Başlıktaki TUTAR günün TAHSİLATIDIR, satır toplamı değil; aradaki kuruş
+  // farkı YUVARLAMA'ya yazılıyor. Vega'nın kendi belgesinde de böyle
+  // (ARATOPLAM 142.910,2397 / TUTAR 142.910,21 / YUVARLAMA -0,0299).
+  const baslik = await t.sorgu(
+    `
+    INSERT INTO ${baslikTablosu}
+      (BELGENO, TARIH, ODEMETARIHI, FIRMANO, DEPO, HAREKETDEPOSU, BELGETIPI, EKBELGETIPI,
+       TUTAR, ARATOPLAM, KDV, AK, ENVANTERUPDATE, ODMODIFIED, SUCCESS,
+       IADE, IPTAL, CONVERTED, GIRIS, STOKHAREKETEYAZ, CARIHAREKETEYAZ,
+       KAYNAK, USERNO, OZELKOD, OZELKOD1, OZELKOD2, OZELKOD4,
+       PARABIRIMI, KUR, YUVARLAMA, ALLOWYUVARLAMA, ODENEN,
+       ALT1, ALT2, ALT3, ALT4, KALEM1, KALEM2, KALEM3, KALEM4,
+       MASRAF1, MASRAF2, MASRAF3, MASRAF4,
+       MASRAFKDV1, MASRAFKDV2, MASRAFKDV3, MASRAFKDV4,
+       ENTEGRE, KDVISK, SATISSEKLI, KONSOLIDE, ODEMEOPSIYONU, TEVKIFATORAN,
+       STATUS, YURTDISI, MUHASEBELESMEYECEK, CHECKAPATMA, SELECTED,
+       FIRMAADI, ALTBELGENO, OZELKOD3, OZELKOD5, OZELKOD6, OZELKOD7, OZELKOD8, OZELKOD9,
+       CREDATE, LADATE, UID)
+    OUTPUT INSERTED.IND AS ind
+    VALUES
+      (@belgeNo, @tarih, @tarih, @cariNo, @depo, @depo, @belgeTipi, 0,
+       @tutar, @ara, 1, 0, 0, 0, 0,
+       0, 0, 0, 0, 1, 1,
+       0, @userNo, 0, @k1, @k2, @isaret,
+       'TL', 1, @yuvarlama, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0,
+       '', '', '', '', '', '', '', '',
+       GETDATE(), GETDATE(), @uid)
+  `,
+    {
+      belgeNo,
+      tarih,
+      cariNo,
+      depo,
+      belgeTipi: SEFIM_SATIS_TIPI,
+      tutar: toplam.tahsilatToplami,
+      ara: toplam.satirToplami,
+      yuvarlama: toplam.yuvarlama,
+      userNo,
+      k1: sube.k1,
+      k2: sube.k2,
+      isaret: SEFIM_ISARETI,
+      uid: uid()
+    }
+  );
+  const baslikInd = baslik[0].ind;
+
+  for (const s of satirlar) {
+    const satir = await t.sorgu(
+      `
+      INSERT INTO ${hareketTablosu}
+        (TARIH, DETAY, SELECTED, EVRAKNO, FIRMANO, STOKNO, MALINCINSI, STOKKODU, STOKTIPI,
+         MIKTAR, BIRIMMIKTAR, BIRIM, BIRIMEX, KDV, KDVTUTARI,
+         ISK1, ISK2, ISK3, ISK4, AFIYATI, FIYATI, GERCEKTOPLAM,
+         DEPO, PERSONEL, PIRIM, OPSIYON, PROMOSYON, SATISKOSULU, SERIMIKTAR,
+         ENVANTER, TAKSIT, PARABIRIMI, KUR, PESINAT, MASRAF, MASRAFKDV,
+         OIV, INDIRIM, OTV, GK, GMIKTAR, MF, ORJFIYAT, GRUPMIKTAR, BARKOD,
+         KARSISTOKKODU, KARSIBARKOD, KAMPANYAACIKLAMASI, TERMIN, ACIKLAMA)
+      OUTPUT INSERTED.IND AS ind
+      VALUES
+        (GETDATE(), 0, 0, @baslikInd, @cariNo, @stokNo, @ad, @kod, @stokTipi,
+         @miktar, 1, @birim, @birimEx, @kdv, 0,
+         0, 0, 0, 0, @maliyet, @fiyat, @tutar,
+         @depo, 0, 0, 0, 0, 0, 1,
+         @miktar, 0, 'TL', 1, 0, 0, 0,
+         0, 0, 0, @gk, 0, 0, 0, 1, '',
+         '', '', '', @termin, @aciklama)
+    `,
+      {
+        baslikInd,
+        cariNo,
+        stokNo: s.stokNo,
+        ad: s.stokAdi,
+        kod: s.stokKodu || '',
+        stokTipi: s.stokTipi || 0,
+        miktar: s.miktar,
+        birim: s.birim || '',
+        birimEx: s.birimEx || 0,
+        kdv: s.kdv,
+        maliyet: s.maliyet,
+        fiyat: s.fiyat,
+        tutar: s.tutar,
+        depo,
+        gk: gkUret(),
+        // Vega'nın kendi satırlarında TERMIN hep 30.12.1899 — Delphi'nin sıfır
+        // tarihi. Boş bırakılan bir tarih alanı belgeyi açılmaz yapabiliyor.
+        termin: new Date(Date.UTC(1899, 11, 30)),
+        aciklama: String(s.urun || '').substring(0, 100)
+      }
+    );
+    const satirInd = satir[0].ind;
+
+    await t.calistir(
+      `
+      INSERT INTO ${tablo(v, firma, donem, 'TBLSTOKHAREKETLERI')}
+        (EVRAKNO, IZAHAT, TARIH, GIREN, CIKAN, KALAN, TUTAR, FIRMANO, STOKNO,
+         BELGENO, LN, DEPO, KDV, PERSONEL, IADE, OPSIYON,
+         BIRIMFIYAT, BIRIMMALIYET, SIRALAMATARIHI, SIRALAMATARIHIEX,
+         KUR, PARABIRIMI, BIRIMEX, STOKTIPI, ACIKLAMA)
+      VALUES
+        (@belgeNo, @izahat, @tarih, 0, @miktar, 0, @tutar, @cariNo, @stokNo,
+         @baslikInd, @satirInd, @depo, @kdv, 0, 0, 0,
+         @fiyat, @fiyat, @tarih, CONVERT(FLOAT, GETDATE()),
+         1, 'TL', @birimEx, @stokTipi, @aciklama)
+    `,
+      {
+        belgeNo,
+        izahat: SEFIM_SATIS_TIPI,
+        tarih,
+        miktar: s.miktar,
+        tutar: s.tutar,
+        cariNo,
+        stokNo: s.stokNo,
+        baslikInd,
+        satirInd,
+        depo,
+        kdv: s.kdv,
+        fiyat: s.fiyat,
+        birimEx: s.birimEx || 0,
+        stokTipi: s.stokTipi || 0,
+        aciklama: String(s.urun || '').substring(0, 100)
+      }
+    );
+
+    await t.calistir(
+      `
+      INSERT INTO ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
+        (TARIH, STOKNO, DEPO, ENVANTER, BELGETIPI, BELGEIND, HAREKETIND,
+         SIRALAMATARIHI, SIRALAMATARIHIEX, ACIKLAMA)
+      VALUES
+        (@tarih, @stokNo, @depo, @envanter, @belgeTipi, @baslikInd, @satirInd,
+         @tarih, CONVERT(FLOAT, GETDATE()), @aciklama)
+    `,
+      {
+        tarih,
+        stokNo: s.stokNo,
+        depo,
+        envanter: -s.miktar,
+        belgeTipi: SEFIM_SATIS_TIPI,
+        baslikInd,
+        satirInd,
+        aciklama: String(s.urun || '').substring(0, 100)
+      }
+    );
+  }
+
+  // Satış carisine borç. Tahsilat belgeleri (tip 13) aynı cariye alacak
+  // yazdığı için ŞEFSATIŞ carisi günün sonunda sıfırlanıyor.
+  await t.calistir(
+    `
+    INSERT INTO ${tablo(v, firma, donem, 'TBLCARIHAREKETLERI')}
+      (FIRMANO, TARIH, IZAHAT, EVRAKNO, BORC, ALACAK, LN, IADE, OZELKOD,
+       PARABIRIMI, KUR, ODEMETARIHI, ISLEMTARIHI, SIRALAMATARIHI, SIRALAMATARIHIEX)
+    VALUES
+      (@cariNo, @tarih, @izahat, @belgeNo, @borc, 0, @baslikInd, 0, @isaret,
+       'TL', 1, @tarih, GETDATE(), GETDATE(), CONVERT(FLOAT, GETDATE()))
+  `,
+    {
+      cariNo,
+      tarih,
+      izahat: SEFIM_SATIS_TIPI,
+      belgeNo,
+      borc: toplam.tahsilatToplami,
+      baslikInd,
+      isaret: SEFIM_ISARETI
+    }
+  );
+
+  return {
+    belgeNo,
+    baslikInd,
+    belgeTipi: SEFIM_SATIS_TIPI,
+    satir: satirlar.length,
+    tutar: toplam.tahsilatToplami
+  };
+}
+
+// Veresiye müşterisinin cari kartı yoksa açar. Vega'nın kendi entegrasyon
+// programı da böyle yapıyor: gün içinde tanımadığı bir müşteri adı görünce
+// F0102TBLCARI'ye yeni kart ekliyor (izlemede 'YETKİN KÖMÜR' böyle açılmıştı).
+//
+// Kart en yalın hâliyle açılıyor: kod ve ad müşterinin Şefim'deki adı, tip 1
+// (müşteri), para birimi TL, durum aktif. Vergi numarası ve adres girmek
+// panelin işi değil — muhasebe kartı sonradan tamamlıyor.
+async function cariKartiAc(t, v, firma, ad) {
+  const temiz = String(ad || '').trim().substring(0, 50);
+  if (!temiz) throw new Error('Veresiye müşterisinin adı boş; cari kartı açılamıyor.');
+  const r = await t.sorgu(
+    `INSERT INTO ${kart(v, firma, 'TBLCARI')}
+       (FIRMAKODU, FIRMAADI, UNVAN, FIRMATIPI, PARABIRIMI, STATUS, TELEFON1, VERGINO)
+     OUTPUT INSERTED.IND AS ind
+     VALUES (@ad, @ad, '', 1, 'TL', 1, '', '')`,
+    { ad: temiz }
+  );
+  return r[0].ind;
+}
+
+// Bir iş gününün bütün belgelerini tek işlemde yazar.
+async function sefimAktarimYaz(kayit) {
+  kilitKontrol();
+  const { firma, donem } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+  const depo = Number(kayit.depo) || 0;
+  if (!depo) throw new Error('Aktarım için depo seçilmeli.');
+  const tarih = new Date(kayit.isGunu + 'T00:00:00Z');
+  const userNo = Number(kayit.userNo || 0);
+
+  const satirlar = (kayit.satirlar || []).filter((s) => Number(s.stokNo) && Number(s.miktar) > 0);
+  const tahsilat = (kayit.tahsilat || []).filter((s) => Math.abs(Number(s.tutar)) > 0.0001);
+  const kasa = kayit.kasaHareketleri || [];
+
+  return islem(async (t) => {
+    const sube = await faturaSubeKodlari(t, tablo(v, firma, donem, 'TBLALFATBASLIK'));
+    const belgeler = [];
+
+    if (satirlar.length) {
+      belgeler.push(
+        Object.assign(
+          { ne: 'satis' },
+          await sefimSatisFisiYaz(t, {
+            v, firma, donem, depo, tarih, satirlar, sube, userNo,
+            cariNo: kayit.satisCariNo,
+            toplam: kayit.toplam
+          })
+        )
+      );
+    }
+
+    // Tahsilat: her ödeme türü ayrı belge (Vega da böyle kesiyor).
+    for (const o of tahsilat) {
+      belgeler.push(
+        Object.assign(
+          { ne: 'tahsilat', tur: o.kod },
+          await cariFisiYaz(t, {
+            v, firma, donem, tarih, sube, userNo,
+            giris: true,
+            cariNo: kayit.satisCariNo,
+            cariAdi: kayit.satisCariAdi,
+            satirlar: [o]
+          })
+        )
+      );
+    }
+
+    // Kasa giriş / çıkışları: yön başına tek belge, satırları Şefim'deki
+    // hareketler.
+    const giris = kasa.filter((x) => Number(x.tutar) > 0)
+      .map((x) => ({ aciklama: x.aciklama, tutar: Number(x.tutar), izahat: 1, kasaya: true }));
+    const cikis = kasa.filter((x) => Number(x.tutar) < 0)
+      .map((x) => ({ aciklama: x.aciklama, tutar: -Number(x.tutar), izahat: 1, kasaya: true }));
+
+    if (giris.length) {
+      belgeler.push(
+        Object.assign(
+          { ne: 'kasaGiris' },
+          await cariFisiYaz(t, {
+            v, firma, donem, tarih, sube, userNo,
+            giris: true,
+            cariNo: kayit.kasaCariNo,
+            cariAdi: kayit.kasaCariAdi,
+            satirlar: giris
+          })
+        )
+      );
+    }
+    if (cikis.length) {
+      belgeler.push(
+        Object.assign(
+          { ne: 'kasaCikis' },
+          await cariFisiYaz(t, {
+            v, firma, donem, tarih, sube, userNo,
+            giris: false,
+            cariNo: kayit.kasaCariNo,
+            cariAdi: kayit.kasaCariAdi,
+            satirlar: cikis
+          })
+        )
+      );
+    }
+
+    // Veresiye adisyonlar: her müşteriye kendi stok çıkış fişi, tutarı o
+    // carinin borcuna. Tahsilat belgesi kesilmiyor — borç açık kalıyor,
+    // müşteri ödeyince muhasebe kendi tahsilatını giriyor.
+    for (const m of kayit.veresiye || []) {
+      if (!m.satirlar.length) continue;
+      let cariNo = Number(m.cariNo) || 0;
+      let acildi = false;
+      if (!cariNo) {
+        cariNo = await cariKartiAc(t, v, firma, m.musteri);
+        acildi = true;
+      }
+      const toplam = {
+        // Veresiye fişinde yuvarlama yok: belge tutarı satırların toplamıdır,
+        // ödenmiş bir tutara oturtulmuyor.
+        tahsilatToplami: m.toplam,
+        satirToplami: m.toplam,
+        yuvarlama: 0
+      };
+      belgeler.push(
+        Object.assign(
+          { ne: 'veresiye', musteri: m.musteri, cariAcildi: acildi },
+          await sefimSatisFisiYaz(t, {
+            v, firma, donem, depo, tarih, sube, userNo,
+            cariNo,
+            satirlar: m.satirlar,
+            toplam
+          })
+        )
+      );
+    }
+
+    return { belgeler };
+  });
+}
+
+// Aktarımın yazdığı bütün belgeleri siler; stok ve cari aktarım öncesine döner.
+async function sefimAktarimGeriAl(kayit) {
+  kilitKontrol();
+  const { firma, donem } = await dogrula(kayit.firma, kayit.donem);
+  const v = vt();
+  const belgeler = Array.isArray(kayit.belgeler) ? kayit.belgeler : [];
+  if (!belgeler.length) throw new Error('Geri alınacak belge listesi boş.');
+
+  return islem(async (t) => {
+    let toplam = 0;
+    const say = (r) => {
+      toplam += (r && r[0]) || 0;
+    };
+
+    for (const b of belgeler) {
+      const ind = Number(b.baslikInd);
+      if (!ind) continue;
+
+      if (Number(b.belgeTipi) === SEFIM_SATIS_TIPI) {
+        say(await t.calistir(
+          `DELETE FROM ${tablo(v, firma, donem, 'TBLCARIHAREKETLERI')}
+           WHERE LN = @ind AND IZAHAT = @tip`,
+          { ind, tip: String(SEFIM_SATIS_TIPI) }
+        ));
+        say(await t.calistir(
+          `DELETE FROM ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
+           WHERE BELGEIND = @ind AND BELGETIPI = @tip`,
+          { ind, tip: SEFIM_SATIS_TIPI }
+        ));
+        say(await t.calistir(
+          `DELETE FROM ${tablo(v, firma, donem, 'TBLSTOKHAREKETLERI')}
+           WHERE BELGENO = @ind AND IZAHAT = @tip`,
+          { ind, tip: SEFIM_SATIS_TIPI }
+        ));
+        say(await t.calistir(
+          `DELETE FROM ${tablo(v, firma, donem, 'TBLSTKCIKHAREKET')} WHERE EVRAKNO = @ind`,
+          { ind }
+        ));
+        say(await t.calistir(
+          `DELETE FROM ${tablo(v, firma, donem, 'TBLSTKCIKBASLIK')} WHERE IND = @ind`,
+          { ind }
+        ));
+        continue;
+      }
+
+      const giris = Number(b.belgeTipi) === CARI_GIRIS_TIPI;
+      say(await t.calistir(
+        `DELETE FROM ${tablo(v, firma, donem, 'TBLKASA')}
+         WHERE BELGELINK = @ind AND BELGEIZAHAT = @tip`,
+        { ind, tip: b.belgeTipi }
+      ));
+      say(await t.calistir(
+        `DELETE FROM ${tablo(v, firma, donem, 'TBLCARIGENELHAREKET')}
+         WHERE BELGEIND = @ind AND BELGEIZAHAT = @tip`,
+        { ind, tip: b.belgeTipi }
+      ));
+      say(await t.calistir(
+        `DELETE FROM ${tablo(v, firma, donem, giris ? 'TBLCARGIRHAREKET' : 'TBLCARCIKHAREKET')}
+         WHERE EVRAKNO = @ind`,
+        { ind }
+      ));
+      say(await t.calistir(
+        `DELETE FROM ${tablo(v, firma, donem, giris ? 'TBLCARGIRBASLIK' : 'TBLCARCIKBASLIK')}
+         WHERE IND = @ind`,
+        { ind }
+      ));
+    }
+    return toplam;
+  });
+}
+
+// Şefim'deki satış satırlarının aktarım işaretini koyar / kaldırır.
+//
+// Vega'nın kendi programı aktarmadığı satırı da işaretliyor; panel yalnız
+// GERÇEKTEN yazdığı satırları işaretler. Bu yazma Şefim veritabanına gider,
+// yani `galya_panel` kullanıcısının orada da yazma yetkisi gerekir; yetki
+// yoksa aktarımın kendisi bozulmasın diye hata yutulur ve günlüğe düşer.
+async function sefimSatirlariIsaretle(billIdler, deger) {
+  const idler = (Array.isArray(billIdler) ? billIdler : []).map(Number).filter(Boolean);
+  if (!idler.length) return { tamam: true, satir: 0 };
+  const s = ayarOku().sefimVeritabani;
+  const isaret = deger === 0 ? 0 : 1;
+
+  try {
+    let toplam = 0;
+    // Parça parça: tek IN listesine on binlerce kimlik sığmıyor.
+    for (let i = 0; i < idler.length; i += 1000) {
+      const parca = idler.slice(i, i + 1000);
+      const r = await calistir(
+        `UPDATE [${s}].dbo.Bill SET Aktarildi = @isaret WHERE Id IN (${parca.join(',')})`,
+        { isaret }
+      );
+      toplam += (r && r[0]) || 0;
+    }
+    return { tamam: true, satir: toplam };
+  } catch (e) {
+    await panel.kayit(
+      'Şefim Aktarımı',
+      'Şefim aktarım işareti konulamadı',
+      { hata: e.message, satir: idler.length, isaret },
+      null
+    );
+    return { tamam: false, satir: 0, hata: e.message };
+  }
+}
+
 module.exports = {
   yazmaAcikMi,
   belgeOneki,
@@ -3266,6 +3857,12 @@ module.exports = {
   zayiFisiYaz,
   zayiFisiGeriAl,
   stokPasifYap,
+  sefimAktarimYaz,
+  sefimAktarimGeriAl,
+  sefimSatirlariIsaretle,
+  SEFIM_ISARETI,
+  CARI_GIRIS_TIPI,
+  CARI_CIKIS_TIPI,
   CIKIS_BELGE_TIPI,
   GIRIS_BELGE_TIPI,
   ZAYI_BELGE_TIPI,

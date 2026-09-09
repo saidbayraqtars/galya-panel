@@ -39,7 +39,36 @@ const VARSAYILAN = {
   // Geliştirme ve deneme aşamasında açık. Kapatmak Ayarlar ekranından.
   // Not: SQL tarafında galya_panel kullanıcısı VEGADB üzerinde salt okunur;
   // bu bayrak açık olsa da yetki verilmeden Vega'ya satır gitmez.
-  vegayaYazmaAktif: true
+  vegayaYazmaAktif: true,
+
+  // --- Şefim günlük satış aktarımı -----------------------------------------
+  //
+  // İş günü kesim saati. Restoran gece yarısını geçiyor: 11.08 iş gününün
+  // adisyonları 12.08 saat 00:06'ya kadar sürüyor. Vega'nın kendi
+  // "Şefim Entegrasyon" programı 11.08 belgesine 12.08 04:00'a kadarki
+  // kayıtları koyuyor; 11 kasa hareketi / 12.675,00 TL bu kesimle birebir
+  // tuttu (kesim 00:00 alındığında 7 hareket / 7.425,00 TL çıkıyordu).
+  sefimGunKesimSaati: 4,
+  // Satış hasılatının yazıldığı cari kartın kodu.
+  sefimSatisCarisi: 'ŞEFSATIŞ',
+  // Şefim'de girilen kasa giriş/çıkışlarının yazıldığı cari kartın kodu.
+  sefimKasaCarisi: 'ŞEFİMKASA',
+  // Aktarımın hangi depodan düşeceği. Boşsa varsayilanDepo kullanılır.
+  sefimDepo: 0,
+
+  // --- Ağ erişimi (db/sunucu.js) -------------------------------------------
+  //
+  // Açıkken panel aynı ağdaki başka bilgisayarlardan tarayıcıyla açılabilir:
+  //   http://192.168.1.50:51234
+  //
+  // Trafik ŞİFRESİZDİR; PIN ağ üzerinden açık geçer. Yalnız güvenilen yerel
+  // ağda açın, internete port yönlendirmesi YAPMAYIN. Sunucu, aktif bir
+  // yönetici kullanıcı tanımlı değilse hiç açılmaz.
+  agErisimiAktif: false,
+  agPort: 51234,
+  // '0.0.0.0' bütün ağ arayüzleri. Tek bir arayüze bağlamak için o kartın
+  // IP'si yazılır ('192.168.1.50' gibi).
+  agAdresi: '0.0.0.0'
 };
 
 // Ayar dosyası nerede duruyor?
