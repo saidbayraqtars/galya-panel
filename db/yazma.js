@@ -26,7 +26,7 @@
 const crypto = require('crypto');
 const { sorgu, calistir, islem, havuzAl, mssql } = require('./sql');
 const { ayarOku } = require('./ayar');
-const { dogrula, tablo, kart } = require('./firma');
+const { dogrula, tablo, kart, tabloVarMi } = require('./firma');
 const panel = require('./panel');
 
 function vt() {
@@ -294,23 +294,40 @@ async function receteOlustur(kayit) {
     { stokNo: mamulNo }
   );
   if (mevcut.length) {
+    // Panelin eski surumleri cikti satirini yazmiyordu; eksikse tamamla.
+    await receteCiktiSatiriGuvence(v, firma, mevcut[0].IND, m, kayit);
     return { tamam: true, receteNo: mevcut[0].IND, yeni: false };
   }
+
+  // Vega reçete başlığının OZELKOD alanına şube adını yazıyor ve bu alan
+  // kendi reçetelerinin tamamında dolu. Firmanın kendi kullandığı değeri
+  // mevcut reçetelerden alıyoruz; hiç reçete yoksa boş metin.
+  const subeler = await sorgu(
+    `SELECT TOP 1 OZELKOD AS kod FROM ${kart(v, firma, 'TBLURERECETELIST')}
+     WHERE ISNULL(OZELKOD, '') <> ''
+     GROUP BY OZELKOD ORDER BY COUNT(*) DESC`
+  );
+  const receteOzelKodu = subeler.length ? subeler[0].kod : '';
 
   const eklenen = await sorgu(
     `
     INSERT INTO ${kart(v, firma, 'TBLURERECETELIST')}
       (STOKNO, STOKKODU, MALINCINSI, BIRIM, FIYAT, KDV, KULLANICI,
        SONERISIMTARIHI, OLUSTURMATARIHI, TUTAR, ACIKLAMA, STOKTIPI,
-       SATISFIYATI, MIKTAR, STANDARTSURE)
+       SATISFIYATI, MIKTAR, STANDARTSURE,
+       OZELKOD, OZELKOD1, OZELKOD2, OZELKOD3, OZELKOD4,
+       OZELKOD5, OZELKOD6, OZELKOD7, OZELKOD8, OZELKOD9)
     OUTPUT INSERTED.IND AS ind
     VALUES
       (@stokNo, @kod, @ad, @birim, @fiyat, 0, @kullanici,
        GETDATE(), GETDATE(), 0, @aciklama, @stokTipi,
-       0, @verim, 0)
+       0, @verim, 0,
+       @ozelKod, '', '', '', '',
+       '', '', '', '', '')
   `,
     {
       stokNo: mamulNo,
+      ozelKod: receteOzelKodu,
       kod: m.kod,
       ad: m.ad,
       birim: m.birim,
@@ -322,6 +339,8 @@ async function receteOlustur(kayit) {
     }
   );
 
+  await receteCiktiSatiriGuvence(v, firma, eklenen[0].ind, m, kayit);
+
   await panel.kayit(
     'Reçete',
     'Yeni reçete başlığı oluşturuldu',
@@ -330,6 +349,50 @@ async function receteOlustur(kayit) {
   );
 
   return { tamam: true, receteNo: eklenen[0].ind, yeni: true };
+}
+
+// Vega her reçeteye TBLURERECETECIKTI'ya bir "ana mamul" (TUR 0) satırı yazar:
+// üç kurulumda 627 reçetenin 627'sinde var, istisnası yok. Reçete ekranı
+// mamulü bu satırdan okuyor; satır yoksa reçete Vega'da çıktısız görünür.
+// Panel bunu yazmıyordu — 08.09.2026 kolon denetiminin yakaladığı son eksik.
+async function receteCiktiSatiriGuvence(v, firma, receteNo, m, kayit) {
+  if (!(await tabloVarMi(firma, '', 'TBLURERECETECIKTI'))) return;
+
+  const mevcut = await sorgu(
+    `SELECT TOP 1 IND FROM ${kart(v, firma, 'TBLURERECETECIKTI')}
+     WHERE EVRAKNO = @receteNo AND TUR = 0`,
+    { receteNo: Number(receteNo) }
+  );
+  if (mevcut.length) return;
+
+  const verim = Number(kayit.verim || 1) || 1;
+  const fiyat = Number(m.maliyet) || 0;
+
+  await calistir(
+    `
+    INSERT INTO ${kart(v, firma, 'TBLURERECETECIKTI')}
+      (EVRAKNO, RECETENO, STOKNO, STOKKODU, MALINCINSI, BIRIM,
+       MIKTAR, KALANMIKTAR, ORAN, TUR, POZISYONNO,
+       KDV, FIYAT, TUTAR, FIREORANI, FIREMIKTARI, KULLANICI,
+       ISLEMTARIHI, SONERISIMTARIHI)
+    VALUES
+      (@receteNo, @receteNo, @stokNo, @kod, @ad, @birim,
+       @verim, @verim, 100, 0, 2,
+       0, @fiyat, @tutar, 0, 0, @kullanici,
+       GETDATE(), GETDATE())
+  `,
+    {
+      receteNo: Number(receteNo),
+      stokNo: Number(m.stokNo),
+      kod: m.kod,
+      ad: m.ad,
+      birim: m.birim,
+      verim,
+      fiyat,
+      tutar: fiyat * verim,
+      kullanici: Number(kayit.userNo || 0)
+    }
+  );
 }
 
 async function receteSatiriEkle(kayit) {
@@ -561,7 +624,12 @@ async function receteSatiriSil(kayit) {
 
 const SAYIM_GIRIS_TIPI = 93;
 const SAYIM_CIKIS_TIPI = 94;
-const SAYIM_ONEKI = 'Z';
+// Sayım fişi de panelin kendi serisini kullanıyor. Vega kendi sayımlarını
+// `Z` ile numaralıyor ve sayım tabloları yalnız sayım belgesi tutuyor; ama
+// çakışma riski burada da aynı (Vega da MAX+1 hesaplıyor ve panelin kilidini
+// almıyor). Ayrıca panelin kestiği sayım fişinin ayırt edilebilmesi
+// isteniyor. `null` verilirse siradakiBelgeNo ayarlardaki öneki kullanır.
+const SAYIM_ONEKI = null;
 
 // Tek yönlü sayım belgesi: verilen satırların tamamı tek fişe yazılır.
 async function sayimBelgesiYaz(t, ayrinti) {
@@ -584,13 +652,31 @@ async function sayimBelgesiYaz(t, ayrinti) {
       (BELGENO, TARIH, ODEMETARIHI, DEPO, HAREKETDEPOSU, BELGETIPI, EKBELGETIPI,
        OZELKOD1, OZELKOD2, GIRIS, STOKHAREKETEYAZ, CARIHAREKETEYAZ,
        FIRMANO, USERNO, TUTAR, ARATOPLAM, KDV, IPTAL, IADE, CONVERTED,
-       PARABIRIMI, KUR, ALTNOT, CREDATE, LADATE)
+       PARABIRIMI, KUR, ALTNOT, CREDATE, LADATE,
+       FIRMAADI, ALTBELGENO, UID,
+       AK, ENVANTERUPDATE, ODMODIFIED, SUCCESS, SELECTED,
+       ALT1, ALT2, ALT3, ALT4, OZELKOD, KALEM1, KALEM2, KALEM3, KALEM4,
+       YUVARLAMA, ALLOWYUVARLAMA, ODENEN,
+       MASRAF1, MASRAF2, MASRAF3, MASRAF4,
+       MASRAFKDV1, MASRAFKDV2, MASRAFKDV3, MASRAFKDV4,
+       ENTEGRE, KDVISK, SATISSEKLI, KONSOLIDE, ODEMEOPSIYONU, TEVKIFATORAN,
+       STATUS, MUHASEBELESMEYECEK, KAYNAK,
+       OZELKOD3, OZELKOD4, OZELKOD5, OZELKOD6, OZELKOD7, OZELKOD8, OZELKOD9)
     OUTPUT INSERTED.IND AS ind
     VALUES
       (@belgeNo, @tarih, @tarih, @depo, @depo, @belgeTipi, 0,
        @depoAdi, @depoAdi, @giris, 1, 1,
        1, @userNo, @tutar, @tutar, 0, 0, 0, 0,
-       'TL', 1, @aciklama, GETDATE(), GETDATE())
+       'TL', 1, @aciklama, GETDATE(), GETDATE(),
+       '', '', @uid,
+       0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0,
+       0, 0, 0,
+       '', '', '', '', '', '', '')
   `,
     {
       belgeNo,
@@ -601,7 +687,8 @@ async function sayimBelgesiYaz(t, ayrinti) {
       giris: cikis ? 0 : 1,
       userNo: Number(userNo || 0),
       tutar,
-      aciklama: (aciklama || 'Galya Panel sayımı').substring(0, 100)
+      aciklama: (aciklama || 'Galya Panel sayımı').substring(0, 100),
+      uid: '{' + crypto.randomUUID().toUpperCase() + '}'
     }
   );
   const baslikInd = baslik[0].ind;
@@ -618,13 +705,19 @@ async function sayimBelgesiYaz(t, ayrinti) {
         (TARIH, DETAY, EVRAKNO, FIRMANO, STOKNO, MALINCINSI, STOKKODU, STOKTIPI,
          MIKTAR, BIRIMMIKTAR, BIRIM, BIRIMEX, KDV, KDVTUTARI, ISK1,
          AFIYATI, FIYATI, GERCEKTOPLAM, DEPO, SATISKOSULU, SERIMIKTAR, ENVANTER,
-         TERMIN, PARABIRIMI, KUR, ACIKLAMA, GK)
+         TERMIN, PARABIRIMI, KUR, ACIKLAMA, GK,
+         SELECTED, ISK2, ISK3, ISK4, PERSONEL, PIRIM, OPSIYON, PROMOSYON,
+         KARSISTOKKODU, KARSIBARKOD, TAKSIT, BARKOD, PESINAT,
+         MASRAF, MASRAFKDV, OIV, INDIRIM, OTV)
       OUTPUT INSERTED.IND AS ind
       VALUES
         (@tarih, 0, @baslikInd, 1, @stokNo, @stokAdi, @stokKodu, @stokTipi,
          @miktar, 1, @birim, @birimEx, @kdv, 0, @isk1,
          @afiyati, @fiyati, @satirTutari, @depo, 1, 1, @miktar,
-         @termin, 'TL', 1, @satirAciklama, @gk)
+         @termin, 'TL', 1, @satirAciklama, @gk,
+         0, 0, 0, 0, 0, 0, 0, 0,
+         '', '', 0, '', 0,
+         0, 0, 0, 0, 0)
     `,
       {
         tarih,
@@ -655,11 +748,13 @@ async function sayimBelgesiYaz(t, ayrinti) {
       INSERT INTO ${tablo(v, firma, donem, 'TBLSTOKHAREKETLERI')}
         (EVRAKNO, IZAHAT, TARIH, GIREN, CIKAN, KALAN, TUTAR, FIRMANO, STOKNO,
          BELGENO, LN, DEPO, KDV, IADE, BIRIMFIYAT, BIRIMMALIYET, STOKTIPI,
-         SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, ACIKLAMA)
+         SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, ACIKLAMA,
+         PERSONEL, OPSIYON)
       VALUES
         (@belgeNo, @izahat, @tarih, @giren, @cikan, 0, @satirTutari, 1, @stokNo,
          @baslikInd, @satirInd, @depo, @kdv, 0, @birimFiyat, @birimMaliyet, @stokTipi,
-         GETDATE(), CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, 'Sayım')
+         GETDATE(), CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, 'Sayım',
+         0, 0)
     `,
       {
         belgeNo,
@@ -918,20 +1013,52 @@ async function sayimFisiGeriAl(kayit) {
 
 const CIKIS_BELGE_TIPI = 33; // Stok çıkış fişi (elle girilen)
 const GIRIS_BELGE_TIPI = 32; // Stok giriş fişi (elle girilen)
-const BELGE_ONEKI = 'A';     // Vega elle girilen fişlerde A öneki kullanıyor
 
-// Elle girilen fişlerin numarası A0000001 biçiminde ilerliyor. Sayım fişleri
-// aynı biçimi Z önekiyle kullanıyor ve sayaç her tabloda ayrı yürüyor
-// (sayım girişinde Z0000048 iken sayım çıkışında Z0000022 olabiliyor).
+// PANELİN KENDİ BELGE SERİSİ.
+//
+// Panel uzun süre `A` önekini kullandı; gerekçe "Vega'nın kendi otomatik
+// belgeleri Z kullanıyor, A boştur" idi. **Yanlıştı.** `A`, Vega'da elle
+// belge girildiğinde önerilen VARSAYILAN seridir; kullanıcı Vega'dan fiş
+// keserse o da A0000001'den ilerler. İki gerçek veritabanında da görüldü:
+// panel hiç yazmamışken A serisi doluydu (Özdemirkaya F0101/D0017'de
+// A0000009'a kadar).
+//
+// Sonuçları:
+//   - Panelin ve Vega'nın numaraları aynı diziye giriyor; ikisi aynı anda
+//     fiş keserse aynı numarayı alabilir (UPDLOCK yalnız paneli bekletir,
+//     Vega o kilidi almaz).
+//   - Panelin yazdığı belge, kullanıcının elle yazdığından ayırt edilemiyor.
+//
+// Artık panel kendi önekini kullanıyor. `BELGENO` serbest metindir (gerçek
+// veride "ATAKUMTÜLEKSİK/3801", "10.000$" gibi değerler var), yani ayrılmış
+// bir alan yok; önek ayarlardan değiştirilebilsin diye `belgeOneki` alanı
+// eklendi. Varsayılan `GP` (Galya Panel) — iki gerçek veritabanında da hiçbir
+// belge tablosunda kullanılmıyordu.
+//
+// Vega'nın PAYLAŞILAN sayaçları bundan etkilenmiyor: depo transferinin (38)
+// ve üretim 96/97 belgelerinin `Z` numaraları Vega'nın kendi dizisinin
+// devamıdır, panel oraya kendi serisini sokmaz.
+const VARSAYILAN_BELGE_ONEKI = 'GP';
+
+function belgeOneki() {
+  const o = String(ayarOku().belgeOneki || '').trim().toUpperCase();
+  // Yalnız harf/rakam; boşluk ya da noktalama numarayı okunamaz yapar.
+  return /^[A-Z0-9]{1,4}$/.test(o) ? o : VARSAYILAN_BELGE_ONEKI;
+}
+
+// Panelin kendi belge numarası: <önek> + 7 hane. Sayaç her tabloda ayrı
+// yürüyor (sayım girişinde GP0000048 iken sayım çıkışında GP0000022
+// olabilir — Vega'nın kendi davranışı da böyle).
 //
 // UPDLOCK/HOLDLOCK okuma sırasında konur: iki kullanıcı aynı anda fiş
 // kesmeye kalkarsa ikincisi bekler, aynı numarayı almaz.
 async function siradakiBelgeNo(t, tabloAdi, onek) {
-  const o = onek || BELGE_ONEKI;
+  const o = onek || belgeOneki();
+  const basla = o.length + 1;
   const r = await t.sorgu(
-    `SELECT MAX(CAST(SUBSTRING(BELGENO, 2, 20) AS INT)) AS sonNo
+    `SELECT MAX(CAST(SUBSTRING(BELGENO, ${basla}, 20) AS INT)) AS sonNo
      FROM ${tabloAdi} WITH (UPDLOCK, HOLDLOCK)
-     WHERE BELGENO LIKE @desen AND ISNUMERIC(SUBSTRING(BELGENO, 2, 20)) = 1`,
+     WHERE BELGENO LIKE @desen AND ISNUMERIC(SUBSTRING(BELGENO, ${basla}, 20)) = 1`,
     { desen: o + '%' }
   );
   const sonraki = (r[0] && r[0].sonNo ? Number(r[0].sonNo) : 0) + 1;
@@ -939,9 +1066,13 @@ async function siradakiBelgeNo(t, tabloAdi, onek) {
 }
 
 // Tek yönlü fiş: bir üründen düşer ya da bir ürüne ekler.
+// Vega'nın kendi fişlerinde HER satırda dolu olan alanlar burada da
+// dolduruluyor. Boş bırakılan bir alan satırı tabloya sokar ve stok doğru
+// hareket eder, ama Vega'nın kendi ekranı belgeyi açamayabilir; ölçüsü
+// kurulum/test-kolon-denetimi.js'te.
 async function fisYaz(t, ayrinti) {
-  const { v, firma, donem, cikis, stokNo, stokAdi, miktar, depo, birim, birimEx,
-          maliyet, aciklama, userNo } = ayrinti;
+  const { v, firma, donem, cikis, stokNo, stokAdi, stokKodu, stokTipi, miktar,
+          depo, birim, birimEx, maliyet, aciklama, userNo, sube } = ayrinti;
 
   const baslikTablosu = tablo(v, firma, donem, cikis ? 'TBLSTKCIKBASLIK' : 'TBLSTKGIRBASLIK');
   const hareketTablosu = tablo(v, firma, donem, cikis ? 'TBLSTKCIKHAREKET' : 'TBLSTKGIRHAREKET');
@@ -952,16 +1083,28 @@ async function fisYaz(t, ayrinti) {
   const baslik = await t.sorgu(
     `
     INSERT INTO ${baslikTablosu}
-      (BELGENO, TARIH, HAREKETDEPOSU, DEPO, BELGETIPI, EKBELGETIPI,
+      (BELGENO, TARIH, ODEMETARIHI, HAREKETDEPOSU, DEPO, BELGETIPI, EKBELGETIPI,
        ENVANTERUPDATE, SUCCESS, STOKHAREKETEYAZ, CARIHAREKETEYAZ,
        FIRMANO, USERNO, KAYNAK, TUTAR, ARATOPLAM, KDV, IPTAL, IADE,
-       CONVERTED, GIRIS, PARABIRIMI, KUR, ALTNOT, CREDATE, LADATE)
+       CONVERTED, GIRIS, PARABIRIMI, KUR, ALTNOT, CREDATE, LADATE,
+       OZELKOD1, OZELKOD2, UID,
+       AK, ODMODIFIED, ALT1, ALT2, ALT3, ALT4,
+       YUVARLAMA, ALLOWYUVARLAMA, ODENEN,
+       MASRAF1, MASRAF2, MASRAF3, MASRAF4,
+       MASRAFKDV1, MASRAFKDV2, MASRAFKDV3, MASRAFKDV4,
+       ENTEGRE, SATISSEKLI, YURTDISI, MUHASEBELESMEYECEK)
     OUTPUT INSERTED.IND AS ind
     VALUES
-      (@belgeNo, @tarih, @depo, @depo, @belgeTipi, 0,
+      (@belgeNo, @tarih, @tarih, @depo, @depo, @belgeTipi, 0,
        1, 1, 1, 0,
        0, @userNo, 0, @tutar, @tutar, 0, 0, 0,
-       0, @giris, 'TL', 1, @aciklama, GETDATE(), GETDATE())
+       0, @giris, 'TL', 1, @aciklama, GETDATE(), GETDATE(),
+       @k1, @k2, @uid,
+       0, 0, 0, 0, 0, 0,
+       0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0)
   `,
     {
       belgeNo,
@@ -971,7 +1114,10 @@ async function fisYaz(t, ayrinti) {
       userNo: Number(userNo || 0),
       tutar,
       giris: cikis ? 0 : 1,
-      aciklama: aciklama || null
+      aciklama: aciklama || null,
+      k1: (sube && sube.k1) || '',
+      k2: (sube && sube.k2) || '',
+      uid: '{' + crypto.randomUUID().toUpperCase() + '}'
     }
   );
   const baslikInd = baslik[0].ind;
@@ -979,20 +1125,30 @@ async function fisYaz(t, ayrinti) {
   const satir = await t.sorgu(
     `
     INSERT INTO ${hareketTablosu}
-      (TARIH, DETAY, EVRAKNO, FIRMANO, STOKNO, MALINCINSI, MIKTAR, BIRIMMIKTAR,
-       BIRIM, BIRIMEX, KDV, KDVTUTARI, AFIYATI, FIYATI, GERCEKTOPLAM,
-       DEPO, ENVANTER, PARABIRIMI, KUR, ACIKLAMA, GK)
+      (TARIH, DETAY, EVRAKNO, FIRMANO, STOKNO, MALINCINSI, STOKKODU, STOKTIPI,
+       MIKTAR, BIRIMMIKTAR, BIRIM, BIRIMEX, KDV, KDVTUTARI, AFIYATI, FIYATI,
+       GERCEKTOPLAM, DEPO, ENVANTER, PARABIRIMI, KUR, ACIKLAMA, GK,
+       SATISKOSULU, SERIMIKTAR, GRUPMIKTAR,
+       ISK1, ISK2, ISK3, ISK4, ISK5, ISK6,
+       PERSONEL, PIRIM, OPSIYON, PROMOSYON,
+       KARSISTOKKODU, BARKOD, MASRAF, OIV, INDIRIM, OTV)
     OUTPUT INSERTED.IND AS ind
     VALUES
-      (@tarih, 0, @baslikInd, 0, @stokNo, @stokAdi, @miktar, 1,
-       @birim, @birimEx, 0, 0, @maliyet, @maliyet, @tutar,
-       @depo, @miktar, 'TL', 1, @aciklama, @gk)
+      (@tarih, 0, @baslikInd, 0, @stokNo, @stokAdi, @stokKodu, @stokTipi,
+       @miktar, 1, @birim, @birimEx, 0, 0, @maliyet, @maliyet,
+       @tutar, @depo, @miktar, 'TL', 1, @aciklama, @gk,
+       1, 1, 1,
+       0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0,
+       '', '', 0, 0, 0, 0)
   `,
     {
       tarih: new Date(),
       baslikInd,
       stokNo: Number(stokNo),
       stokAdi: stokAdi || '',
+      stokKodu: stokKodu || '',
+      stokTipi: Number(stokTipi || 0),
       miktar: Number(miktar),
       birim: birim || '',
       birimEx: birimEx != null ? Number(birimEx) : 0,
@@ -1010,15 +1166,18 @@ async function fisYaz(t, ayrinti) {
     INSERT INTO ${tablo(v, firma, donem, 'TBLSTOKHAREKETLERI')}
       (EVRAKNO, IZAHAT, TARIH, GIREN, CIKAN, KALAN, TUTAR, FIRMANO, STOKNO,
        BELGENO, LN, DEPO, KDV, IADE, BIRIMFIYAT, BIRIMMALIYET,
-       SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, ACIKLAMA)
+       SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, ACIKLAMA,
+       STOKTIPI, PERSONEL, OPSIYON)
     VALUES
       (@belgeNo, @izahat, @tarih, @giren, @cikan, 0, @tutar, 0, @stokNo,
        @baslikInd, @satirInd, @depo, 0, 0, @maliyet, @maliyet,
-       @tarih, CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, @aciklama)
+       @tarih, CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, @aciklama,
+       @stokTipi, 0, 0)
   `,
     {
       belgeNo,
       izahat: belgeTipi,
+      stokTipi: Number(stokTipi || 0),
       tarih: new Date(),
       giren: cikis ? 0 : Number(miktar),
       cikan: cikis ? Number(miktar) : 0,
@@ -1076,6 +1235,7 @@ async function tutanakFisiYaz(kayit) {
   const kartlar = await sorgu(
     `
     SELECT S.IND AS stokNo, S.MALINCINSI AS ad, ISNULL(S.MALIYET, 0) AS maliyet,
+           ISNULL(S.STOKKODU, '') AS kod, ISNULL(S.STOKTIPI, 0) AS stokTipi,
            ISNULL(B.BIRIMADI, '') AS birim, ISNULL(B.IND, 0) AS birimEx
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
@@ -1091,10 +1251,13 @@ async function tutanakFisiYaz(kayit) {
   const aciklama = ('Galya Panel tutanak' + (kayit.sebep ? ' - ' + kayit.sebep : '')).substring(0, 100);
 
   const sonuc = await islem(async (t) => {
+    const sube = await faturaSubeKodlari(t, tablo(v, firma, donem, 'TBLALFATBASLIK'));
     const cikisFisi = await fisYaz(t, {
-      v, firma, donem, cikis: true, depo, aciklama,
+      v, firma, donem, cikis: true, depo, aciklama, sube,
       stokNo: dusenKart.stokNo,
       stokAdi: dusenKart.ad,
+      stokKodu: dusenKart.kod,
+      stokTipi: dusenKart.stokTipi,
       miktar: Number(kayit.dusenMiktar),
       birim: dusenKart.birim,
       birimEx: dusenKart.birimEx,
@@ -1102,9 +1265,11 @@ async function tutanakFisiYaz(kayit) {
       userNo: kayit.userNo
     });
     const girisFisi = await fisYaz(t, {
-      v, firma, donem, cikis: false, depo, aciklama,
+      v, firma, donem, cikis: false, depo, aciklama, sube,
       stokNo: artanKart.stokNo,
       stokAdi: artanKart.ad,
+      stokKodu: artanKart.kod,
+      stokTipi: artanKart.stokTipi,
       miktar: Number(kayit.artanMiktar),
       birim: artanKart.birim,
       birimEx: artanKart.birimEx,
@@ -1301,14 +1466,24 @@ async function zayiFisiYaz(kayit) {
          TUTAR, ARATOPLAM, KDV, IPTAL, IADE, CONVERTED, GIRIS,
          STOKHAREKETEYAZ, CARIHAREKETEYAZ, KAYNAK, USERNO,
          OZELKOD1, OZELKOD2, OZELKOD4, PARABIRIMI, KUR, ALTNOT,
-         CREDATE, LADATE, UID)
+         CREDATE, LADATE, UID,
+         AK, ODMODIFIED, ALT1, ALT2, ALT3, ALT4,
+         YUVARLAMA, ALLOWYUVARLAMA, ODENEN,
+         MASRAF1, MASRAF2, MASRAF3, MASRAF4,
+         MASRAFKDV1, MASRAFKDV2, MASRAFKDV3, MASRAFKDV4,
+         ENTEGRE, SATISSEKLI, MUHASEBELESMEYECEK, YURTDISI)
       OUTPUT INSERTED.IND AS ind
       VALUES
         (@belgeNo, @tarih, @tarih, @cariNo, @depo, @belgeTipi, 0,
          @genel, @ara, 0, 0, 0, 0, 0,
          1, 1, 0, @userNo,
          @k1, @k2, @altHesap, 'TL', 1, @aciklama,
-         GETDATE(), GETDATE(), @uid)
+         GETDATE(), GETDATE(), @uid,
+         0, 0, 0, 0, 0, 0,
+         0, 0, 0,
+         0, 0, 0, 0,
+         0, 0, 0, 0,
+         0, 0, 0, 0)
     `,
       {
         belgeNo,
@@ -1336,13 +1511,17 @@ async function zayiFisiYaz(kayit) {
           (TARIH, DETAY, EVRAKNO, FIRMANO, STOKNO, MALINCINSI, STOKKODU, STOKTIPI,
            MIKTAR, BIRIMMIKTAR, BIRIM, BIRIMEX, KDV, AFIYATI, FIYATI, GERCEKTOPLAM,
            DEPO, SATISKOSULU, SERIMIKTAR, ENVANTER, PARABIRIMI, KUR,
-           GRUPMIKTAR, ACIKLAMA, GK)
+           GRUPMIKTAR, ACIKLAMA, GK,
+           ISK1, ISK2, ISK3, ISK4, PERSONEL, PIRIM, OPSIYON, PROMOSYON,
+           BARKOD, MASRAF, OIV, INDIRIM, OTV, KARSISTOKKODU)
         OUTPUT INSERTED.IND AS ind
         VALUES
           (@tarih, 0, @baslikInd, @cariNo, @stokNo, @ad, @kod, @stokTipi,
            @miktar, 1, @birim, @birimEx, @kdv, @maliyet, @fiyat, @tutar,
            @depo, 1, 1, @miktar, 'TL', 1,
-           1, @aciklama, @gk)
+           1, @aciklama, @gk,
+           0, 0, 0, 0, 0, 0, 0, 0,
+           '', 0, 0, 0, 0, '')
       `,
         {
           tarih,
@@ -1634,7 +1813,7 @@ async function stokPasifYap(kayit) {
 // Desen, F0102/D0002 içindeki 706 gerçek alış faturası okunarak çıkarıldı.
 // Bir fatura beş tabloya yazılır:
 //
-//   TBLALFATBASLIK      IND (IDENTITY) = belge kimliği, BELGENO = 'A0000123'
+//   TBLALFATBASLIK      IND (IDENTITY) = belge kimliği, BELGENO = 'GP0000123'
 //   TBLALFATHAREKET     EVRAKNO = başlık IND, IND = satır kimliği
 //   TBLSTOKHAREKETLERI  BELGENO = başlık IND, LN = satır IND, IZAHAT = 20
 //   TBLDEPOENVANTER     BELGEIND = başlık IND, HAREKETIND = satır IND, +miktar
@@ -1721,7 +1900,12 @@ async function alisFaturasiYaz(kayit) {
          ENVANTERUPDATE, SUCCESS, STOKHAREKETEYAZ, CARIHAREKETEYAZ,
          PARABIRIMI, KUR, ALTNOT, OZELKOD1, OZELKOD2, EFATURA, YURTDISI,
          MUHASEBELESMEYECEK, IRSALIYELIFATURA, YAZARKASAFISI,
-         CREDATE, LADATE, UID)
+         CREDATE, LADATE, UID,
+         AK, ODMODIFIED, ALT1, ALT2, ALT3, ALT4,
+         YUVARLAMA, ALLOWYUVARLAMA, ODENEN,
+         MASRAF1, MASRAF2, MASRAF3, MASRAF4,
+         MASRAFKDV1, MASRAFKDV2, MASRAFKDV3, MASRAFKDV4,
+         ENTEGRE, SATISSEKLI, KAYNAK, YAZDIRILDI)
       OUTPUT INSERTED.IND AS ind
       VALUES
         (@belgeNo, @tarih, @vade, @depo, @depo, @belgeTipi, 0,
@@ -1729,7 +1913,12 @@ async function alisFaturasiYaz(kayit) {
          0, 0, 1, 1,
          'TL', 1, @aciklama, @k1, @k2, 0, 0,
          0, 0, 0,
-         GETDATE(), GETDATE(), @uid)
+         GETDATE(), GETDATE(), @uid,
+         0, 0, 0, 0, 0, 0,
+         0, 0, 0,
+         0, 0, 0, 0,
+         0, 0, 0, 0,
+         0, 0, 0, 0)
     `,
       {
         belgeNo,
@@ -1764,13 +1953,17 @@ async function alisFaturasiYaz(kayit) {
           (TARIH, DETAY, EVRAKNO, FIRMANO, STOKNO, MALINCINSI, STOKKODU, STOKTIPI,
            MIKTAR, BIRIMMIKTAR, BIRIM, BIRIMEX, KDV, KDVTUTARI, AFIYATI, FIYATI,
            GERCEKTOPLAM, DEPO, OPSIYON, SERIMIKTAR, ENVANTER, PARABIRIMI, KUR,
-           ORJFIYAT, GMIKTAR, ACIKLAMA, GK)
+           ORJFIYAT, GMIKTAR, ACIKLAMA, GK,
+           ISK1, ISK2, ISK3, ISK4, PERSONEL, PIRIM, PROMOSYON, SATISKOSULU,
+           KARSISTOKKODU, BARKOD, MASRAF, OIV, INDIRIM, OTV, GRUPMIKTAR)
         OUTPUT INSERTED.IND AS ind
         VALUES
           (@tarih, @sira, @baslikInd, @cariNo, @stokNo, @ad, @kod, @stokTipi,
            @miktar, 1, @birim, @birimEx, @kdvOrani, @kdvTutari, @fiyat, @fiyat,
            @tutar, @depo, 1, 1, @miktar, 'TL', 1,
-           @fiyat, @miktar, @aciklama, @gk)
+           @fiyat, @miktar, @aciklama, @gk,
+           0, 0, 0, 0, 0, 0, 0, 0,
+           '', '', 0, 0, 0, 0, 1)
       `,
         {
           tarih,
@@ -1801,12 +1994,12 @@ async function alisFaturasiYaz(kayit) {
           (EVRAKNO, IZAHAT, TARIH, GIREN, CIKAN, KALAN, TUTAR, FIRMANO, STOKNO,
            BELGENO, LN, DEPO, KDV, IADE, OPSIYON, BIRIMFIYAT, BIRIMMALIYET,
            SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, STOKTIPI,
-           ACIKLAMA)
+           ACIKLAMA, PERSONEL)
         VALUES
           (@belgeNo, @izahat, @tarih, @miktar, 0, 0, @tutar, @cariNo, @stokNo,
            @baslikInd, @satirInd, @depo, @kdvOrani, 0, 1, @fiyat, @fiyat,
            GETDATE(), CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, @stokTipi,
-           @aciklama)
+           @aciklama, 0)
       `,
         {
           belgeNo,
@@ -1866,11 +2059,11 @@ async function alisFaturasiYaz(kayit) {
     const cariHareket = await t.sorgu(
       `
       INSERT INTO ${tablo(v, firma, donem, 'TBLCARIHAREKETLERI')}
-        (FIRMANO, TARIH, IZAHAT, EVRAKNO, BORC, ALACAK, LN, IADE,
+        (FIRMANO, TARIH, IZAHAT, EVRAKNO, BORC, ALACAK, LN, IADE, OZELKOD,
          PARABIRIMI, KUR, ODEMETARIHI, ISLEMTARIHI, SIRALAMATARIHI, SIRALAMATARIHIEX)
       OUTPUT INSERTED.IND AS ind
       VALUES
-        (@cariNo, @tarih, @izahat, @belgeNo, 0, @genel, @baslikInd, 0,
+        (@cariNo, @tarih, @izahat, @belgeNo, 0, @genel, @baslikInd, 0, '',
          'TL', 1, @vade, GETDATE(), GETDATE(), CONVERT(FLOAT, GETDATE()))
     `,
       {
@@ -2037,7 +2230,7 @@ async function alisFaturasiGeriAl(kayit) {
 //
 // Bir üretim beş kendi tablosuna, ayrıca dört doğan belgeye yazar:
 //
-//   TBLUREURETIMLIST    başlık (IDENTITY), FISNO = 'A0000290'
+//   TBLUREURETIMLIST    başlık (IDENTITY), FISNO = 'GP0000290'
 //   TBLUREURETIM        tüketilen bileşen satırları  (EVRAKNO = başlık IND)
 //   TBLUREURETIMCIKTI   çıktı satırları              (RECETENO = başlık IND!)
 //   TBLUREURETIMPOZ     iki pozisyon adımı (BAŞLA / BİTİR)
@@ -2052,11 +2245,20 @@ async function alisFaturasiGeriAl(kayit) {
 // 250–600 belge hızında ilerlettiği için numara işlem içinde kilitli
 // okunuyor (UPDLOCK, HOLDLOCK) ve yazımdan hemen önce bir kez daha
 // doğrulanıyor; çakışırsa işlem geri alınıp yeni numarayla denenir.
+//
+// Başlığı yoktur ama SATIR tablosu vardır: TBLSHAREKET. 08.09.2026'da
+// bulundu (kurulum/URETIM-BULGU-08-09-2026.md). Ayrıntısı
+// uretimStokHareketiYaz()'ın başında.
 const URETIM_CIKTI_TIPI = 96;
 const URETIM_TUKETIM_TIPI = 97;
 const DEPO_TRANSFER_TIPI = 38;
 
 // 96/97 sayaçları. Kilit işlem sonuna kadar tutulur.
+//
+// LN normalde buradan GELMEZ: o, TBLSHAREKET satırının IDENTITY değeridir.
+// MAX(LN) yalnızca o tablonun bulunmadığı dönemlerde (Vega dönem
+// tablolarını modül kullanılınca oluşturuyor; F0100 ve F0101/D0002'de
+// TBLSHAREKET yok) yedek yol olarak kullanılıyor.
 async function uretimSayaclari(t, stokHareketTablosu) {
   const r = await t.sorgu(`
     SELECT
@@ -2080,6 +2282,125 @@ function zNo(sayi) {
   return 'Z' + String(sayi).padStart(7, '0');
 }
 
+// 96 / 97 belgesinin BİR satırı: TBLSHAREKET + TBLSTOKHAREKETLERI +
+// TBLDEPOENVANTER.
+//
+// 96 ve 97 belgelerinin satırları TBLSHAREKET tablosunda durur ve
+// TBLSTOKHAREKETLERI.LN o satırın IDENTITY değeridir. 08.09.2026'da,
+// müşterinin ekran kaydıyla veritabanı karşılaştırılırken bulundu:
+// son 5.000 adet 96/97 hareketinin 5.000'inde LN = TBLSHAREKET.IND,
+// TBLSHAREKET.EVRAKNO = hareketin BELGENO'su ve STOKNO aynı. Aynı sorgu
+// IZAHAT 33 için 2.000'de 3 tutuyor — yani bağ 96/97'ye özgü.
+//
+// Panel önce LN'yi MAX(LN)+1 ile kendi uyduruyordu. İki sonucu vardı:
+// belge Vega'nın Üretim Giriş/Çıkış Fişi ekranında satırsız görünüyordu ve
+// TBLSHAREKET'in IDENTITY sayacı ilerlemediği için Vega'nın yazacağı
+// sonraki belgeler aynı LN'leri yeniden üretiyordu.
+//
+// Sıra önemli: önce TBLSHAREKET (IDENTITY üretsin), sonra dönen IND ile
+// diğer ikisi.
+async function uretimStokHareketiYaz(t, a) {
+  const { v, firma, donem, belgeNo, evrakNo, izahat, tarih, depo, satir, aciklama } = a;
+  const giren = izahat === URETIM_CIKTI_TIPI;
+  const tutar = satir.miktar * satir.birimMaliyet;
+
+  // TBLSHAREKET dönemli bir tablo ve Vega onu yalnız modül kullanılınca
+  // oluşturuyor; bulunmayan dönemde LN eski yoldan (MAX + 1) veriliyor.
+  let ln = a.yedekLn != null ? Number(a.yedekLn) : null;
+  if (ln === null) {
+    const sha = await t.sorgu(
+      `
+      INSERT INTO ${tablo(v, firma, donem, 'TBLSHAREKET')}
+        (TARIH, DETAY, SELECTED, EVRAKNO, FIRMANO, STOKNO, MALINCINSI, STOKKODU,
+         STOKTIPI, MIKTAR, BIRIMMIKTAR, BIRIM, BIRIMEX, KDV, AFIYATI, FIYATI,
+         GERCEKTOPLAM, DEPO, SERIMIKTAR, ENVANTER, TERMIN, PARABIRIMI, KUR,
+         GK, ACIKLAMA,
+         KDVTUTARI, ISK1, ISK2, ISK3, ISK4, PERSONEL, PIRIM, OPSIYON,
+         PROMOSYON, SATISKOSULU, KARSISTOKKODU, KARSIBARKOD, TAKSIT, BARKOD,
+         PESINAT, MASRAF, MASRAFKDV, OIV, INDIRIM, OTV, GRUPMIKTAR)
+      OUTPUT INSERTED.IND AS ind
+      VALUES
+        (@tarih, 0, 0, @belgeNo, 0, @stokNo, @ad, @kod,
+         @stokTipi, @miktar, 1, @birim, @birimEx, 0, @fiyat, @fiyat,
+         @tutar, @depo, 1, @miktar, '1899-12-30', 'TL', 1,
+         @gk, '',
+         0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, '', '', 0, '',
+         0, 0, 0, 0, 0, 0, 1)
+    `,
+      {
+        tarih,
+        belgeNo,
+        stokNo: satir.stokNo,
+        ad: satir.ad,
+        kod: satir.kod,
+        stokTipi: satir.stokTipi,
+        miktar: satir.miktar,
+        birim: satir.birim,
+        birimEx: satir.birimEx,
+        fiyat: satir.birimMaliyet,
+        tutar,
+        depo,
+        gk: gkUret()
+      }
+    );
+    ln = sha[0].ind;
+  }
+
+  await t.calistir(
+    `
+    INSERT INTO ${tablo(v, firma, donem, 'TBLSTOKHAREKETLERI')}
+      (EVRAKNO, IZAHAT, TARIH, GIREN, CIKAN, KALAN, TUTAR, FIRMANO, STOKNO,
+       BELGENO, LN, DEPO, KDV, IADE, BIRIMFIYAT, BIRIMMALIYET,
+       SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, STOKTIPI, ACIKLAMA,
+       PERSONEL, OPSIYON)
+    VALUES
+      (@evrakNo, @izahat, @tarih, @giren, @cikan, 0, @tutar, 0, @stokNo,
+       @belgeNo, @ln, @depo, 0, 0, @fiyat, @fiyat,
+       GETDATE(), CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, @stokTipi, @aciklama,
+       0, 0)
+  `,
+    {
+      evrakNo,
+      izahat,
+      tarih,
+      giren: giren ? satir.miktar : 0,
+      cikan: giren ? 0 : satir.miktar,
+      tutar,
+      stokNo: satir.stokNo,
+      belgeNo,
+      ln,
+      depo,
+      fiyat: satir.birimMaliyet,
+      birimEx: satir.birimEx,
+      stokTipi: satir.stokTipi,
+      aciklama: aciklama || ''
+    }
+  );
+
+  await t.calistir(
+    `
+    INSERT INTO ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
+      (TARIH, STOKNO, DEPO, ENVANTER, BELGETIPI, BELGEIND, HAREKETIND,
+       SIRALAMATARIHI, SIRALAMATARIHIEX)
+    VALUES
+      (@tarih, @stokNo, @depo, @envanter, @belgeTipi, @belgeNo, @ln,
+       GETDATE(), CONVERT(FLOAT, GETDATE()))
+  `,
+    {
+      tarih,
+      stokNo: satir.stokNo,
+      depo,
+      envanter: giren ? satir.miktar : -satir.miktar,
+      belgeTipi: izahat,
+      belgeNo,
+      ln
+    }
+  );
+
+  return ln;
+}
+
 // Depo transfer belgesi (IZAHAT 38). Stok hareketine YAZMAZ; yalnızca depo
 // envanterinde iki satır oluşturur (hedefe +, kaynaktan −).
 async function depoTransferiYaz(t, a) {
@@ -2100,13 +2421,23 @@ async function depoTransferiYaz(t, a) {
       (BELGENO, TARIH, ODEMETARIHI, ALTBELGENO, ALTBELGETARIHI, DEPO, HAREKETDEPOSU,
        BELGETIPI, EKBELGETIPI, TUTAR, ARATOPLAM, KDV, GIRIS, IADE, IPTAL, CONVERTED,
        ENVANTERUPDATE, SUCCESS, STOKHAREKETEYAZ, CARIHAREKETEYAZ,
-       PARABIRIMI, KUR, USERNO, OZELKOD1, OZELKOD2, CREDATE, LADATE, UID)
+       PARABIRIMI, KUR, USERNO, OZELKOD1, OZELKOD2, CREDATE, LADATE, UID,
+       AK, ODMODIFIED, ALT1, ALT2, ALT3, ALT4,
+       YUVARLAMA, ALLOWYUVARLAMA, ODENEN,
+       MASRAF1, MASRAF2, MASRAF3, MASRAF4,
+       MASRAFKDV1, MASRAFKDV2, MASRAFKDV3, MASRAFKDV4,
+       ENTEGRE, KAYNAK, YURTDISI, MUHASEBELESMEYECEK)
     OUTPUT INSERTED.IND AS ind
     VALUES
       (@belgeNo, @tarih, @tarih, @fisNo, @tarih, @hedefDepo, @kaynakDepo,
        @belgeTipi, 0, @tutar, @tutar, 1, 0, 0, 0, 0,
        0, 0, 1, 1,
-       'TL', 1, @userNo, @k1, @k2, GETDATE(), GETDATE(), @uid)
+       'TL', 1, @userNo, @k1, @k2, GETDATE(), GETDATE(), @uid,
+       0, 0, 0, 0, 0, 0,
+       0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0,
+       0, 0, 0, 0)
   `,
     {
       belgeNo,
@@ -2130,12 +2461,20 @@ async function depoTransferiYaz(t, a) {
       INSERT INTO ${tablo(v, firma, donem, 'TBLDEPOHARHAREKET')}
         (TARIH, DETAY, EVRAKNO, STOKNO, MALINCINSI, STOKKODU, STOKTIPI,
          MIKTAR, BIRIMMIKTAR, BIRIM, BIRIMEX, AFIYATI, FIYATI, GERCEKTOPLAM,
-         DEPO, SERIMIKTAR, ENVANTER, PARABIRIMI, KUR, GK)
+         DEPO, SERIMIKTAR, ENVANTER, PARABIRIMI, KUR, GK,
+         KDV, KDVTUTARI, ISK1, ISK2, ISK3, ISK4,
+         PERSONEL, PIRIM, OPSIYON, PROMOSYON, SATISKOSULU, GRUPMIKTAR,
+         KARSISTOKKODU, BARKOD, TERMIN, TAKSIT, PESINAT,
+         MASRAF, MASRAFKDV, ACIKLAMA, OIV, INDIRIM, OTV)
       OUTPUT INSERTED.IND AS ind
       VALUES
         (@tarih, 0, @baslikInd, @stokNo, @ad, @kod, @stokTipi,
          @miktar, 1, @birim, @birimEx, @fiyat, @fiyat, @tutar,
-         @kaynakDepo, 1, @miktar, 'TL', 1, @gk)
+         @kaynakDepo, 1, @miktar, 'TL', 1, @gk,
+         0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 1,
+         '', '', '1899-12-30', 0, 0,
+         0, 0, '', 0, 0, 0)
     `,
       {
         tarih,
@@ -2205,7 +2544,8 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
   const elle = Array.isArray(elleBilesenler) && elleBilesenler.length > 0;
 
   const basliklar = await sorgu(
-    `SELECT TOP 1 IND AS receteNo, ISNULL(MIKTAR, 1) AS verim, ISNULL(KDV, 0) AS kdv
+    `SELECT TOP 1 IND AS receteNo, ISNULL(MIKTAR, 1) AS verim, ISNULL(KDV, 0) AS kdv,
+            ISNULL(FIYAT, 0) AS fiyat
      FROM ${kart(v, firma, 'TBLURERECETELIST')}
      WHERE STOKNO = @stokNo ORDER BY IND`,
     { stokNo: Number(mamulStokNo) }
@@ -2218,6 +2558,9 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
     ? Number(basliklar[0].verim)
     : 1;
   const kdv = basliklar.length ? Number(basliklar[0].kdv) : 0;
+  // Başlığın FIYAT alanı reçetenin kendi alış fiyatıdır (hesaplanan birim
+  // maliyet değil); Vega da fişin başlığına bunu yazıyor.
+  const receteFiyat = basliklar.length ? Number(basliklar[0].fiyat) : 0;
 
   // Üretim yeri ve mamul deposu reçetenin kendi pozisyon tanımından gelir.
   // Reçetesi olmayan mamulde boş kalır; uretimFisiYaz varsayılan BAŞLA/BİTİR
@@ -2232,6 +2575,48 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
          WHERE EVRAKNO = @receteNo ORDER BY SIRANO`,
         { receteNo }
       )
+    : [];
+
+  // Reçetenin ÇIKTI satırları. Bir üretimden birden fazla ürün çıkabiliyor:
+  // "DANA ANTRIKOT" reçetesinde ana mamulün yanında DANA KUŞBAŞI, DANA KIYMA
+  // ve FİRE de var. Panel uzun süre bu tabloyu hiç okumadı ve her üretimde
+  // tek çıktı satırı yazdı; yan mamuller Vega'da hiç oluşmadı.
+  //
+  // TUR alanı satırın ne olduğunu söyler: 0 = ana mamul, 2 = yan mamul/fire.
+  // ORAN, çıktının toplam maliyetten aldığı yüzdedir; toplamı 100 olmak
+  // ZORUNDA DEĞİL (DANA ANTRIKOT reçetesinde 200) ve Vega bunu uyarmadan
+  // uyguluyor. Panel de aynısını yapıyor, yoksa panelin sayısı Vega'nınkiyle
+  // tutmaz; uyarı arayüzde gösteriliyor.
+  //
+  // Tablo her firmada yok: Vega onu üretim modülü kullanılınca oluşturuyor
+  // (F0100'de yok). Yoksa tek çıktılı davranış sürüyor.
+  const receteCiktilari = receteNo && (await tabloVarMi(firma, '', 'TBLURERECETECIKTI'))
+    ? (await sorgu(
+        `SELECT C.STOKNO AS stokNo, ISNULL(C.TUR, 0) AS tur, ISNULL(C.ORAN, 0) AS oran,
+                ISNULL(C.MIKTAR, 0) AS receteMiktari, ISNULL(C.KDV, 0) AS kdv,
+                S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
+                ISNULL(S.STOKTIPI, 0) AS stokTipi, ISNULL(S.MALIYET, 0) AS maliyet,
+                ISNULL(B.BIRIMADI, '') AS birim, ISNULL(B.IND, 0) AS birimEx
+         FROM ${kart(v, firma, 'TBLURERECETECIKTI')} C
+         JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = C.STOKNO
+         LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+                ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+         WHERE C.EVRAKNO = @receteNo
+         ORDER BY C.TUR, C.IND`,
+        { receteNo }
+      )).map((c) => ({
+        stokNo: Number(c.stokNo),
+        ad: c.ad,
+        kod: c.kod,
+        stokTipi: Number(c.stokTipi),
+        birim: c.birim,
+        birimEx: Number(c.birimEx),
+        tur: Number(c.tur),
+        oran: Number(c.oran),
+        kdv: Number(c.kdv),
+        receteMiktari: Number(c.receteMiktari),
+        anaMamul: Number(c.tur) === 0 && Number(c.stokNo) === Number(mamulStokNo)
+      }))
     : [];
 
   if (elle) {
@@ -2278,7 +2663,10 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
         miktar: b.miktar
       };
     });
-    return { mamul, receteNo, verim, kdv, bilesenler: elleBilesen, pozlar, elle: true };
+    return {
+      mamul, receteNo, verim, kdv, receteFiyat, bilesenler: elleBilesen, pozlar,
+      receteCiktilari, elle: true
+    };
   }
 
   const satirlar = await sorgu(
@@ -2313,7 +2701,77 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
     miktar: Number(s.miktar) * oran * (1 + Number(s.fireOrani || 0) / 100)
   }));
 
-  return { mamul, receteNo, verim, kdv, bilesenler, pozlar, elle: false };
+  return {
+    mamul, receteNo, verim, kdv, receteFiyat, bilesenler, pozlar, receteCiktilari, elle: false
+  };
+}
+
+// Yazılacak çıktı satırlarını belirler.
+//
+// `istenen` arayüzden gelir: kullanıcının her çıktı için yazdığı miktar
+// (Vega'nın İş Emri ekranındaki "Üretim Çıktıları" sekmesinin aynısı).
+// Verilmezse eski davranış sürüyor: tek satır, ana mamul, ORAN 100.
+//
+// ORAN'ın kaynağı:
+//   - satırda açıkça verilmişse o,
+//   - yoksa reçetenin o çıktı satırındaki ORAN,
+//   - reçetede de yoksa ana mamul için 100, diğerleri için 0.
+// TEK çıktı yazılıyorsa ORAN her hâlde 100'dür: tüketimin tamamı o ürüne
+// yazılır (sıfıra kadar üretim böyle çalışıyor).
+function ciktiSatirlariniCoz(h, miktar, istenen) {
+  const receteHarita = new Map(h.receteCiktilari.map((c) => [c.stokNo, c]));
+
+  const anaSatir = () => ({
+    stokNo: h.mamul.stokNo,
+    ad: h.mamul.ad,
+    kod: h.mamul.kod,
+    stokTipi: h.mamul.stokTipi,
+    birim: h.mamul.birim,
+    birimEx: h.mamul.birimEx,
+    miktar,
+    tur: 0,
+    oran: 100,
+    anaMamul: true
+  });
+
+  if (!Array.isArray(istenen) || !istenen.length) return [anaSatir()];
+
+  const satirlar = [];
+  for (const g of istenen) {
+    const stokNo = Number(g.stokNo);
+    const gMiktar = Number(g.miktar);
+    if (!stokNo || !(gMiktar > 0)) continue;
+
+    const r = receteHarita.get(stokNo);
+    const anaMamul = stokNo === Number(h.mamul.stokNo);
+    if (!r && !anaMamul) {
+      throw new Error(`Çıktı satırı reçetede tanımlı değil (stok ${stokNo}).`);
+    }
+    const kaynak = r || h.mamul;
+    satirlar.push({
+      stokNo,
+      ad: kaynak.ad,
+      kod: kaynak.kod,
+      stokTipi: Number(kaynak.stokTipi),
+      birim: kaynak.birim,
+      birimEx: Number(kaynak.birimEx),
+      miktar: gMiktar,
+      tur: r ? r.tur : 0,
+      oran: g.oran != null ? Number(g.oran) : (r ? r.oran : (anaMamul ? 100 : 0)),
+      anaMamul
+    });
+  }
+
+  if (!satirlar.length) throw new Error('Üretim çıktısı yazılamadı: miktarı sıfırdan büyük satır yok.');
+  const ana = satirlar.find((s) => s.anaMamul);
+  if (!ana) throw new Error('Üretim çıktılarında ana mamulün miktarı yazılmamış.');
+  if (Math.abs(ana.miktar - miktar) > 0.0001) {
+    throw new Error(
+      `Ana mamulün çıktı miktarı (${ana.miktar}) üretim miktarıyla (${miktar}) aynı olmalı.`
+    );
+  }
+  if (satirlar.length === 1) satirlar[0].oran = 100;
+  return satirlar;
 }
 
 async function uretimFisiYaz(kayit) {
@@ -2335,19 +2793,37 @@ async function uretimFisiYaz(kayit) {
 
   const tarih = kayit.tarih ? new Date(kayit.tarih) : new Date();
   const stokHareketTablosu = tablo(v, firma, donem, 'TBLSTOKHAREKETLERI');
-  const birimMaliyet = h.bilesenler.reduce((t, b) => t + b.miktar * b.birimMaliyet, 0) / miktar;
-  const toplamMaliyet = birimMaliyet * miktar;
+  const shaVar = await tabloVarMi(firma, donem, 'TBLSHAREKET');
+  const toplamMaliyet = h.bilesenler.reduce((t, b) => t + b.miktar * b.birimMaliyet, 0);
+  const birimMaliyet = toplamMaliyet / miktar;
+
+  // Çıktı satırları ve maliyet paylaşımı.
+  //
+  //   satır.TUTAR = toplamMaliyet × ORAN / 100
+  //   satır.FIYAT = satır.TUTAR / satır.MIKTAR
+  //
+  // Vega'nın 68 çok çıktılı fişiyle ve müşterinin 08.09.2026 ekran kaydıyla
+  // doğrulandı: 23.750 × %100 / 18 = 1.319,444436 · 23.750 × %100 / 3 =
+  // 7.916,666616.
+  const ciktilar = ciktiSatirlariniCoz(h, miktar, kayit.ciktilar).map((c) => {
+    const tutar = toplamMaliyet * c.oran / 100;
+    return { ...c, tutar, birimMaliyet: c.miktar > 0 ? tutar / c.miktar : 0 };
+  });
+  const anaCikti = ciktilar.find((c) => c.anaMamul);
 
   const sonuc = await islem(async (t) => {
     const sube = await faturaSubeKodlari(t, tablo(v, firma, donem, 'TBLALFATBASLIK'));
 
-    // Üretim fişinin kendi A serisi sayacı
+    // Üretim fişinin kendi numarası da panelin serisinden geliyor.
+    const uOnek = belgeOneki();
+    const uBasla = uOnek.length + 1;
     const sonFis = await t.sorgu(
-      `SELECT MAX(CAST(SUBSTRING(FISNO, 2, 20) AS INT)) AS sonNo
+      `SELECT MAX(CAST(SUBSTRING(FISNO, ${uBasla}, 20) AS INT)) AS sonNo
        FROM ${tablo(v, firma, donem, 'TBLUREURETIMLIST')} WITH (UPDLOCK, HOLDLOCK)
-       WHERE FISNO LIKE 'A%' AND ISNUMERIC(SUBSTRING(FISNO, 2, 20)) = 1`
+       WHERE FISNO LIKE @desen AND ISNUMERIC(SUBSTRING(FISNO, ${uBasla}, 20)) = 1`,
+      { desen: uOnek + '%' }
     );
-    const fisNo = 'A' + String((sonFis[0] && sonFis[0].sonNo ? Number(sonFis[0].sonNo) : 0) + 1)
+    const fisNo = uOnek + String((sonFis[0] && sonFis[0].sonNo ? Number(sonFis[0].sonNo) : 0) + 1)
       .padStart(7, '0');
 
     const baslik = await t.sorgu(
@@ -2355,12 +2831,18 @@ async function uretimFisiYaz(kayit) {
       INSERT INTO ${tablo(v, firma, donem, 'TBLUREURETIMLIST')}
         (DURUM, TARIH, FISNO, STOKNO, STOKKODU, MALINCINSI, OZELKOD, BIRIM,
          FIYAT, KDV, MIKTAR, TUTAR, RECETENO, POZNO, STOKTIPI,
-         SONERISIMTARIHI, URETIMEBASLAMATARIHI, URETIMBITISTARIHI, ACIKLAMA)
+         SONERISIMTARIHI, URETIMEBASLAMATARIHI, URETIMBITISTARIHI, ACIKLAMA,
+         KULLANICI, STANDARTSURE, SATISFIYATI, URETIMGIRISHESAPKODU,
+         OZELKOD1, OZELKOD2, OZELKOD3, OZELKOD4, OZELKOD5,
+         OZELKOD6, OZELKOD7, OZELKOD8, OZELKOD9)
       OUTPUT INSERTED.IND AS ind
       VALUES
         (2, @tarih, @fisNo, @stokNo, @kod, @ad, @ozelKod, @birim,
          @fiyat, @kdv, @miktar, @tutar, @receteNo, 2, @stokTipi,
-         GETDATE(), @tarih, @tarih, @aciklama)
+         GETDATE(), @tarih, @tarih, @aciklama,
+         0, 0, 0, '',
+         '', '', '', '', '',
+         '', '', '', '')
     `,
       {
         tarih,
@@ -2370,10 +2852,10 @@ async function uretimFisiYaz(kayit) {
         ad: h.mamul.ad,
         ozelKod: sube.k1,
         birim: h.mamul.birim,
-        fiyat: birimMaliyet,
+        fiyat: h.receteFiyat || birimMaliyet,
         kdv: h.kdv,
         miktar,
-        tutar: toplamMaliyet,
+        tutar: anaCikti.tutar,
         receteNo: h.receteNo,
         stokTipi: h.mamul.stokTipi,
         aciklama: (kayit.aciklama || 'Galya Panel üretim').substring(0, 100)
@@ -2389,12 +2871,12 @@ async function uretimFisiYaz(kayit) {
           (EVRAKNO, STOKNO, STOKKODU, MALINCINSI, MIKTAR, BIRIM, BIRIMMIKTAR,
            KDV, FIYAT, ISLEMTARIHI, SONERISIMTARIHI, DEPONO,
            MALIYETTURU, MIKTARTURU, POZISYONNO, CIKISPOZISYONNO,
-           VARSAYILANBIRIMADI, VARSAYILANBIRIMCARPAN)
+           VARSAYILANBIRIMADI, VARSAYILANBIRIMCARPAN, KULLANICI, TUR)
         VALUES
           (@uretimInd, @stokNo, @kod, @ad, @miktar, @birim, @birimMiktar,
            @kdv, @fiyat, @tarih, @tarih, @depo,
            -1, 1, 1, 2,
-           @birim, 1)
+           @birim, 1, 0, 0)
       `,
         {
           uretimInd,
@@ -2412,32 +2894,43 @@ async function uretimFisiYaz(kayit) {
       );
     }
 
-    // Çıktı satırı. RECETENO alanı reçeteyi değil, üretim başlığının IND'ini
-    // tutuyor — alan adı yanıltıcı, Vega'nın kendi fişlerinde de böyle.
-    await t.calistir(
-      `
-      INSERT INTO ${tablo(v, firma, donem, 'TBLUREURETIMCIKTI')}
-        (EVRAKNO, STOKNO, STOKKODU, MALINCINSI, MIKTAR, BIRIM, BIRIMMIKTAR,
-         KDV, FIYAT, ISLEMTARIHI, SONERISIMTARIHI, ORAN, RECETENO, TUR,
-         TUTAR, POZISYONNO, KALANMIKTAR)
-      VALUES
-        (@uretimInd, @stokNo, @kod, @ad, @miktar, @birim, 1,
-         @kdv, @fiyat, @tarih, @tarih, 100, @uretimInd, 0,
-         @tutar, 2, @miktar)
-    `,
-      {
-        uretimInd,
-        stokNo: h.mamul.stokNo,
-        kod: h.mamul.kod,
-        ad: h.mamul.ad,
-        miktar,
-        birim: h.mamul.birim,
-        kdv: h.kdv,
-        fiyat: birimMaliyet,
-        tarih,
-        tutar: toplamMaliyet
-      }
-    );
+    // Çıktı satırları — her çıktı için bir satır.
+    //
+    // RECETENO alanı reçeteyi değil, üretim başlığının IND'ini tutuyor ve
+    // yalnızca ana mamul satırında dolu; yan mamullerde NULL. Alan adı
+    // yanıltıcı, Vega'nın kendi fişlerinde de böyle.
+    //
+    // BIRIMMIKTAR ana mamulde NULL, yan mamullerde 1 (Vega'nın deseni).
+    for (const c of ciktilar) {
+      await t.calistir(
+        `
+        INSERT INTO ${tablo(v, firma, donem, 'TBLUREURETIMCIKTI')}
+          (EVRAKNO, STOKNO, STOKKODU, MALINCINSI, MIKTAR, BIRIM, BIRIMMIKTAR,
+           KDV, FIYAT, ISLEMTARIHI, SONERISIMTARIHI, ORAN, RECETENO, TUR,
+           TUTAR, POZISYONNO, KALANMIKTAR, KULLANICI)
+        VALUES
+          (@uretimInd, @stokNo, @kod, @ad, @miktar, @birim, @birimMiktar,
+           @kdv, @fiyat, @tarih, @tarih, @oran, @receteNo, @tur,
+           @tutar, 2, @miktar, 0)
+      `,
+        {
+          uretimInd,
+          stokNo: c.stokNo,
+          kod: c.kod,
+          ad: c.ad,
+          miktar: c.miktar,
+          birim: c.birim,
+          birimMiktar: c.anaMamul ? null : 1,
+          kdv: h.kdv,
+          fiyat: c.birimMaliyet,
+          tarih,
+          oran: c.oran,
+          receteNo: c.anaMamul ? uretimInd : null,
+          tur: c.tur,
+          tutar: c.tutar
+        }
+      );
+    }
 
     // Pozisyon adımları: reçetede tanımlıysa oradan kopyalanır.
     const pozSatirlari = h.pozlar.length
@@ -2505,114 +2998,54 @@ async function uretimFisiYaz(kayit) {
       fisNo, tarih, satirlar: transferSatirlari, userNo: kayit.userNo, sube
     });
 
-    // 96/97 sayaçları — kilitli okunur
+    // 96/97 sayaçları — kilitli okunur. LN artık burada üretilmiyor;
+    // her satırın LN'si TBLSHAREKET'in IDENTITY değeridir.
     const sayac = await uretimSayaclari(t, stokHareketTablosu);
     const tuketimBelgeNo = sayac.belgeNo + 1;
     const ciktiBelgeNo = sayac.belgeNo + 2;
     const tuketimEvrakNo = zNo(sayac.evrakNo + 1);
     const ciktiEvrakNo = zNo(sayac.evrakNo + 2);
-    let ln = sayac.ln;
+    const aciklama = 'Galya Panel üretim ' + fisNo;
+    const yazilanSatirlar = { tuketim: [], cikti: [] };
+    // TBLSHAREKET yoksa LN'yi eskisi gibi biz veriyoruz.
+    let yedekLn = shaVar ? null : sayac.ln;
 
     // 97 — tüketim
     for (const b of h.bilesenler) {
-      ln++;
-      await t.calistir(
-        `
-        INSERT INTO ${stokHareketTablosu}
-          (EVRAKNO, IZAHAT, TARIH, GIREN, CIKAN, KALAN, TUTAR, FIRMANO, STOKNO,
-           BELGENO, LN, DEPO, KDV, IADE, BIRIMFIYAT, BIRIMMALIYET,
-           SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, STOKTIPI, ACIKLAMA)
-        VALUES
-          (@evrakNo, @izahat, @tarih, 0, @miktar, 0, @tutar, 0, @stokNo,
-           @belgeNo, @ln, @depo, 0, 0, @fiyat, @fiyat,
-           GETDATE(), CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, @stokTipi, @aciklama)
-      `,
-        {
-          evrakNo: tuketimEvrakNo,
-          izahat: URETIM_TUKETIM_TIPI,
-          tarih,
-          miktar: b.miktar,
-          tutar: b.miktar * b.birimMaliyet,
-          stokNo: b.stokNo,
-          belgeNo: tuketimBelgeNo,
-          ln,
-          depo: mamulDeposu,
-          fiyat: b.birimMaliyet,
-          birimEx: b.birimEx,
-          stokTipi: b.stokTipi,
-          aciklama: 'Galya Panel üretim ' + fisNo
-        }
-      );
-      await t.calistir(
-        `
-        INSERT INTO ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
-          (TARIH, STOKNO, DEPO, ENVANTER, BELGETIPI, BELGEIND, HAREKETIND,
-           SIRALAMATARIHI, SIRALAMATARIHIEX)
-        VALUES
-          (@tarih, @stokNo, @depo, @envanter, @belgeTipi, @belgeNo, @ln,
-           GETDATE(), CONVERT(FLOAT, GETDATE()))
-      `,
-        {
-          tarih,
-          stokNo: b.stokNo,
-          depo: mamulDeposu,
-          envanter: -b.miktar,
-          belgeTipi: URETIM_TUKETIM_TIPI,
-          belgeNo: tuketimBelgeNo,
-          ln
-        }
-      );
+      if (yedekLn !== null) yedekLn++;
+      yazilanSatirlar.tuketim.push(await uretimStokHareketiYaz(t, {
+        v, firma, donem,
+        belgeNo: tuketimBelgeNo,
+        evrakNo: tuketimEvrakNo,
+        izahat: URETIM_TUKETIM_TIPI,
+        tarih,
+        depo: mamulDeposu,
+        satir: b,
+        aciklama,
+        yedekLn
+      }));
     }
 
-    // 96 — çıktı (mamul)
-    ln++;
-    const mamulSatiri = ln;
-    await t.calistir(
-      `
-      INSERT INTO ${stokHareketTablosu}
-        (EVRAKNO, IZAHAT, TARIH, GIREN, CIKAN, KALAN, TUTAR, FIRMANO, STOKNO,
-         BELGENO, LN, DEPO, KDV, IADE, BIRIMFIYAT, BIRIMMALIYET,
-         SIRALAMATARIHI, SIRALAMATARIHIEX, KUR, PARABIRIMI, BIRIMEX, STOKTIPI, ACIKLAMA)
-      VALUES
-        (@evrakNo, @izahat, @tarih, @miktar, 0, 0, @tutar, 0, @stokNo,
-         @belgeNo, @ln, @depo, 0, 0, @fiyat, @fiyat,
-         GETDATE(), CONVERT(FLOAT, GETDATE()), 1, 'TL', @birimEx, @stokTipi, @aciklama)
-    `,
-      {
+    // 96 — çıktılar. Fiyatı sıfır olan yan mamul ve fire satırları da
+    // yazılır; Vega'nın kendi fişlerinde de öyle (DANA KUŞBAŞI 6,42 KG,
+    // tutar 0). Stok kartı yine de artıyor.
+    let mamulSatiri = null;
+    for (const c of ciktilar) {
+      if (yedekLn !== null) yedekLn++;
+      const ln = await uretimStokHareketiYaz(t, {
+        v, firma, donem,
+        belgeNo: ciktiBelgeNo,
         evrakNo: ciktiEvrakNo,
         izahat: URETIM_CIKTI_TIPI,
         tarih,
-        miktar,
-        tutar: toplamMaliyet,
-        stokNo: h.mamul.stokNo,
-        belgeNo: ciktiBelgeNo,
-        ln: mamulSatiri,
         depo: mamulDeposu,
-        fiyat: birimMaliyet,
-        birimEx: h.mamul.birimEx,
-        stokTipi: h.mamul.stokTipi,
-        aciklama: 'Galya Panel üretim ' + fisNo
-      }
-    );
-    await t.calistir(
-      `
-      INSERT INTO ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
-        (TARIH, STOKNO, DEPO, ENVANTER, BELGETIPI, BELGEIND, HAREKETIND,
-         SIRALAMATARIHI, SIRALAMATARIHIEX)
-      VALUES
-        (@tarih, @stokNo, @depo, @envanter, @belgeTipi, @belgeNo, @ln,
-         GETDATE(), CONVERT(FLOAT, GETDATE()))
-    `,
-      {
-        tarih,
-        stokNo: h.mamul.stokNo,
-        depo: mamulDeposu,
-        envanter: miktar,
-        belgeTipi: URETIM_CIKTI_TIPI,
-        belgeNo: ciktiBelgeNo,
-        ln: mamulSatiri
-      }
-    );
+        satir: c,
+        aciklama,
+        yedekLn
+      });
+      yazilanSatirlar.cikti.push(ln);
+      if (c.anaMamul) mamulSatiri = ln;
+    }
 
     // Sayaç yarışı kontrolü: kilide rağmen aynı numaraya başka bir yazan
     // girmişse (Şefim entegrasyonu) işlemi geri alıp yeniden deniyoruz.
@@ -2632,8 +3065,8 @@ async function uretimFisiYaz(kayit) {
     const belgeler = [
       { belgeNo: transfer1.baslikInd, izahat: DEPO_TRANSFER_TIPI, evrakNo: transfer1.belgeNo, pozisyon: 1, mamulSatiri: null },
       { belgeNo: transfer2.baslikInd, izahat: DEPO_TRANSFER_TIPI, evrakNo: transfer2.belgeNo, pozisyon: 2, mamulSatiri: null },
-      { belgeNo: tuketimBelgeNo, izahat: URETIM_TUKETIM_TIPI, evrakNo: tuketimEvrakNo, pozisyon: 2, mamulSatiri: null },
-      { belgeNo: ciktiBelgeNo, izahat: URETIM_CIKTI_TIPI, evrakNo: ciktiEvrakNo, pozisyon: 2, mamulSatiri: mamulSatiri }
+      { belgeNo: tuketimBelgeNo, izahat: URETIM_TUKETIM_TIPI, evrakNo: tuketimEvrakNo, pozisyon: 2, mamulSatiri: null, satirlar: yazilanSatirlar.tuketim },
+      { belgeNo: ciktiBelgeNo, izahat: URETIM_CIKTI_TIPI, evrakNo: ciktiEvrakNo, pozisyon: 2, mamulSatiri: mamulSatiri, satirlar: yazilanSatirlar.cikti }
     ];
     for (const b of belgeler) {
       await t.calistir(
@@ -2662,7 +3095,10 @@ async function uretimFisiYaz(kayit) {
     mamulStokNo: h.mamul.stokNo, mamulAdi: h.mamul.ad,
     miktar, receteNo: h.receteNo, fisNo: sonuc.fisNo,
     uretimInd: sonuc.uretimInd, belgeler: sonuc.belgeler,
-    bilesenler: h.bilesenler.map((b) => ({ stokNo: b.stokNo, ad: b.ad, miktar: b.miktar }))
+    bilesenler: h.bilesenler.map((b) => ({ stokNo: b.stokNo, ad: b.ad, miktar: b.miktar })),
+    ciktilar: ciktilar.map((c) => ({
+      stokNo: c.stokNo, ad: c.ad, miktar: c.miktar, oran: c.oran, tutar: c.tutar
+    }))
   };
 
   await panel.kayit('Üretim', "Üretim fişi Vega'ya yazıldı", kayitDetayi, kayit.kullanici);
@@ -2688,8 +3124,17 @@ async function uretimFisiYaz(kayit) {
     uretimInd: sonuc.uretimInd,
     mamulAdi: h.mamul.ad,
     miktar,
-    birimMaliyet,
-    bilesenSayisi: h.bilesenler.length
+    birimMaliyet: anaCikti.birimMaliyet,
+    bilesenSayisi: h.bilesenler.length,
+    ciktilar: ciktilar.map((c) => ({
+      stokNo: c.stokNo, ad: c.ad, miktar: c.miktar, birim: c.birim,
+      oran: c.oran, birimMaliyet: c.birimMaliyet, tutar: c.tutar, tur: c.tur
+    })),
+    toplamMaliyet,
+    // Reçetedeki maliyet oranlarının toplamı 100 değilse mamullere yazılan
+    // maliyet tüketilen maliyete eşit çıkmaz. Vega bunu uyarmadan yapıyor;
+    // panel de aynısını yazıyor ama çağırana söylüyor.
+    dagitilanMaliyet: ciktilar.reduce((x, c) => x + c.tutar, 0)
   };
 }
 
@@ -2703,6 +3148,7 @@ async function uretimFisiGeriAl(kayit) {
 
   const belgeler = Array.isArray(kayit.belgeler) ? kayit.belgeler : [];
   const stokHareketTablosu = tablo(v, firma, donem, 'TBLSTOKHAREKETLERI');
+  const shaVar = await tabloVarMi(firma, donem, 'TBLSHAREKET');
 
   const silinen = await islem(async (t) => {
     let toplam = 0;
@@ -2725,6 +3171,20 @@ async function uretimFisiGeriAl(kayit) {
           { ind: Number(b.belgeNo) }
         ));
       } else {
+        // 96/97 satırlarının LN'si TBLSHAREKET.IND'idir. Silmeden ÖNCE
+        // okunuyor: TBLSHAREKET.EVRAKNO sayaç uzayı başka belge tipleriyle
+        // örtüşebildiği için "EVRAKNO = belgeNo" ile silmek yanlış satıra
+        // dokunabilirdi.
+        //
+        // 08.09.2026 öncesinde yazılmış fişlerde TBLSHAREKET satırı zaten
+        // yok; o DELETE sıfır satır etkiler, sorun çıkarmaz.
+        const satirlar = shaVar
+          ? await t.sorgu(
+              `SELECT LN FROM ${stokHareketTablosu}
+               WHERE BELGENO = @belgeNo AND IZAHAT = @tip AND EVRAKNO = @evrakNo`,
+              { belgeNo: Number(b.belgeNo), tip: izahat, evrakNo: b.evrakNo }
+            )
+          : [];
         say(await t.calistir(
           `DELETE FROM ${tablo(v, firma, donem, 'TBLDEPOENVANTER')}
            WHERE BELGEIND = @belgeNo AND BELGETIPI = @tip`,
@@ -2735,6 +3195,14 @@ async function uretimFisiGeriAl(kayit) {
            WHERE BELGENO = @belgeNo AND IZAHAT = @tip AND EVRAKNO = @evrakNo`,
           { belgeNo: Number(b.belgeNo), tip: izahat, evrakNo: b.evrakNo }
         ));
+        for (const s of satirlar) {
+          if (!Number(s.LN)) continue;
+          say(await t.calistir(
+            `DELETE FROM ${tablo(v, firma, donem, 'TBLSHAREKET')}
+             WHERE IND = @ln AND EVRAKNO = @belgeNo`,
+            { ln: Number(s.LN), belgeNo: Number(b.belgeNo) }
+          ));
+        }
       }
     }
 
@@ -2774,6 +3242,7 @@ async function uretimFisiGeriAl(kayit) {
 
 module.exports = {
   yazmaAcikMi,
+  belgeOneki,
   kilitKontrol,
   gkUret,
   uretimFisiYaz,

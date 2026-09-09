@@ -16,3 +16,6 @@ Thumbs.db
 
 # Musteriden gelen ham belgeler (gercek fiyat ve stok verisi icerir).
 galya döküman/
+
+# AI devir notlari (sunucu/erisim bilgisi icerir)
+AI-DEVIR-NOTLARI.md

@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 04.09.2026 · Sürüm 1.8.0
+Son güncelleme: 08.09.2026 · Sürüm 1.8.0
 
 ---
 
@@ -94,7 +94,9 @@ rapor programı (galya)/
     sql-yazma-yetkisi-ver.sql  VEGADB'ye yazma yetkisi (ikinci kilit)
     sql-yedek-yetkisi-ver.sql  yedek alma (ve isteğe bağlı geri yükleme) yetkisi
     test-sorgular.js        120 okuma sınaması
-    test-yazma.js           123 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
+    test-yazma.js           150 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
+    test-kolon-denetimi.js  panelin doldurduğu kolonları Vega'nınkiyle karşılaştırır
+    canli-belge-sinamasi.js lisanslı bir Vega veritabanına örnek belge yazar (--geri-al ile siler)
     test-yetki.js            41 kullanıcı / kapsam / onay sınaması
     test-arayuz.js           35 arayüz duman sınaması, 28 ekran (Electron ile)
     izleyici-kur.sql / izleyici-kapat.sql / izleyici-oku.js   (eski, elle sürüm)
@@ -167,8 +169,11 @@ dokunmadan önce o dosya okunmalı.
 | 93 / 94 | Sayım girişi / çıkışı |
 | 96 / 97 | Üretim çıktısı / tüketimi |
 
-Panel yalnızca `A` serisini kullanır; böylece Vega'nın kendi numaralarıyla
-çakışmaz.
+Panel **kendi belge serisini** kullanır: `ayarlar.json` → `belgeOneki`,
+varsayılan `GP` (`GP0000001`). `A` serisi Vega'nın elle belge girişindeki
+varsayılan serisidir; panel oraya yazarsa numaralar kullanıcınınkilerle
+aynı diziye girer ve çakışabilir. Ayrıntı `BELGE-DESENI.md` → "Belge
+numarası: panelin kendi serisi olmalı".
 
 ---
 
@@ -393,6 +398,7 @@ başlamayın.
 | Sayım fişini Vega'ya yazma | Çalışıyor — canlıda denendi ve geri alındı |
 | Zayi / personel çıkışı | Çalışıyor — 33 fiş + cari borç, canlıda DENENMEDİ |
 | Fireli (manuel) üretim | Çalışıyor — **canlıda denendi ve geri alındı** (25.08) |
+| Çok çıktılı üretim (yan mamul + fire) | Çalışıyor — **08.09.2026'da eklendi**, canlıda DENENMEDİ |
 | Sıfıra kadar üretim | Çalışıyor — **canlıda denendi ve geri alındı** (25.08), tek tek ve toplu |
 | Zayiatlı üretim | **Kaldırıldı** (25.08.2026) |
 | Otomatik üretim | **Kaldırıldı** (22.08.2026) |
@@ -408,6 +414,195 @@ Vega fişlerinden çıkarıldı, `GALYA_TEST` üzerinde sınandı ve canlı firm
 tek örnekle doğrulanıp geri alındı — zayi, fireli ve sıfıra kadar üretim
 hariç, onlar henüz yalnızca `GALYA_TEST` üzerinde denendi
 (bkz. 11. Sıradaki işler).
+
+### 08.09.2026'da yapılanlar
+
+Müşteri Vega'da bir üretim yaparken ekranını kaydetti ve izleyici çıktısıyla
+birlikte gönderdi: *"bu söz konusu üretimde program hâlâ yanlış işlem
+yapıyor."* Video saniye saniye izleyici kaydıyla, sonra ikisi birden
+VEGADB'nin kendi verisiyle karşılaştırıldı. **İki ayrı kusur çıktı, ikisi de
+veriyle kanıtlandı.** Bulgunun tamamı `kurulum/URETIM-BULGU-08-09-2026.md`
+dosyasında; deseni `BELGE-DESENI.md`'ye işlendi.
+
+> **İzleyici çıktısı tek başına yetmiyor.** 1013 olay okundu, 23 yazma
+> ifadesi gösterildi; ama `TBLUREURETIMLIST`, `TBLUREURETIM`,
+> `TBLUREURETIMCIKTI`, `TBLSTOKHAREKETLERI` ve `TBLDEPOENVANTER`
+> INSERT'lerinin hiçbiri kayda girmedi. Vega bunları hazırlanmış (prepared)
+> ifadeyle gönderiyor, `izleyici/main.js`'teki
+> `YAZAN = /^\s*(INSERT|UPDATE|DELETE|MERGE)\b/` süzgeci `exec sp_execute …`
+> metnini yakalamıyor. Desen çıkarırken izleyiciye tek başına güvenmeyin;
+> veritabanından doğrulayın.
+
+#### 1. 96/97 belgelerinin satırları `TBLSHAREKET`'e yazılmıyordu
+
+"96 ve 97'nin başlık tablosu yoktur" doğruydu; ama **satır tablosu vardır**:
+`F{firma}D{dönem}TBLSHAREKET`. `TBLSTOKHAREKETLERI.LN` o satırın IDENTITY
+değeridir. Son 5.000 adet 96/97 hareketinin 5.000'inde bağ tutuyor; aynı
+sorgu tip 33 için 2.000'de 3 tutuyor, yani rastlantı değil.
+
+Panel `LN`'yi `MAX(LN) + 1` ile kendi üretiyor, `TBLSHAREKET`'e hiç
+yazmıyordu:
+
+- belge Vega'nın Üretim Giriş / Çıkış Fişi ekranında **satırsız** görünüyor,
+- IDENTITY ilerlemediği için Vega'nın yazacağı sonraki belgeler **aynı
+  LN'leri yeniden üretiyor**.
+
+25.08'de canlıda bırakılan iki fişin 10 satırı bu yüzden `TBLSHAREKET`'te
+yok; aynı örneklemdeki diğer 20.000 hareketin tamamında var.
+
+Tablo dönemlidir ve Vega onu yalnız modül kullanılınca oluşturuyor (F0100 ve
+F0101/D0002'de yok); panel `tabloVarMi` ile bakıyor, yoksa eski yola
+düşüyor.
+
+#### 2. Çok çıktılı reçetelerde yan mamuller hiç yazılmıyordu
+
+Reçetenin çıktıları `F{firma}TBLURERECETECIKTI` tablosunda duruyor. **Bu
+tablo kod tabanının hiçbir yerinde geçmiyordu.** Panel her üretimde tek
+çıktı satırı yazıyordu (mamul, `ORAN` 100, `TUR` 0).
+
+Reçete 4516 (DANA ANTRIKOT) gerçekte dört çıktılı: ana mamul + DANA KUŞBAŞI
++ DANA KIYMA + FİRE. F0102/D0002'deki 256 üretim fişinin 68'i çok çıktılı;
+433 reçetenin 7'si böyle (4516, 4496, 4497, 4499, 4506, 4515, 4534).
+
+Maliyet `ORAN`'a göre paylaşılıyor:
+
+```
+satır.TUTAR = toplam tüketim maliyeti × ORAN / 100
+satır.FIYAT = satır.TUTAR / satır.MIKTAR
+```
+
+Video'daki üretim bu formülle birebir çıkıyor: 23.750 × %100 / 18 =
+1.319,444444 · 23.750 × %100 / 3 = 7.916,666667.
+
+> **`ORAN` toplamı 100 olmak zorunda değil** ve Vega bunu uyarmadan
+> uyguluyor. DANA ANTRIKOT'ta toplam 200 — 23.750 TL hammadde 47.500 TL
+> mamule dönüyor. Panel Vega ile aynı sayıyı yazıyor (yoksa sayılar
+> tutmazdı), ama ekranda oran toplamını uyarı olarak gösteriyor. Bu bir
+> reçete verisi sorunudur; düzeltilecekse reçete düzeltilmeli.
+
+**Fire kararı (müşteriyle netleşti):** reçeteli çok çıktılı üretimde fire
+Vega'daki gibi FİRE stok kartına 96 girişi olarak yazılıyor; zayi fişi
+kesilmiyor, cari borcu oluşmuyor. Reçetesiz manuel üretimde eski akış (önce
+zayi fişi) 22.08'deki isteğe uygun olarak duruyor. İkisi bir arada
+yapılsaydı fire iki kez düşerdi.
+
+Ekranda mamul seçilir seçilmez `uretim:receteCiktilari` çağrılıyor; birden
+fazla çıktı varsa her biri için miktar kutusu açılıyor, fire kutuları ve
+fire carisi bölümü gizleniyor.
+
+#### 3. Reçete açarken ana mamul çıktı satırı yazılmıyordu
+
+Vega **her** reçeteye `TBLURERECETECIKTI`'ya bir ana mamul satırı yazıyor:
+`TUR` 0, `ORAN` 100, `RECETENO` = reçete başlığının IND'i. Üç kurulumda
+627 reçetenin 627'sinde var — istisna yok. Reçete ekranı mamulü oradan
+okuyor.
+
+Panel yazmıyordu. Kolon denetimi de göremiyordu, çünkü **denetimin kendisi**
+çıktı satırlarını elle ekleyip panelin eksiğini örtüyordu — sınamanın kendi
+kurgusunun bir kusuru gizlemesinin iyi bir örneği. Denetime artık panelin
+kendi yazdığı satır için ayrı bir vaka kondu (elle ekleme ondan sonra
+yapılıyor).
+
+`receteCiktiSatiriGuvence()` hem yeni reçetede yazıyor hem de eski
+reçetelerde eksikse tamamlıyor (panelin önceki sürümüyle açılmış reçeteler
+için).
+
+#### 4. Belge serisi `A`'dan `GP`'ye alındı
+
+Müşterinin uyarısı: *"belge numaraları varsayılan Vega'da A serisinden
+başlıyor zaten, başka bir seri ver."*
+
+Doğruydu. Panelin `A` seçimi "Vega otomatiklerde Z kullanıyor, A boştur"
+varsayımına dayanıyordu; oysa `A` Vega'nın **elle belge girişindeki
+varsayılan serisi**. Kanıt: bu makinedeki ikinci veritabanında panel hiç
+yazmamışken A serisi `A0000009`'a kadar doluydu.
+
+Riski iki taraflıydı: aynı anda fiş kesilirse numara çakışabiliyordu
+(`UPDLOCK` yalnız paneli bekletir, Vega o kilidi almaz) ve panel belgesi
+kullanıcının elle yazdığından ayırt edilemiyordu.
+
+Artık önek `ayarlar.json` → `belgeOneki`, varsayılan **`GP`**. İki gerçek
+veritabanının altı belge tablosunda da `GP` ile başlayan tek satır yok.
+Stok giriş/çıkış, alış faturası, sayım ve üretim fişinin `FISNO`'su bu
+öneki kullanıyor. Depo transferi (38) ve üretim 96/97 belgeleri Vega'nın
+**paylaşılan** `Z` sayacının devamı olduğu için değişmedi.
+
+#### 5. Kolon denetimi: 271 boş kolon bulundu ve dolduruldu
+
+Müşterinin uyarısı: *"tabloları birebir aynı doldurması gerekiyor, yoksa Vega
+okumamazlık yapıyor; daha önce bu sorunu hızlı belge doldurucuda yaşamıştık."*
+
+Bunun için `kurulum/test-kolon-denetimi.js` yazıldı. Vega'nın gerçek
+satırlarında kolon doluluk oranını ölçüp panelin yazdığıyla karşılaştırıyor;
+Vega'nın %100 doldurduğu bir kolonu panel NULL bırakmışsa risk sayıyor.
+
+İlk çalıştırma: **271 riskli kolon.** Dağılımı:
+
+| Belge | Riskli kolon |
+|---|---:|
+| Sayım giriş/çıkış başlığı (93/94) | 44 + 44 |
+| Sayım giriş/çıkış satırı | 18 + 18 |
+| Stok giriş başlığı/satırı (32) | 24 + 21 |
+| Alış faturası başlığı/satırı (20) | 20 + 14 |
+| `TBLSHAREKET` (96/97) | 20 + 20 |
+| Stok çıkış başlığı/satırı (33, tutanak) | 3 + 4 |
+| Reçete başlığı | 10 |
+| Diğer (stok hareketi, cari, üretim çıktısı) | 11 |
+
+Değerlerin neredeyse tamamı `0`, `false` ya da `''` — yani veri değil,
+Vega'nın beklediği doluluk. Hepsi dolduruldu; denetim şimdi **1013 zorunlu
+kolonda 0 risk** veriyor.
+
+Dikkat çeken nokta: `zayiFisiYaz` tertemizdi ama aynı tabloya (33) yazan
+tutanak yolu (`fisYaz`) değildi — tutanak `STOKKODU` ve `STOKTIPI`'yi hiç
+yazmıyordu. Aynı tabloya yazan iki kod yolundan biri doğru olabiliyor; bu
+yüzden denetim belge tipi tipi çalışıyor.
+
+**Ve bir kurulum yetmiyor.** Denetim bu makinedeki diğer Vega
+veritabanlarına da yöneltildi; her biri bir öncekinin kaçırdığını yakaladı:
+
+| Kurulum | Eksik | Nerede |
+|---|---:|---|
+| `VEGADB` (Galya, F0102/D0002) | 271 | sayım, fatura, tutanak, SHAREKET, reçete |
+| `VEGADBozdemirkaya` (F0101/D0017) | 33 | zayi / stok çıkış (33) |
+| `VEGADB_cazgır` (F0118/D0001) | 62 | **üretim başlığı 13, depo transferi 37**, üretim tüketimi, 96/97 |
+
+Eksikler her seferinde başka yerdeydi: Galya'da tutanak eksikti/zayi
+temizdi, Özdemirkaya'da tersi. **Üretim tarafındaki 50 kolon ancak üçüncü
+kurulumda görüldü** — üretim modülünü canlı kullanan tek veritabanı oydu
+(F0118D0001'de 380 üretim fişi). Yani panelin en çok uğraşılan kısmı, iki
+kurulumda "temiz" göründükten sonra hâlâ eksikti.
+
+Üçü de dolduruldu; üç veritabanına karşı da denetim temiz.
+
+Denetimi başka bir veritabanına yöneltmek:
+
+```
+GALYA_KAYNAK_VT=VEGADB_cazgır GALYA_KAYNAK_FIRMA=F0118 GALYA_KAYNAK_DONEM=D0001 node kurulum/test-kolon-denetimi.js
+```
+
+> Yeni bir Vega veritabanına eriştiğinizde denetimi ona karşı da çalıştırın.
+> Tek kurulumda "temiz" çıkmak yeterli değil.
+GALYA_KAYNAK_VT=VEGADBozdemirkaya GALYA_KAYNAK_FIRMA=F0101 GALYA_KAYNAK_DONEM=D0017 node kurulum/test-kolon-denetimi.js
+```
+
+#### 5. Maliyet motoru da `ORAN`'ı bilmiyordu
+
+`db/maliyet.js` bileşen maliyetinin tamamını mamule yazıyordu. Ana mamulün
+oranı 100'den küçük olan reçetede (4497 TAVUK BONFILE, %9,07) mamul maliyeti
+olduğundan yüksek çıkıyordu. Formül reçetenin kendi sakladığı çıktı
+fiyatıyla doğrulandı:
+
+```
+4497 TAVUK BONFILE  4845 × %9,07211558 / 190   = 2,31338947   ✔
+4515 LEVREK         6296 × %100        / 3,624 = 1737,30684   ✔
+4516 DANA ANTRIKOT   950 × %100        / 1     = 950          ✔
+```
+
+Sınama 123'ten **150**'ye çıktı (`kurulum/test-yazma.js`); müşterinin
+videosundaki üretim (oran toplamı 200 → 23.750 TL hammadde, 47.500 TL mamul)
+birebir sınanıyor. `--kur` iki yeni tablo kopyalıyor: `TBLURERECETECIKTI` ve
+`TBLSHAREKET`. Ayrıca `kurulum/test-kolon-denetimi.js` eklendi.
 
 ### 25.08.2026'da yapılanlar
 
@@ -870,12 +1065,18 @@ sürümüdür. Kalsın; sunucuda exe çalıştırılamayan durumlarda işe yarar
 ```
 node kurulum/test-sorgular.js       # 120 okuma sınaması
 node kurulum/test-yazma.js --kur    # test veritabanını hazırla/tamamla
-node kurulum/test-yazma.js          # 123 yazma sınaması
+node kurulum/test-yazma.js          # 150 yazma sınaması
+node kurulum/test-kolon-denetimi.js # kolon doluluk denetimi (Vega ile karşılaştırma)
 node kurulum/test-yetki.js          #  41 kullanıcı / kapsam / onay sınaması
 npx electron kurulum/test-arayuz.js #  35 arayüz duman sınaması
 node izleyici/test-izleyici.js …    #   6 izleyici sınaması
 ```
 
+> **08.09.2026: yazma sınaması 146/146 geçti** (123'ten çıktı; çok çıktılı
+> üretim ve `TBLSHAREKET` sınamaları eklendi). `--kur` iki yeni tablo
+> kopyalıyor: `TBLURERECETECIKTI` ve `TBLSHAREKET` — eski bir `GALYA_TEST`
+> varsa `--kur` bir kez daha çalıştırılmalı.
+>
 > **25.08.2026: dördü de geçti** — 120 / 123 / 41 / 35, sıfır hata.
 >
 > Başlarken hepsi `Login failed for user 'galya_panel'` veriyordu: geliştirme
@@ -885,6 +1086,17 @@ node izleyici/test-izleyici.js …    #   6 izleyici sınaması
 > burası:
 >
 >     sqlcmd -S localhost -E -C -i kurulum/sql-yetki-tazele.sql
+
+`test-kolon-denetimi.js` ayrı bir işi yapıyor: panelin yazdığı satırı
+Vega'nın **kendi** satırlarıyla kolon kolon karşılaştırıyor. Vega bir belgeyi
+okurken alanların dolu olmasını bekliyor; NULL bırakılan kolon satırı tabloya
+sokar ve stok doğru hareket eder ama Vega'nın ekranı belgeyi açamayabilir.
+Ayrıntı `BELGE-DESENI.md` → "Boş bırakılan kolon belgeyi açılmaz yapar".
+
+> Betik GALYA_TEST'in hareket tablolarını her çalıştırmada boşaltıyor
+> (kart tabloları duruyor). Sebep: çöken bir çalıştırma yarım belge
+> bırakırsa sonraki sınamalar alakasız hatalar veriyor — bir kez oldu.
+> Hedef veritabanının adı GALYA_TEST değilse betik hiçbir şey silmiyor.
 
 Yazma sınamaları müşteri verisine dokunmaz: yapısı VEGADB'den
 `SELECT * INTO … WHERE 1=0` ile kopyalanmış boş bir **`GALYA_TEST`**
@@ -974,6 +1186,24 @@ tablo tutuyor ve firmalar şöyle:
 ---
 
 ## 11. Sıradaki işler
+
+0. **Çok çıktılı üretim canlıda DENENMEDİ (08.09.2026).** Kod `GALYA_TEST`
+   üzerinde doğrulandı (146 sınama) ve okuma tarafı gerçek VEGADB'de
+   sınandı, ama VEGADB'ye tek bir çok çıktılı fiş yazılmadı. İlk denemede:
+
+   - **TEK üründen başlayın** — reçetesi dört çıktılı DANA ANTRIKOT iyi bir
+     örnek, çünkü hem yan mamulü hem firesi var.
+   - Fişi yazdıktan sonra Vega'nın **Üretim Giriş Fişi** ekranını açın ve
+     dört satırın da göründüğünü kontrol edin. Satırların görünmesi
+     `TBLSHAREKET` düzeltmesinin çalıştığının kanıtıdır; satırsız
+     görünüyorsa yazma yolunda bir şey eksik demektir.
+   - Sonra **geri alın** ve `TBLSHAREKET`'te satır kalmadığını doğrulayın.
+   - Üretim 96/97 sayacını kullanıyor ve Şefim entegrasyonu aynı sayacı
+     günde 250–600 belge hızında ilerletiyor; yoğun saatlerde denemeyin.
+
+   25.08'de canlıda bırakılan iki fişin (`A0000290`, `A0000291`) 10 satırı
+   `TBLSHAREKET`'te yok. Bunlar "geri alındı" işaretli olsa da satırları
+   VEGADB'de duruyor; müşteriye geçmeden temizlenmeli.
 
 1. **Reçete verimleri.** 433 reçetenin 430'unda verim (`TBLURERECETELIST.
    MIKTAR`) 1 girilmiş. Bir kazan tiramisu da "1 birim" sayıldığı için

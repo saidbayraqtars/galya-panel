@@ -48,10 +48,47 @@ sezgiye ters, karıştırmak kolaydır.
 Dört tablonun da `IND` alanı **IDENTITY**'dir. Numarayı SQL Server üretir;
 dışarıdan `MAX(IND)+1` hesaplanmamalıdır.
 
-Belge numarası metni (`BELGENO`) elle girilen fişlerde `A` önekiyle
-ilerler: `A0000001`, `A0000002`… Vega'nın kendi otomatik oluşturduğu
-belgeler `Z` önekini kullanır. Panel yalnızca `A` serisini kullanır, böylece
-Vega'nın kendi numaralarıyla çakışmaz.
+### Belge numarası: panelin kendi serisi olmalı
+
+`BELGENO` **serbest metindir** — üzerinde tekillik kısıtı yok ve gerçek
+veride kullanıcıların elle yazdığı her şey duruyor: `ATAKUMTÜLEKSİK/3801`,
+`10.000$`, tedarikçi fatura numaraları, `KIRIK.` …
+
+> **Panel uzun süre `A` serisini kullandı; bu yanlıştı.** Gerekçe "Vega
+> otomatik belgelerinde `Z` kullanıyor, `A` boştur" idi. Oysa `A`, Vega'da
+> **elle belge girilirken önerilen varsayılan seridir**: kullanıcı Vega'dan
+> fiş kesince o da `A0000001`'den ilerler.
+>
+> İki gerçek veritabanında da görüldü — panel hiç yazmamışken A serisi
+> doluydu (Özdemirkaya F0101/D0017'de `A0000009`'a kadar).
+>
+> İki sonucu vardı: (1) panel ve Vega aynı diziden numara alıyor, ikisi aynı
+> anda fiş keserse **aynı numarayı** alabilir — `UPDLOCK` yalnız paneli
+> bekletir, Vega o kilidi almaz; (2) panelin yazdığı belge kullanıcının elle
+> yazdığından ayırt edilemiyor.
+
+Panel artık kendi önekini kullanıyor. Önek `ayarlar.json` → `belgeOneki`
+alanından geliyor, **varsayılan `GP`** (Galya Panel): `GP0000001`,
+`GP0000002` … En fazla 4 harf/rakam; geçersizse varsayılana düşer.
+
+Kurulumdan önce önekin o veritabanında boş olduğu doğrulanmalı:
+
+```sql
+SELECT LEFT(BELGENO,1) AS onek, COUNT(*) FROM F0102D0002TBLSTKCIKBASLIK
+WHERE ISNULL(BELGENO,'') <> '' GROUP BY LEFT(BELGENO,1) ORDER BY 2 DESC;
+```
+
+Önek şu belgelerin hepsinde kullanılıyor: stok giriş/çıkış (32/33), alış
+faturası (20), sayım (93/94) ve üretim fişinin `FISNO` alanı.
+
+**İstisna — Vega'nın paylaşılan sayaçları.** Depo transferinin (38) ve
+üretim 96/97 belgelerinin `Z` numaraları Vega'nın kendi dizisinin
+devamıdır; onlar panelin öneki ile değil, `MAX + 1` ile üretilmeye devam
+eder. Bu belgeleri Vega'nın kendisi de otomatik olarak böyle numaralıyor.
+
+Önek kurulumda bir kez seçilir; sonradan değiştirmek numara dizisini kırar
+(yeni önek 1'den başlar). Bu yüzden Ayarlar ekranında değil, yalnız
+`ayarlar.json` içinde.
 
 ## Belge tipleri
 
@@ -59,8 +96,8 @@ Aynı iş için birden fazla tip var; elle girilen ile otomatik oluşan ayrılı
 
 | Tip | Anlamı | Önek |
 |---|---|---|
-| 32  | Stok giriş fişi (elle) | A |
-| 33  | Stok çıkış fişi (elle) | A |
+| 32  | Stok giriş fişi (elle) | Vega: A · panel: `belgeOneki` |
+| 33  | Stok çıkış fişi (elle) | Vega: A · panel: `belgeOneki` |
 | 103 | Stok girişi (otomatik/toplu) | Z |
 | 104 | Stok çıkışı (otomatik/toplu) | Z |
 | 20  | Alış faturası | |
@@ -71,6 +108,88 @@ Aynı iş için birden fazla tip var; elle girilen ile otomatik oluşan ayrılı
 
 `IZAHAT` (stok hareketinde) ve `BELGETIPI` (başlık ve envanterde) aynı
 değeri taşır.
+
+## Boş bırakılan kolon belgeyi açılmaz yapar
+
+**Vega bir belgeyi okurken satırdaki alanların dolu olmasını bekliyor.** Bir
+kolonu NULL bırakmak satırı tabloya sokar, stok da doğru hareket eder — ama
+Vega'nın kendi ekranı belgeyi açamayabilir. Bu, panelin yazdığı belgede
+saatlerce fark edilmeyen, ancak müşteri belgeyi açmaya çalıştığında ortaya
+çıkan bir kusurdur; "hızlı belge doldurucu" işinde tam olarak bu yaşandı.
+
+Ölçüsü `kurulum/test-kolon-denetimi.js`:
+
+```
+node kurulum/test-kolon-denetimi.js
+```
+
+Betik gerçek veritabanında Vega'nın kendi satırlarına bakıp her kolonun
+**doluluk oranını** ölçüyor (belge tipi başına 5.000 satıra kadar), sonra
+panelin GALYA_TEST'e yazdığı satırla karşılaştırıyor. Vega'nın **%100**
+doldurduğu bir kolonu panel NULL bırakmışsa risk sayılıyor.
+
+Eşik neden %100: Vega bir alanı bazen dolduruyorsa (%40, %90) o alan
+belgenin okunması için şart değildir — kullanıcı girmiş ya da girmemiştir.
+Her satırda dolduruyorsa alan belgenin bir parçasıdır.
+
+> **08.09.2026'da ilk çalıştırmada 271 riskli kolon çıktı** — alış faturası,
+> sayım fişi, tutanak, üretim ve `TBLSHAREKET` satırlarında. Değerlerin
+> neredeyse tamamı `0`, `false` ya da `''` idi; yani "veri" değil, Vega'nın
+> beklediği doluluk. Hepsi dolduruldu, sonuç 0.
+>
+> İlginç ayrıntı: `zayiFisiYaz` o gün bile tertemizdi, ama aynı tabloya yazan
+> tutanak (`fisYaz`) değildi. Aynı tabloya yazan iki kod yolundan biri doğru
+> olabiliyor; bu yüzden denetim belge tipi tipi çalışıyor.
+
+### Her kurulum aynı kolonları doldurmuyor — birleşim alınmalı
+
+Denetim başka bir Vega kurulumuna da yöneltilebiliyor:
+
+```
+GALYA_KAYNAK_VT=VEGADBozdemirkaya GALYA_KAYNAK_FIRMA=F0101 GALYA_KAYNAK_DONEM=D0017 node kurulum/test-kolon-denetimi.js
+```
+
+08.09.2026'da üç kurulum karşılaştırıldı ve her biri bir öncekinin
+kaçırdığını yakaladı:
+
+| Kurulum | Bulunan eksik | Nerede |
+|---|---:|---|
+| `VEGADB` (Galya) | 271 | sayım, fatura, tutanak, SHAREKET, reçete |
+| `VEGADBozdemirkaya` | 33 | zayi / stok çıkış (33) |
+| `VEGADB_cazgır` | 62 | **üretim başlığı (13), depo transferi (37)**, üretim tüketimi, 96/97 |
+
+Eksikler her seferinde **başka yerdeydi**: Galya'da tutanak eksikti/zayi
+temizdi, Özdemirkaya'da zayi eksikti/tutanak temizdi. Üretim tarafındaki
+13 + 37 kolon ancak üçüncü kurulumda görüldü, çünkü üretim modülünü canlı
+kullanan tek veritabanı oydu (F0118D0001'de 380 üretim fişi).
+
+Yani "%100 dolu" kümesi kuruluma göre değişiyor. **Doğru olan birleşimi
+doldurmaktır.** Elinizdeki HER Vega veritabanına karşı çalıştırın; tek
+kurulumla "temiz" çıkmak yeterli değil.
+
+Bu makinedeki üç kurulum için:
+
+```
+node kurulum/test-kolon-denetimi.js
+GALYA_KAYNAK_VT=VEGADBozdemirkaya GALYA_KAYNAK_FIRMA=F0101 GALYA_KAYNAK_DONEM=D0017 node kurulum/test-kolon-denetimi.js
+GALYA_KAYNAK_VT=VEGADB_cazgır     GALYA_KAYNAK_FIRMA=F0118 GALYA_KAYNAK_DONEM=D0001 node kurulum/test-kolon-denetimi.js
+```
+
+### Son adım: belgeyi Vega'da açmak
+
+Kolon denetimi gerekli ama yeterli değil. Tek kesin kanıt belgenin Vega'nın
+kendi ekranında açılmasıdır:
+
+```
+node kurulum/canli-belge-sinamasi.js --vt <lisanslı_vt> --firma F0101 --donem D0017
+node kurulum/canli-belge-sinamasi.js --vt <lisanslı_vt> --geri-al
+```
+
+Betik her belge tipinden birer tane yazıp numaralarını söylüyor; Vega A5 o
+veritabanıyla açılıp belgeler görülüyor, sonra hepsi geri alınıyor. Üretim
+yazmıyor (96/97 sayacı Şefim ile paylaşılıyor).
+
+Yeni bir belge tipi yazan herkes bu iki betiğe de kendi belgesini eklemeli.
 
 ## GK alanı
 
@@ -263,10 +382,56 @@ TBLUREBELGE                 │       (üretimden doğan belgelerin dizini)
 
 | `TUR` | Anlamı |
 |---|---|
-| 0 | mamul (her fişte bir tane) |
-| 2 | fire / yan ürün |
+| 0 | ana mamul (her fişte bir tane) |
+| 2 | fire / yan mamul |
 
-`ORAN` alanı çıktının yüzde payıdır (mamul 87.5, fire 0.0525 gibi).
+**Bir fişte birden fazla çıktı satırı olur.** F0102/D0002'deki 256 üretim
+fişinin 68'i çok çıktılı. Örnek (`A0000279`, reçete 4516 DANA ANTRIKOT):
+36,82 kg ham et tüketilip 17,24 antrikot + 6,42 kuşbaşı + 10,34 kıyma +
+2,82 fire çıkıyor. Miktarları kullanıcı iş emri ekranında yazıyor.
+
+Çıktı listesi reçetenin `F{firma}TBLURERECETECIKTI` tablosundan gelir; hangi
+ürünlerin çıkacağını ve her birinin maliyet payını orası söyler.
+
+### Reçete açarken ana mamul çıktısı da yazılmalı
+
+Vega **her** reçeteye bu tabloya bir ana mamul satırı (`TUR` 0, `ORAN` 100,
+`RECETENO` = reçete başlığının IND'i) yazıyor. Üç kurulumda 627 reçetenin
+627'sinde var, istisnası yok:
+
+| Kurulum | Reçete | Çıktı satırı olmayan | TUR 0'ı olmayan |
+|---|---:|---:|---:|
+| `VEGADB` F0102 | 433 | 0 | 0 |
+| `VEGADB_cazgır` F0118 | 194 | 0 | 0 |
+
+Reçete ekranı mamulü bu satırdan okuyor; satır yoksa reçete Vega'da çıktısız
+görünür. Panel 09.09.2026'ya kadar yazmıyordu — kolon denetimi bunu
+göremiyordu, çünkü denetimin kendisi çıktı satırlarını elle ekliyordu ve
+panelin eksiğini örtüyordu. `receteCiktiSatiriGuvence()` artık hem yeni
+reçetede yazıyor hem de eski reçetelerde eksikse tamamlıyor.
+
+| Alan | Ana mamul | Yan mamul |
+|---|---|---|
+| `TUR` | 0 | 2 |
+| `RECETENO` | **üretim başlığının IND'i** | `NULL` |
+| `BIRIMMIKTAR` | `NULL` | 1 |
+| `POZISYONNO` | 2 | 2 |
+| `KALANMIKTAR` | = `MIKTAR` | = `MIKTAR` |
+
+`ORAN` alanı çıktının yüzde payıdır ve maliyet buna göre paylaşılır:
+
+```
+satır.TUTAR = toplam tüketim maliyeti × ORAN / 100
+satır.FIYAT = satır.TUTAR / satır.MIKTAR
+```
+
+> **`ORAN` toplamı 100 olmak zorunda değil.** DANA ANTRIKOT reçetesinde hem
+> ana mamul hem DANA KIYMA %100 taşıyor, toplam 200: 23.750 TL hammadde
+> 47.500 TL mamule dönüyor. Vega bunu uyarmadan yapıyor (08.09.2026 ekran
+> kaydı). TAVUK BONFILE'de tersi var — toplam %9,12, maliyetin çoğu hiçbir
+> çıktıya yazılmıyor. Panel Vega ile aynı sayıyı yazıyor, ama ekranda oran
+> toplamını uyarı olarak gösteriyor: bu bir reçete verisi sorunudur,
+> hesaplama hatası değil.
 
 `TBLUREURETIMPOZ` her fişte tam iki satırdır:
 
@@ -295,8 +460,10 @@ son örnek 12.08.2026). Sırayla:
 3. **`IZAHAT 97` — tüketim.** `TBLSTOKHAREKETLERI` (`CIKAN` = miktar,
    `GIREN` = 0) + `TBLDEPOENVANTER` (`−miktar`).
 
-4. **`IZAHAT 96` — çıktı.** `TBLSTOKHAREKETLERI` (mamul ve fire için birer
-   satır, `GIREN` = miktar) + `TBLDEPOENVANTER` (`+miktar`).
+4. **`IZAHAT 96` — çıktı.** Her çıktı için birer `TBLSTOKHAREKETLERI`
+   (`GIREN` = miktar) + `TBLDEPOENVANTER` (`+miktar`) satırı. **Fiyatı sıfır
+   olan yan mamul ve fire satırları da yazılır**; stok kartı yine artar.
+   `TBLUREBELGE.MAMULSATIRI` yalnız `TUR = 0` satırının `LN`'sidir.
 
 Diğer desenler (`38` tek başına, `96` tek başına, `38+38+97`) 2026 başındaki
 fişlerde görülüyor; Vega hareket doğmayan adımı atlıyor. Yeni yazılacak fiş
@@ -306,6 +473,66 @@ tam deseni izlemeli.
 > `TBLSTKGIRBASLIK`/`TBLSTKCIKBASLIK` IND'ini tutar; üretimde böyle bir
 > başlık **aranmasın, yok**. `IND IN (55204,55205)` sorgusu iki tabloda da
 > sıfır satır döner. Bağ yalnızca `TBLUREBELGE` üzerinden kurulur.
+
+### Satır tablosu: `TBLSHAREKET` (başlığı yok, satırı var)
+
+Başlığı olmaması satırı da olmadığı anlamına gelmiyor. 96 ve 97 belgelerinin
+satırları `F{firma}D{dönem}TBLSHAREKET` tablosunda durur — Vega'nın Üretim
+Giriş / Çıkış Fişi ekranının okuduğu tablo budur.
+
+```
+TBLSHAREKET
+   IND ─────────────────┐   IDENTITY
+   EVRAKNO                  belgenin BELGENO'su (sayı)
+                        │
+TBLSTOKHAREKETLERI      │
+   LN  ←────────────────┘   satırın TBLSHAREKET.IND'i
+```
+
+08.09.2026'da bulundu. Son 5.000 adet 96/97 hareketinde:
+
+```
+LN = TBLSHAREKET.IND                4990 / 4990
+TBLSHAREKET.EVRAKNO = BELGENO       4990 / 4990
+STOKNO aynı                         4990 / 4990
+```
+
+Aynı sorgu `IZAHAT = 33` için 2.000'de 3 tutuyor; yani bağ 96/97'ye özgü,
+rastlantı değil. Stok giriş/çıkış fişleri satırlarını kendi
+`TBLSTKCIKHAREKET` / `TBLSTKGIRHAREKET` tablolarında tutar ve `LN`'leri ayrı
+bir sayaçtan gelir.
+
+**Sıra önemli:** önce `TBLSHAREKET` satırı yazılır, dönen IDENTITY `LN`
+olarak `TBLSTOKHAREKETLERI`'ne ve `HAREKETIND` olarak
+`TBLDEPOENVANTER`'e geçer. `TBLUREBELGE.MAMULSATIRI` de aynı sayıdır.
+
+Panel `LN`'yi uzun süre `MAX(LN) + 1` ile kendi üretiyor ve `TBLSHAREKET`'e
+hiç yazmıyordu. İki sonucu vardı: belge Vega'nın ekranında **satırsız**
+görünüyordu ve IDENTITY ilerlemediği için Vega'nın yazacağı sonraki belgeler
+**aynı LN'leri yeniden üretiyordu**.
+
+Yazılan alanlar (Vega'nın satırından birebir):
+
+| Alan | Değer |
+|---|---|
+| `EVRAKNO` | belgenin `BELGENO`'su |
+| `DETAY`, `SELECTED`, `FIRMANO`, `KDV` | 0 |
+| `MIKTAR`, `ENVANTER` | miktar (97'de de **artı**) |
+| `BIRIMMIKTAR`, `SERIMIKTAR` | 1 |
+| `AFIYATI`, `FIYATI` | birim maliyet |
+| `GERCEKTOPLAM` | miktar × birim maliyet |
+| `TERMIN` | `1899-12-30` |
+| `PARABIRIMI` / `KUR` | `TL` / 1 |
+| `GK` | rastgele int32 (`gkUret()`) |
+
+> Tablo dönemlidir ve Vega onu yalnızca modül kullanılınca oluşturuyor:
+> VEGADB'de `F0100` ile `F0101/D0002` gibi dönemlerde **yok**. Panel
+> `tabloVarMi` ile bakıyor; yoksa eski `MAX(LN) + 1` yoluna düşüyor.
+
+> Geri almada `TBLSHAREKET` satırları da silinmeli. Silmeden önce `LN`'ler
+> `TBLSTOKHAREKETLERI`'nden okunup `IND` ile siliniyor; `EVRAKNO = BELGENO`
+> ile silmek başka belge tiplerinin sayaç uzayıyla örtüşüp yanlış satıra
+> dokunabilirdi.
 
 ### 96/97 numarası nereden gelir
 
@@ -618,6 +845,39 @@ eksiksiz yazılıyor.
 > Çıktı satırındaki `TBLUREURETIMCIKTI.RECETENO` alanı reçeteyi değil,
 > **üretim başlığının IND'ini** tutuyor (alan adı yanıltıcı, Vega'nın kendi
 > fişlerinde de böyle). Bu, reçetesiz üretimde de değişmiyor.
+
+## Çok çıktılı üretim
+
+08.09.2026'da eklendi; bulgunun tamamı `URETIM-BULGU-08-09-2026.md`'de.
+
+Reçetesinde birden fazla çıktı olan mamulde iş **kökten değişiyor** ve
+Vega'nın iş emri ekranına dönüşüyor:
+
+```
+Reçete çıktıları (F0102, 4516 DANA ANTRIKOT)
+   TUR 0  DANA ANTRIKOT   ORAN 100     ana mamul
+   TUR 2  DANA KUŞBAŞI    ORAN 0       yan mamul
+   TUR 2  DANA KIYMA      ORAN 100     yan mamul
+   TUR 2  FİRE            ORAN 0       fire
+
+Kullanıcının yazdığı  →  25 kg ham et  →  18 + 3 + 3 + 1
+```
+
+| | Tek çıktılı / reçetesiz | Çok çıktılı |
+|---|---|---|
+| Tüketim | giren − fire | **girenin tamamı** |
+| Fire | ayrı zayi çıkış fişi (33) + cari borcu | reçetedeki **FİRE stok kartına 96 girişi** |
+| Çıktı satırı | 1 | reçetedeki her satır (miktarı > 0 olanlar) |
+| Maliyet | tamamı mamule | `ORAN`'a göre paylaşılır |
+
+Fire'nin iki kip arasında yer değiştirmesi bilinçli: Vega reçeteli üretimde
+zayi fişi kesmiyor, fireyi bir çıktı sayıyor. İkisi bir arada yapılsaydı
+fire **iki kez** düşerdi. Reçetesiz manuel üretimde eski akış (önce zayi
+fişi) müşterinin 22.08.2026'daki isteği gereği duruyor.
+
+`db/uretim.js` → `receteCiktilari()` reçetenin çıktılarını okuyor; arayüz
+mamul seçilir seçilmez çağırıyor ve birden fazla satır dönerse miktar
+kutularını açıyor. `fireliUret()` `ciktilar` aldığında zayi fişi kesmiyor.
 
 ## Stok kartını pasife alma
 

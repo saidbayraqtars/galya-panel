@@ -28,7 +28,7 @@
 
 const { sorgu } = require('./sql');
 const { ayarOku } = require('./ayar');
-const { dogrula, tablo, kart } = require('./firma');
+const { dogrula, tablo, kart, tabloVarMi } = require('./firma');
 const panel = require('./panel');
 const yazma = require('./yazma');
 const { stokPasifHaric } = require('./vega');
@@ -228,6 +228,70 @@ async function urunAra(secim) {
   );
 }
 
+// Bir mamulün reçetesindeki ÇIKTI satırları.
+//
+// Bir üretimden birden fazla ürün çıkabiliyor: "DANA ANTRIKOT" reçetesinde
+// ana mamulün yanında DANA KUŞBAŞI, DANA KIYMA ve FİRE de var. Vega'nın İş
+// Emri ekranındaki "Üretim Çıktıları" sekmesi bu satırları gösteriyor ve
+// miktarları kullanıcı yazıyor (25 kg ham et → 18 antrikot + 3 kuşbaşı +
+// 3 kıyma + 1 fire). Panel bu tabloyu 08.09.2026'ya kadar hiç okumadı ve
+// her üretimde yalnız ana mamulü yazdı.
+//
+// Arayüz mamul seçilir seçilmez burayı çağırıp satırları ekrana koyuyor.
+// Tek satır dönerse (433 reçetenin 479'u böyle) ekran değişmiyor.
+//
+// ORAN, çıktının toplam maliyetten aldığı yüzdedir. Toplamı 100 olmak
+// zorunda değil — DANA ANTRIKOT reçetesinde 200 ve Vega bunu uyarmadan
+// uyguluyor, yani 23.750 TL hammadde 47.500 TL mamule dönüyor. Panel de
+// aynısını yazıyor (yoksa sayılar Vega'nınkiyle tutmaz) ama ekranda uyarı
+// gösteriyor: oranToplami alanı bunun için var.
+async function receteCiktilari(secim) {
+  const { firma } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const mamulStokNo = Number(secim.mamulStokNo);
+  if (!mamulStokNo) throw new Error('Ürün seçilmeli.');
+
+  // Tablo her firmada yok (Vega üretim modülü kullanılınca oluşturuyor).
+  if (!(await tabloVarMi(firma, '', 'TBLURERECETECIKTI'))) {
+    return { receteNo: 0, satirlar: [], oranToplami: 0 };
+  }
+
+  const basliklar = await sorgu(
+    `SELECT TOP 1 IND AS receteNo FROM ${kart(v, firma, 'TBLURERECETELIST')}
+     WHERE STOKNO = @stokNo ORDER BY IND`,
+    { stokNo: mamulStokNo }
+  );
+  if (!basliklar.length) return { receteNo: 0, satirlar: [], oranToplami: 0 };
+  const receteNo = Number(basliklar[0].receteNo);
+
+  const satirlar = (await sorgu(
+    `SELECT C.STOKNO AS stokNo, ISNULL(C.TUR, 0) AS tur, ISNULL(C.ORAN, 0) AS oran,
+            S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
+            ISNULL(B.BIRIMADI, '') AS birim
+     FROM ${kart(v, firma, 'TBLURERECETECIKTI')} C
+     JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = C.STOKNO
+     LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
+            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+     WHERE C.EVRAKNO = @receteNo
+     ORDER BY C.TUR, C.IND`,
+    { receteNo }
+  )).map((c) => ({
+    stokNo: Number(c.stokNo),
+    ad: c.ad,
+    kod: c.kod,
+    birim: c.birim,
+    tur: Number(c.tur),
+    oran: Number(c.oran),
+    anaMamul: Number(c.tur) === 0 && Number(c.stokNo) === mamulStokNo
+  }));
+
+  return {
+    receteNo,
+    satirlar,
+    oranToplami: satirlar.reduce((t, s) => t + s.oran, 0)
+  };
+}
+
 // Sayaç yarışında (Şefim entegrasyonu aynı 96/97 numarasını alırsa) işlem
 // geri alınıp yeniden deneniyor.
 async function denemeliYaz(istek) {
@@ -389,6 +453,19 @@ async function hepsiniSifirla(secim) {
 //
 // Reçete GEREKMEZ. Bileşenleri kullanıcı seçtiği için üretim fişi
 // yazma.uretimHazirligi'na elle bileşen listesiyle gidiyor.
+//
+// ÇOK ÇIKTILI KİP (08.09.2026). Mamulün reçetesinde birden fazla çıktı
+// varsa (DANA ANTRIKOT → antrikot + kuşbaşı + kıyma + fire) arayüz
+// `ciktilar` gönderiyor ve iş kökten değişiyor:
+//
+//   - Hammaddenin TAMAMI tüketilir; "giren − fire" hesabı yapılmaz.
+//   - Fire ayrı bir zayi çıkış fişine YAZILMAZ; reçetedeki FİRE kartına
+//     üretim çıktısı (96) olarak girer. Vega'nın yaptığı budur; ikisi bir
+//     arada yapılsaydı fire iki kez düşerdi.
+//   - Cari hareketi oluşmaz.
+//
+// Tek çıktılı reçetelerde ve reçetesiz üretimde eski akış aynen sürüyor:
+// fire → zayi fişi (müşterinin 22.08.2026'daki isteği).
 async function fireliUret(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const v = vt();
@@ -416,14 +493,24 @@ async function fireliUret(secim) {
     }
   }
 
-  const fireSatirlari = hammaddeler.filter((h) => h.fire > 0.0001);
+  const ciktilar = (Array.isArray(secim.ciktilar) ? secim.ciktilar : [])
+    .map((c) => ({ stokNo: Number(c.stokNo), miktar: Number(c.miktar || 0) }))
+    .filter((c) => c.stokNo && c.miktar > 0.0001);
+  const cokCiktili = ciktilar.length > 1;
+
+  if (cokCiktili && !ciktilar.some((c) => c.stokNo === mamulStokNo)) {
+    throw new Error('Çıktı satırlarında üretilen ürünün miktarı yazılmamış.');
+  }
+
+  const fireSatirlari = cokCiktili ? [] : hammaddeler.filter((h) => h.fire > 0.0001);
   if (fireSatirlari.length && !Number(secim.cariNo)) {
     throw new Error('Fire yazılacak cari seçilmeli (ZAYİ, FİRE ya da personel).');
   }
 
-  // Üretimde tüketilecek miktar = giren − fire.
+  // Tüketilecek miktar. Çok çıktılı kipte hammaddenin tamamı tüketilir
+  // (fire bir çıktı satırıdır); tek çıktılı kipte giren − fire.
   const bilesenler = hammaddeler
-    .map((h) => ({ stokNo: h.stokNo, miktar: h.miktar - h.fire }))
+    .map((h) => ({ stokNo: h.stokNo, miktar: cokCiktili ? h.miktar : h.miktar - h.fire }))
     .filter((b) => b.miktar > 0.0001);
   if (!bilesenler.length) {
     throw new Error(
@@ -466,7 +553,8 @@ async function fireliUret(secim) {
       mamulStokNo,
       miktar: uretilenMiktar,
       bilesenler,
-      aciklama: secim.aciklama || 'Fireli üretim',
+      ciktilar: cokCiktili ? ciktilar : null,
+      aciklama: secim.aciklama || (cokCiktili ? 'Reçeteli üretim' : 'Fireli üretim'),
       kullanici: secim.kullanici,
       userNo: secim.userNo
     });
@@ -474,10 +562,11 @@ async function fireliUret(secim) {
     const fireToplami = fireSatirlari.reduce((t, h) => t + h.fire, 0);
     await panel.kayit(
       'Üretim',
-      'Fireli üretim yapıldı',
+      cokCiktili ? 'Çok çıktılı üretim yapıldı' : 'Fireli üretim yapıldı',
       {
         firma, donem, depo, mamulStokNo, mamulAdi, uretilenMiktar,
-        hammaddeler, fireToplami,
+        hammaddeler, fireToplami, cokCiktili,
+        ciktilar: fis.ciktilar || null,
         zayiBelgeNo: zayiFisi ? zayiFisi.belgeNo : null,
         uretimFisNo: fis.fisNo
       },
@@ -493,7 +582,11 @@ async function fireliUret(secim) {
       uretilenMiktar,
       fisNo: fis.fisNo,
       uretimInd: fis.uretimInd,
-      mamulAdi
+      mamulAdi,
+      cokCiktili,
+      ciktilar: fis.ciktilar || null,
+      toplamMaliyet: fis.toplamMaliyet,
+      dagitilanMaliyet: fis.dagitilanMaliyet
     };
   } catch (e) {
     if (!zayiFisi) throw e;
@@ -561,6 +654,7 @@ module.exports = {
   sifiraKadarUret,
   hepsiniSifirla,
   urunAra,
+  receteCiktilari,
   fireliUret,
   gecmis,
   geriAl

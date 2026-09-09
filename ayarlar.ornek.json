@@ -25,6 +25,8 @@
   "_yedekKlasoruNotu": "Yedek dosyasi SUNUCUDA olusur; bu yol SQL Server'in disklerinde aranir. Bos birakilirsa SQL Server'in varsayilan yedek klasoru kullanilir. Yedek yetkisi icin kurulum/sql-yedek-yetkisi-ver.sql calistirilmali.",
   "yedekUyariSaat": 24,
 
+  "belgeOneki": "GP",
+  "_belgeOnekiNotu": "Panelin kestigi belgelerin numara oneki. Vega elle belge girisinde A serisini kendi kullaniyor; panel ayri bir seri kullanmali ki numaralar cakismasin ve panel belgesi ayirt edilebilsin. En fazla 4 harf/rakam.",
   "vegayaYazmaAktif": true,
   "_vegayaYazmaNotu": "false yapılırsa program VEGADB'ye tek satır yazmaz. SQL tarafında da yetki gerekir: galya_panel kullanıcısı VEGADB üzerinde salt okunur kurulur."
 }

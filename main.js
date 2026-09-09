@@ -444,6 +444,7 @@ kayitEt('maliyet:mamul', async (g) => maliyet.mamulMaliyeti(g));
 // 22.08.2026'da kaldırılmıştı, yerine bu sıfıra kadar üretim geldi.
 kayitEt('uretim:sifirAdaylari', async (g) => uretim.sifirAdaylari(g));
 kayitEt('uretim:urunAra', async (g) => uretim.urunAra(g));
+kayitEt('uretim:receteCiktilari', async (g) => uretim.receteCiktilari(g));
 kayitEt('uretim:sifiraKadar', async (g, k) =>
   uretim.sifiraKadarUret(Object.assign({}, g, { kullanici: k.kullanici }))
 );
@@ -467,7 +468,11 @@ function zayiYetkisiIste(o, isim) {
 kayitEt('uretim:fireli', async (g, k, o) => {
   // Fire girilmemişse zayi fişi hiç kesilmiyor; yetki de yalnızca fire
   // varken isteniyor.
-  const fireVar = (Array.isArray(g.hammaddeler) ? g.hammaddeler : []).some(
+  //
+  // Çok çıktılı üretimde de kesilmiyor: fire orada reçetenin FİRE kartına
+  // yazılan bir üretim çıktısıdır, cari hareketi yoktur.
+  const cokCiktili = Array.isArray(g.ciktilar) && g.ciktilar.length > 1;
+  const fireVar = !cokCiktili && (Array.isArray(g.hammaddeler) ? g.hammaddeler : []).some(
     (h) => Number(h && h.fire) > 0
   );
   if (fireVar) zayiYetkisiIste(o, 'Fireli üretim');

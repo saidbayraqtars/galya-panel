@@ -89,10 +89,15 @@ async function kalan(stokNo) {
 const KART_TABLOLARI = [
   'TBLSTOKLAR', 'TBLBIRIMLEREX', 'TBLCARI',
   'TBLURERECETELIST', 'TBLURERECETE', 'TBLURERECETEPOZ', 'TBLURERECETEARAC',
+  // Reçetenin ÇIKTI satırları: bir üretimden birden fazla ürün çıkabiliyor.
+  'TBLURERECETECIKTI',
   'TBLKDVGRUPLARI'
 ];
 const DONEM_TABLOLARI = [
   'TBLSTOKHAREKETLERI', 'TBLDEPOENVANTER', 'TBLCARIHAREKETLERI',
+  // 96/97 belgelerinin satır tablosu; TBLSTOKHAREKETLERI.LN buranın
+  // IDENTITY değeridir.
+  'TBLSHAREKET',
   'TBLSTKCIKBASLIK', 'TBLSTKCIKHAREKET', 'TBLSTKGIRBASLIK', 'TBLSTKGIRHAREKET',
   'TBLALFATBASLIK', 'TBLALFATHAREKET',
   'TBLDEPOHARBASLIK', 'TBLDEPOHARHAREKET',
@@ -244,7 +249,7 @@ if (process.argv.includes('--kur')) {
 (async () => {
   console.log('\n== Hazırlık ==');
   const stoklar = await sql.sorgu(`
-    SELECT TOP 2 IND AS stokNo, MALINCINSI AS ad
+    SELECT TOP 3 IND AS stokNo, MALINCINSI AS ad
     FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR
     ORDER BY IND
   `);
@@ -375,6 +380,21 @@ if (process.argv.includes('--kur')) {
   kontrol('Aynı mamule ikinci başlık açılmıyor',
     tekrar.yeni === false && tekrar.receteNo === receteNo);
 
+  // Vega'nın kendi reçetelerinin tamamında (üç kurulum, 627 reçete) ana mamul
+  // için bir TBLURERECETECIKTI TUR 0 satırı var. Reçete ekranı mamulü oradan
+  // okuyor; satır yoksa reçete Vega'da çıktısız görünür.
+  const anaCikti = await sql.sorgu(
+    `SELECT STOKNO, ORAN, TUR, RECETENO, MIKTAR
+     FROM [GALYA_TEST].dbo.F0103TBLURERECETECIKTI WHERE EVRAKNO = @r`,
+    { r: receteNo }
+  );
+  kontrol('Reçete başlığıyla birlikte ana mamul çıktı satırı yazıldı',
+    anaCikti.length === 1 && Number(anaCikti[0].STOKNO) === mamulStok &&
+    Number(anaCikti[0].TUR) === 0 && Number(anaCikti[0].ORAN) === 100 &&
+    Number(anaCikti[0].RECETENO) === receteNo,
+    'satır=' + anaCikti.length);
+  kontrol('İkinci çağrı çıktı satırını çoğaltmıyor', anaCikti.length === 1);
+
   const ek1 = await yazma.receteSatiriEkle(
     Object.assign({}, SECIM, { receteNo, stokNo: bilesenStok, miktar: 2.5, fireOrani: 3, kullanici: 'test' })
   );
@@ -425,6 +445,11 @@ if (process.argv.includes('--kur')) {
   satirlar = await vega.receteSatirlari(Object.assign({}, SECIM, { receteNo }));
   kontrol('Silme sonrası reçete boş', satirlar.length === 0, 'satır=' + satirlar.length);
 
+  // Panel artık A serisini KULLANMIYOR: `A`, Vega'nın elle belge
+  // girişindeki varsayılan serisidir ve kullanıcı Vega'dan fiş kesince
+  // aynı diziye girer. Panelin kendi öneki ayarlardan geliyor.
+  const panelOneki = yazma.belgeOneki();
+  const onekDeseni = new RegExp('^' + panelOneki + '\\d{7}$');
   console.log('\n== Belge numarası ==');
   const ikinci = await yazma.tutanakFisiYaz(
     Object.assign({}, SECIM, {
@@ -433,7 +458,7 @@ if (process.argv.includes('--kur')) {
       sebep: 'Sınama: numara artışı', kullanici: 'test'
     })
   );
-  kontrol('Belge numarası A ile başlıyor ve 7 hane', /^A\d{7}$/.test(ikinci.cikisBelgeNo),
+  kontrol('Belge numarası panelin öneki + 7 hane', onekDeseni.test(ikinci.cikisBelgeNo),
     ikinci.cikisBelgeNo);
   await yazma.tutanakFisiGeriAl(Object.assign({}, SECIM, { fisler: ikinci.fisler, kullanici: 'test' }));
 
@@ -554,6 +579,25 @@ if (process.argv.includes('--kur')) {
     (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT = 96 AND STOKNO = @s', { s: mamulStok })) === 1);
   kontrol('97 tüketim hareketi yazıldı',
     (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT = 97 AND STOKNO = @s', { s: bilesenStok })) === 1);
+
+  // 96/97 satırlarının satır tablosu TBLSHAREKET'tir ve
+  // TBLSTOKHAREKETLERI.LN o satırın IDENTITY değeridir. Panel 08.09.2026'ya
+  // kadar buraya hiç yazmıyordu: belge Vega'nın Üretim Giriş/Çıkış Fişi
+  // ekranında satırsız görünüyor, üstelik IDENTITY ilerlemediği için
+  // Vega'nın sonraki belgeleri aynı LN'leri yeniden üretiyordu.
+  const shaEslesme = await sql.sorgu(`
+    SELECT COUNT(*) AS hareket,
+           SUM(CASE WHEN S.IND IS NULL THEN 0 ELSE 1 END) AS eslesen,
+           SUM(CASE WHEN S.STOKNO = H.STOKNO AND S.EVRAKNO = H.BELGENO THEN 1 ELSE 0 END) AS dogru
+    FROM [GALYA_TEST].dbo.F0103D0015TBLSTOKHAREKETLERI H
+    LEFT JOIN [GALYA_TEST].dbo.F0103D0015TBLSHAREKET S ON S.IND = H.LN
+    WHERE H.IZAHAT IN (96, 97)
+  `);
+  kontrol('96/97 satirlari TBLSHAREKET tablosuna yazildi',
+    shaEslesme[0].hareket === 2 && shaEslesme[0].eslesen === 2,
+    `${shaEslesme[0].eslesen}/${shaEslesme[0].hareket}`);
+  kontrol('TBLSHAREKET satırı doğru stok ve belgeye bağlı',
+    shaEslesme[0].dogru === 2, String(shaEslesme[0].dogru));
   kontrol('Mamul stoğu 3 arttı', (await kalan(mamulStok)) - oncekiMamul === 3,
     `${await kalan(mamulStok)} - ${oncekiMamul}`);
   kontrol('Bileşen stoğu 6 azaldı', oncekiBilesen - (await kalan(bilesenStok)) === 6,
@@ -571,10 +615,221 @@ if (process.argv.includes('--kur')) {
     (await say('F0103D0015TBLUREURETIMLIST', 'IND = @i', { i: uretimSonuc.uretimInd })) === 0);
   kontrol('Geri almada 96/97 hareketleri silindi',
     (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT IN (96, 97)', {})) === 0);
+  kontrol('Geri almada TBLSHAREKET satırları silindi',
+    (await say('F0103D0015TBLSHAREKET', '1=1', {})) === 0);
   kontrol('Geri almada mamul stoğu eski hâline döndü',
     (await kalan(mamulStok)) === oncekiMamul);
   kontrol('Geri almada bileşen stoğu eski hâline döndü',
     (await kalan(bilesenStok)) === oncekiBilesen);
+
+  // --- Çok çıktılı üretim -------------------------------------------------
+  //
+  // Bir üretimden birden fazla ürün çıkabiliyor. Reçetenin çıktı satırları
+  // F{firma}TBLURERECETECIKTI tablosunda durur; panel 08.09.2026'ya kadar bu
+  // tabloyu hiç okumadı ve her üretimde yalnız ana mamulü yazdı.
+  //
+  // Gerçek örnek (F0102, reçete 4516 DANA ANTRIKOT): 25 kg ham etten
+  // 18 antrikot + 3 kuşbaşı + 3 kıyma + 1 fire çıkıyor. Maliyet ORAN'a göre
+  // paylaşılıyor: satır tutarı = toplam maliyet × ORAN / 100.
+  //
+  // Panel reçete açarken yalnız ana mamulün TUR 0 satırını yazıyor; yan
+  // mamul satırları Vega'nın reçete ekranının işi. Sınama o satırları
+  // doğrudan ekliyor, panelinkini de temizleyip yerine kendi oranını koyuyor.
+  console.log('\n== Cok ciktili uretim ==');
+  if (stoklar.length < 3) {
+    console.log('  ATLANDI — test veritabanında üçüncü stok kartı yok.');
+  } else {
+    const yanStok = stoklar[2].stokNo;
+    const receteNo = uReceteler[0].IND;
+
+    await sql.calistir(
+      `DELETE FROM [GALYA_TEST].dbo.F0103TBLURERECETECIKTI WHERE EVRAKNO = @r`,
+      { r: receteNo }
+    );
+
+    // Ana mamul %60, yan mamul %40 — toplam 100.
+    for (const c of [
+      { stokNo: mamulStok, tur: 0, oran: 60 },
+      { stokNo: yanStok, tur: 2, oran: 40 }
+    ]) {
+      await sql.calistir(
+        `INSERT INTO [GALYA_TEST].dbo.F0103TBLURERECETECIKTI
+           (EVRAKNO, STOKNO, STOKKODU, MALINCINSI, MIKTAR, BIRIM, BIRIMMIKTAR,
+            KDV, FIYAT, ISLEMTARIHI, ORAN, TUR, TUTAR, POZISYONNO, KALANMIKTAR)
+         VALUES (@r, @s, '', '', 1, '', 1, 0, 0, GETDATE(), @o, @t, 0, 2, 1)`,
+        { r: receteNo, s: c.stokNo, o: c.oran, t: c.tur }
+      );
+    }
+
+    const okunan = await uretim.receteCiktilari(
+      Object.assign({}, SECIM, { mamulStokNo: mamulStok })
+    );
+    kontrol('Reçetenin iki çıktısı okundu', okunan.satirlar.length === 2,
+      String(okunan.satirlar.length));
+    kontrol('Maliyet oranlarının toplamı 100', Math.abs(okunan.oranToplami - 100) < 0.01,
+      String(okunan.oranToplami));
+
+    const onceMamul = await kalan(mamulStok);
+    const onceYan = await kalan(yanStok);
+    const onceBilesen = await kalan(bilesenStok);
+
+    const cok = await yazma.uretimFisiYaz(Object.assign({}, SECIM, {
+      mamulStokNo: mamulStok,
+      miktar: 3,
+      ciktilar: [
+        { stokNo: mamulStok, miktar: 3 },
+        { stokNo: yanStok, miktar: 2 }
+      ],
+      aciklama: 'Çok çıktılı sınama',
+      kullanici: 'test'
+    }));
+    console.log(`  Üretim fişi: ${cok.fisNo} (IND ${cok.uretimInd})`);
+
+    kontrol('İki çıktı satırı yazıldı',
+      (await say('F0103D0015TBLUREURETIMCIKTI', 'EVRAKNO = @i', { i: cok.uretimInd })) === 2);
+    kontrol('Ana mamul satırı TUR 0 ve RECETENO başlık IND',
+      (await say('F0103D0015TBLUREURETIMCIKTI',
+        'EVRAKNO = @i AND TUR = 0 AND RECETENO = @i AND STOKNO = @s',
+        { i: cok.uretimInd, s: mamulStok })) === 1);
+    kontrol('Yan mamul satırı TUR 2 ve RECETENO boş',
+      (await say('F0103D0015TBLUREURETIMCIKTI',
+        'EVRAKNO = @i AND TUR = 2 AND RECETENO IS NULL AND STOKNO = @s',
+        { i: cok.uretimInd, s: yanStok })) === 1);
+    kontrol('96 belgesinde iki hareket var',
+      (await say('F0103D0015TBLSTOKHAREKETLERI', 'IZAHAT = 96', {})) === 2);
+    kontrol('Yan mamul stoğu 2 arttı', (await kalan(yanStok)) - onceYan === 2,
+      `${await kalan(yanStok)} - ${onceYan}`);
+    kontrol('Ana mamul stoğu 3 arttı', (await kalan(mamulStok)) - onceMamul === 3);
+
+    // Maliyet paylaşımı: toplam × ORAN / 100.
+    const anaCikti = cok.ciktilar.find((c) => c.stokNo === mamulStok);
+    const yanCikti = cok.ciktilar.find((c) => c.stokNo === yanStok);
+    kontrol('Ana mamule maliyetin %60ı yazıldı',
+      Math.abs(anaCikti.tutar - cok.toplamMaliyet * 0.6) < 0.01,
+      `${anaCikti.tutar} / ${cok.toplamMaliyet}`);
+    kontrol('Yan mamule maliyetin %40ı yazıldı',
+      Math.abs(yanCikti.tutar - cok.toplamMaliyet * 0.4) < 0.01,
+      `${yanCikti.tutar} / ${cok.toplamMaliyet}`);
+    kontrol('Dağıtılan maliyet tüketilen maliyete eşit',
+      Math.abs(cok.dagitilanMaliyet - cok.toplamMaliyet) < 0.01);
+
+    // Her 96 satırının TBLSHAREKET karşılığı olmalı.
+    const cokSha = await sql.sorgu(`
+      SELECT COUNT(*) AS hareket,
+             SUM(CASE WHEN S.IND IS NULL THEN 0 ELSE 1 END) AS eslesen
+      FROM [GALYA_TEST].dbo.F0103D0015TBLSTOKHAREKETLERI H
+      LEFT JOIN [GALYA_TEST].dbo.F0103D0015TBLSHAREKET S ON S.IND = H.LN
+      WHERE H.IZAHAT = 96
+    `);
+    kontrol('İki çıktının da TBLSHAREKET satırı var',
+      cokSha[0].hareket === 2 && cokSha[0].eslesen === 2,
+      `${cokSha[0].eslesen}/${cokSha[0].hareket}`);
+
+    // Ana mamul miktarı üretim miktarıyla tutmuyorsa reddedilmeli.
+    let tutmayan = null;
+    try {
+      await yazma.uretimFisiYaz(Object.assign({}, SECIM, {
+        mamulStokNo: mamulStok,
+        miktar: 3,
+        ciktilar: [{ stokNo: mamulStok, miktar: 5 }, { stokNo: yanStok, miktar: 1 }],
+        kullanici: 'test'
+      }));
+    } catch (e) { tutmayan = e; }
+    kontrol('Ana mamul miktarı tutmazsa reddediliyor', !!tutmayan,
+      tutmayan ? '' : 'hata çıkmadı');
+
+    // Reçetede olmayan çıktı reddedilmeli.
+    let yabanci = null;
+    try {
+      await yazma.uretimFisiYaz(Object.assign({}, SECIM, {
+        mamulStokNo: mamulStok,
+        miktar: 3,
+        ciktilar: [{ stokNo: mamulStok, miktar: 3 }, { stokNo: bilesenStok, miktar: 1 }],
+        kullanici: 'test'
+      }));
+    } catch (e) { yabanci = e; }
+    kontrol('Reçetede olmayan çıktı reddediliyor', !!yabanci,
+      yabanci ? '' : 'hata çıkmadı');
+
+    const cokBelgeler = await sql.sorgu(
+      `SELECT BELGENO AS belgeNo, IZAHAT AS izahat, EVRAKNO AS evrakNo
+       FROM [GALYA_TEST].dbo.F0103D0015TBLUREBELGE WHERE EIND = @i`,
+      { i: cok.uretimInd }
+    );
+    await yazma.uretimFisiGeriAl(Object.assign({}, SECIM, {
+      uretimInd: cok.uretimInd, belgeler: cokBelgeler, kullanici: 'test'
+    }));
+    kontrol('Geri almada bütün çıktı satırları silindi',
+      (await say('F0103D0015TBLUREURETIMCIKTI', 'EVRAKNO = @i', { i: cok.uretimInd })) === 0);
+    kontrol('Geri almada TBLSHAREKET boşaldı',
+      (await say('F0103D0015TBLSHAREKET', '1=1', {})) === 0);
+    kontrol('Geri almada yan mamul stoğu eski hâline döndü',
+      (await kalan(yanStok)) === onceYan);
+    kontrol('Geri almada bileşen stoğu eski hâline döndü',
+      (await kalan(bilesenStok)) === onceBilesen);
+
+    // --- Müşterinin videosundaki üretim, birebir ---------------------------
+    //
+    // 08.09.2026 ekran kaydı: reçete 4516 DANA ANTRIKOT, dört çıktı, maliyet
+    // oranları 100 / 0 / 100 / 0 — TOPLAMI 200. 25 kg ham et tüketiliyor,
+    // 18 + 3 + 3 + 1 çıkıyor. Vega 23.750 TL hammaddeyi 47.500 TL mamule
+    // çeviriyor ve bunu uyarmadan yapıyor; panel de aynı sayıyı yazmalı,
+    // yoksa panelin rakamı Vega'nınkiyle tutmaz.
+    await sql.calistir(
+      `DELETE FROM [GALYA_TEST].dbo.F0103TBLURERECETECIKTI WHERE EVRAKNO = @r`,
+      { r: receteNo }
+    );
+    await sql.calistir(
+      `UPDATE [GALYA_TEST].dbo.F0103TBLSTOKLAR SET MALIYET = 950 WHERE IND = @s`,
+      { s: bilesenStok }
+    );
+    for (const c of [
+      { stokNo: mamulStok, tur: 0, oran: 100 },
+      { stokNo: yanStok, tur: 2, oran: 100 }
+    ]) {
+      await sql.calistir(
+        `INSERT INTO [GALYA_TEST].dbo.F0103TBLURERECETECIKTI
+           (EVRAKNO, STOKNO, STOKKODU, MALINCINSI, MIKTAR, BIRIM, BIRIMMIKTAR,
+            KDV, FIYAT, ISLEMTARIHI, ORAN, TUR, TUTAR, POZISYONNO, KALANMIKTAR)
+         VALUES (@r, @s, '', '', 1, '', 1, 0, 0, GETDATE(), @o, @t, 0, 2, 1)`,
+        { r: receteNo, s: c.stokNo, o: c.oran, t: c.tur }
+      );
+    }
+
+    const video = await yazma.uretimFisiYaz(Object.assign({}, SECIM, {
+      mamulStokNo: mamulStok,
+      miktar: 18,
+      bilesenler: [{ stokNo: bilesenStok, miktar: 25 }],
+      ciktilar: [{ stokNo: mamulStok, miktar: 18 }, { stokNo: yanStok, miktar: 3 }],
+      aciklama: 'Video senaryosu', kullanici: 'test'
+    }));
+    const vAna = video.ciktilar.find((c) => c.stokNo === mamulStok);
+    const vYan = video.ciktilar.find((c) => c.stokNo === yanStok);
+
+    kontrol('Video: tüketim maliyeti 23.750',
+      Math.abs(video.toplamMaliyet - 23750) < 0.01, String(video.toplamMaliyet));
+    kontrol('Video: oran toplamı 200 olunca maliyet 47.500 dağıtılıyor',
+      Math.abs(video.dagitilanMaliyet - 47500) < 0.01, String(video.dagitilanMaliyet));
+    kontrol('Video: ana mamul birim maliyeti 1.319,444444',
+      Math.abs(vAna.birimMaliyet - 1319.444444) < 0.001, String(vAna.birimMaliyet));
+    kontrol('Video: yan mamul birim maliyeti 7.916,666667',
+      Math.abs(vYan.birimMaliyet - 7916.666667) < 0.001, String(vYan.birimMaliyet));
+
+    const videoBelgeler = await sql.sorgu(
+      `SELECT BELGENO AS belgeNo, IZAHAT AS izahat, EVRAKNO AS evrakNo
+       FROM [GALYA_TEST].dbo.F0103D0015TBLUREBELGE WHERE EIND = @i`,
+      { i: video.uretimInd }
+    );
+    await yazma.uretimFisiGeriAl(Object.assign({}, SECIM, {
+      uretimInd: video.uretimInd, belgeler: videoBelgeler, kullanici: 'test'
+    }));
+
+    // Reçeteyi eski hâline döndür: sonraki sınamalar tek çıktılı bekliyor.
+    await sql.calistir(
+      `DELETE FROM [GALYA_TEST].dbo.F0103TBLURERECETECIKTI WHERE EVRAKNO = @r`,
+      { r: receteNo }
+    );
+  }
 
   // --- Fireli üretim ------------------------------------------------------
   //
@@ -795,8 +1050,11 @@ if (process.argv.includes('--kur')) {
 
   kontrol('Sayım giriş fişi kesildi', !!sayimSonuc.girisBelgeNo, String(sayimSonuc.girisBelgeNo));
   kontrol('Sayım çıkış fişi kesildi', !!sayimSonuc.cikisBelgeNo, String(sayimSonuc.cikisBelgeNo));
-  kontrol('Belge numarası Z serisi',
-    /^Z\d{7}$/.test(sayimSonuc.girisBelgeNo || ''), String(sayimSonuc.girisBelgeNo));
+  // Sayım da panelin kendi serisini kullanıyor. Vega kendi sayımlarını Z
+  // ile numaralıyor; ikisi aynı anda fiş keserse MAX+1 aynı numarayı
+  // verebilirdi (Vega panelin kilidini almıyor).
+  kontrol('Sayım belge numarası panelin öneki + 7 hane',
+    onekDeseni.test(sayimSonuc.girisBelgeNo || ''), String(sayimSonuc.girisBelgeNo));
   kontrol('Artan ürün sayısı 1', sayimSonuc.artan === 1, String(sayimSonuc.artan));
   kontrol('Azalan ürün sayısı 1', sayimSonuc.azalan === 1, String(sayimSonuc.azalan));
 

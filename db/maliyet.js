@@ -9,7 +9,19 @@
 //
 // Kural — müşterinin isteği:
 //   hammadde maliyeti = SON ALIŞ fiyatı (alış faturası hareketi, IZAHAT 20)
-//   mamul maliyeti    = reçetesindeki bileşenlerin maliyet toplamı / verim
+//   mamul maliyeti    = bileşen maliyeti toplamı × ana mamulün payı / verim
+//
+// "Ana mamulün payı" 08.09.2026'da eklendi. Bir üretimden birden fazla ürün
+// çıkabiliyor ve reçete, maliyetin ne kadarının hangi çıktıya yazılacağını
+// F{firma}TBLURERECETECIKTI.ORAN alanında tutuyor. Motor bu tabloyu
+// bilmiyordu ve maliyetin TAMAMINI mamule yazıyordu; ana mamulün oranı
+// 100'den küçük olan reçetede (F0102'de 4497 TAVUK BONFILE, %9,07) mamul
+// maliyeti olduğundan yüksek çıkıyordu.
+//
+// Formül reçetenin kendi sakladığı çıktı fiyatıyla doğrulandı:
+//   4497 TAVUK BONFILE  4845 × %9,07211558 / 190   = 2,31338947  ✔
+//   4515 LEVREK         6296 × %100        / 3,624 = 1737,30684  ✔
+//   4516 DANA ANTRIKOT   950 × %100        / 1     = 950         ✔
 //
 // Hesap alttan yukarı yürür: bir mamulün bileşeni de mamulse önce onun
 // maliyeti bulunur. Döngü olursa (A, B'yi; B, A'yı içeriyorsa) zincir
@@ -17,7 +29,7 @@
 
 const { sorgu, calistir } = require('./sql');
 const { ayarOku } = require('./ayar');
-const { dogrula, kart } = require('./firma');
+const { dogrula, kart, tabloVarMi } = require('./firma');
 const vega = require('./vega');
 const panel = require('./panel');
 const yazma = require('./yazma');
@@ -39,6 +51,24 @@ async function receteHaritasi(v, firma) {
     FROM ${kart(v, firma, 'TBLURERECETE')}
   `);
 
+  // Ana mamulün maliyet payı. Tablo her firmada yok (Vega üretim modülü
+  // kullanılınca oluşturuyor); yoksa pay %100 sayılır ve motor eskisi gibi
+  // çalışır.
+  const oranHaritasi = new Map();
+  if (await tabloVarMi(firma, '', 'TBLURERECETECIKTI')) {
+    const oranlar = await sorgu(`
+      SELECT EVRAKNO AS receteNo, ISNULL(ORAN, 0) AS oran
+      FROM ${kart(v, firma, 'TBLURERECETECIKTI')}
+      WHERE ISNULL(TUR, 0) = 0
+    `);
+    for (const o of oranlar) {
+      const oran = Number(o.oran);
+      // Oran 0 ya da eksi ise bilgi yok sayılıyor: mamule sıfır maliyet
+      // yazmak, düzeltmekten çok bozardı.
+      if (oran > 0) oranHaritasi.set(Number(o.receteNo), oran);
+    }
+  }
+
   const satirHaritasi = new Map();
   for (const s of satirlar) {
     const liste = satirHaritasi.get(Number(s.receteNo)) || [];
@@ -57,6 +87,9 @@ async function receteHaritasi(v, firma) {
       mamulHaritasi.set(no, {
         receteNo: Number(b.receteNo),
         verim: Number(b.verim) > 0 ? Number(b.verim) : 1,
+        anaOran: oranHaritasi.has(Number(b.receteNo))
+          ? oranHaritasi.get(Number(b.receteNo))
+          : 100,
         satirlar: satirHaritasi.get(Number(b.receteNo)) || []
       });
     }
@@ -111,8 +144,15 @@ function maliyetHesapla(stokNo, kartlar, receteler, onbellek, gorulen) {
   }
   gorulen.delete(no);
 
+  // Maliyetin yalnız ana mamule düşen payı yazılıyor; gerisi yan mamullerin.
+  const anaOran = Number(recete.anaOran) > 0 ? Number(recete.anaOran) : 100;
   const sonuc = toplam > 0
-    ? { deger: toplam / recete.verim, kaynak: 'recete', eksikBilesen }
+    ? {
+        deger: toplam * anaOran / 100 / recete.verim,
+        kaynak: 'recete',
+        eksikBilesen,
+        anaOran
+      }
     : alistan();
 
   onbellek.set(no, sonuc);
@@ -340,6 +380,7 @@ async function mamulMaliyeti(secim) {
     stokNo,
     ad: k ? k.ad : '',
     verim: recete ? recete.verim : 1,
+    anaOran: recete ? recete.anaOran : 100,
     kartMaliyeti: k ? Number(k.kartMaliyeti || 0) : 0,
     yeniMaliyet: h.deger,
     kaynakAdi: KAYNAK_ADI[h.kaynak] || h.kaynak,
