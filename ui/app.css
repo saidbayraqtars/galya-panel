@@ -685,3 +685,26 @@ body.giris-modu #uyariSeridi {
   font-weight: 600;
   margin-top: 2px;
 }
+
+/* --- Telefon (10.09.2026) ------------------------------------------------
+   Sayımcı telefondan ağ erişimiyle girip sayım föyünü Excel doldurur gibi
+   dolduruyor. Masaüstü düzeni telefonda okunmuyordu: üst çubuk taşıyor,
+   miktar kutuları parmakla tutulamayacak kadar küçüktü. */
+@media (max-width: 700px) {
+  #ustBar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; height: auto; }
+  #ustBar .ust-sol, #ustBar .ust-sag { flex-wrap: wrap; gap: 6px; }
+  #ustBar select { max-width: 46vw; }
+  #icerik { padding: 12px 10px 80px; }
+  .form-satir { flex-direction: column; align-items: stretch; }
+  .tablo-sarmal { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { font-size: 15px; }
+  th, td { padding: 8px 6px; }
+  /* 16px altı yazı iOS'ta kutuya dokununca sayfayı yakınlaştırıyor. */
+  input[type="text"], input[type="number"], input[type="password"], select, select.form {
+    font-size: 16px; min-height: 42px;
+  }
+  input.miktar { width: 100%; min-width: 84px; font-size: 18px; min-height: 44px; }
+  .dugme-ana, .dugme-sade { min-height: 44px; }
+  .dugme-kucuk { min-height: 38px; padding-left: 12px; padding-right: 12px; }
+  .katman-kutu { width: 96vw; max-height: 92vh; }
+}

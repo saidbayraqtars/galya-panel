@@ -2,6 +2,9 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
+<!-- Sayımcı telefondan ağ erişimiyle giriyor; bu satır olmadan telefon
+     masaüstü genişliğinde çizip küçültüyordu. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
 <title>Galya Panel</title>
@@ -44,6 +47,7 @@
 
 <div id="bildirim" class="bildirim hidden"></div>
 
+<script src="aktarim-uretim.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

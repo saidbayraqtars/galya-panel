@@ -40,6 +40,7 @@ const kanallar = [
   'maliyet:mamul',
   'uretim:sifirAdaylari',
   'uretim:urunAra',
+  'uretim:depolar',
   'uretim:receteCiktilari',
   'uretim:isEmri',
   'uretim:sifiraKadar',

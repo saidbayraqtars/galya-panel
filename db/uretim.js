@@ -31,7 +31,8 @@ const { ayarOku } = require('./ayar');
 const { dogrula, tablo, kart, tabloVarMi } = require('./firma');
 const panel = require('./panel');
 const yazma = require('./yazma');
-const { stokPasifHaric } = require('./vega');
+const { stokPasifHaric, pasifIfadesi } = require('./vega');
+const { pozisyonlariOku, depoSecimi } = require('./uretim-depo');
 
 function vt() {
   return ayarOku().vegaVeritabani;
@@ -110,6 +111,8 @@ async function sifirAdaylari(secim) {
   const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
   const arama = (secim.arama || '').trim();
   const thirdSadece = secim.thirdSadece ? 1 : 0;
+  if (!(await tabloVarMi(firma, '', 'TBLURERECETELIST'))) return [];
+  const ciktiVar = await tabloVarMi(firma, '', 'TBLURERECETECIKTI');
 
   const satirlar = await sorgu(
     `
@@ -133,7 +136,7 @@ async function sifirAdaylari(secim) {
       JOIN ${kart(v, firma, 'TBLURERECETELIST')} L2 ON L2.IND = B.EVRAKNO AND L2.STOKNO = B.STOKNO
       GROUP BY B.EVRAKNO
     )
-    SELECT TOP 500
+    SELECT
       S.IND                 AS stokNo,
       S.MALINCINSI          AS ad,
       ISNULL(S.STOKKODU,'') AS kod,
@@ -144,6 +147,8 @@ async function sifirAdaylari(secim) {
       -ISNULL(K.KALAN, 0)   AS eksik,
       ISNULL(S.MALIYET, 0)  AS birimMaliyet,
       R.receteNo,
+      ${ciktiVar ? `(SELECT COUNT(*) FROM ${kart(v, firma, 'TBLURERECETECIKTI')} C
+        WHERE C.EVRAKNO = R.receteNo)` : '1'} AS ciktiSayisi,
       ISNULL(SS.satirSayisi, 0) AS receteSatiri,
       ISNULL(KENDI.miktar, 0) / CASE WHEN ISNULL(RL.MIKTAR, 1) > 0
                                      THEN ISNULL(RL.MIKTAR, 1) ELSE 1 END AS kendiOran,
@@ -180,8 +185,9 @@ async function sifirAdaylari(secim) {
     const miktar = sifirlamaMiktari(Number(s.eksik), oran);
     return Object.assign({}, s, {
       kendiOran: oran,
-      uretilecek: miktar,
-      uretilemez: miktar == null
+      uretilecek: Number(s.ciktiSayisi) > 1 ? null : miktar,
+      isEmriGerekli: Number(s.ciktiSayisi) > 1,
+      uretilemez: Number(s.ciktiSayisi) > 1 || miktar == null
     });
   });
 }
@@ -199,6 +205,10 @@ async function urunAra(secim) {
   const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
   const arama = (secim.arama || '').trim();
 
+  // Üretim modülü hiç kullanılmamış firmada reçete tabloları yok (F0100 böyle);
+  // reçete sütunları o zaman sorguya girmiyor.
+  const receteVar = await tabloVarMi(firma, '', 'TBLURERECETELIST');
+
   return sorgu(
     `
     WITH K AS (
@@ -207,21 +217,36 @@ async function urunAra(secim) {
       WHERE (@depo = 0 OR E.DEPO = @depo) AND E.BELGETIPI <> 67
       GROUP BY E.STOKNO
     )
-    SELECT TOP 300
+    SELECT ${secim.receteliSadece ? '' : 'TOP 300'}
       S.IND                 AS stokNo,
       S.MALINCINSI          AS ad,
       ISNULL(S.STOKKODU,'') AS kod,
       ISNULL(S.KOD2, '')    AS sinif,
       ISNULL(B.BIRIMADI,'') AS birim,
       ISNULL(S.MALIYET, 0)  AS birimMaliyet,
-      ISNULL(K.KALAN, 0)    AS kalan
+      ISNULL(K.KALAN, 0)    AS kalan,
+      -- Kartın reçetesi var mı? Liste reçete şartı aramıyor (reçetesiz manuel
+      -- üretim de buradan seçiliyor), ama kullanıcı "TUBORG GOLD niye üretim
+      -- listesinde?" diye sormasın diye ekranda ayırt edilebilmesi gerekiyor:
+      -- içki/bira kartlarının çoğunda reçete YOKTUR.
+      ${receteVar ? 'ISNULL(RC.receteNo, 0)' : '0'}      AS receteNo,
+      ${receteVar ? 'ISNULL(RC.bilesenSayisi, 0)' : '0'} AS bilesenSayisi
     FROM ${kart(v, firma, 'TBLSTOKLAR')} S
     LEFT JOIN K ON K.STOKNO = S.IND
     LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
            ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
+    ${receteVar ? `OUTER APPLY (
+      SELECT TOP 1 L.IND AS receteNo,
+             (SELECT COUNT(*) FROM ${kart(v, firma, 'TBLURERECETE')} R
+               WHERE R.EVRAKNO = L.IND) AS bilesenSayisi
+      FROM ${kart(v, firma, 'TBLURERECETELIST')} L
+      WHERE L.STOKNO = S.IND
+      ORDER BY L.IND
+    ) RC` : ''}
     WHERE ISNULL(S.DELETED, 0) = 0 AND S.IND >= 100
       AND S.STOKTIPI NOT IN (3, 7, 9, 11, 26)
       AND ${stokPasifHaric()}
+      ${secim.receteliSadece ? `AND ${receteVar ? 'RC.receteNo IS NOT NULL' : '1=0'}` : ''}
       AND (@arama = '' OR S.MALINCINSI LIKE @desen OR S.STOKKODU LIKE @desen)
     ORDER BY S.MALINCINSI
   `,
@@ -268,7 +293,7 @@ async function receteCiktilari(secim) {
   const satirlar = (await sorgu(
     `SELECT C.STOKNO AS stokNo, ISNULL(C.TUR, 0) AS tur, ISNULL(C.ORAN, 0) AS oran,
             S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
-            ISNULL(B.BIRIMADI, '') AS birim
+            ISNULL(B.BIRIMADI, '') AS birim, ${pasifIfadesi()} AS pasif
      FROM ${kart(v, firma, 'TBLURERECETECIKTI')} C
      JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = C.STOKNO
      LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
@@ -281,6 +306,7 @@ async function receteCiktilari(secim) {
     ad: c.ad,
     kod: c.kod,
     birim: c.birim,
+    pasif: !!c.pasif,
     tur: Number(c.tur),
     oran: Number(c.oran),
     anaMamul: Number(c.tur) === 0 && Number(c.stokNo) === mamulStokNo
@@ -324,7 +350,7 @@ async function isEmri(secim) {
      FROM ${kart(v, firma, 'TBLSTOKLAR')} S
      LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
             ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
-     WHERE S.IND = @stokNo`,
+     WHERE S.IND = @stokNo AND ISNULL(S.DELETED,0) = 0 AND ${stokPasifHaric()}`,
     { stokNo: mamulStokNo }
   );
   if (!kartlar.length) throw new Error('Üretilecek mamulün stok kartı bulunamadı.');
@@ -337,17 +363,23 @@ async function isEmri(secim) {
     kalan: await kalanMiktar(v, firma, donem, mamulStokNo, depo)
   };
 
-  const basliklar = await sorgu(
+  const basliklar = await tabloVarMi(firma, '', 'TBLURERECETELIST') ? await sorgu(
     `SELECT TOP 1 IND AS receteNo, ISNULL(MIKTAR, 1) AS verim
      FROM ${kart(v, firma, 'TBLURERECETELIST')}
      WHERE STOKNO = @stokNo ORDER BY IND`,
     { stokNo: mamulStokNo }
-  );
+  ) : [];
   if (!basliklar.length) {
-    return { mamul, receteNo: 0, verim: 1, girdiler: [], ciktilar: [], oranToplami: 0 };
+    return {
+      mamul, receteNo: 0, verim: 1, ...depoSecimi([], depo, ayarOku().varsayilanDepo), uyarilar: [],
+      girdiler: [], ciktilar: [], pozlar: [], oranToplami: 0
+    };
   }
   const receteNo = Number(basliklar[0].receteNo);
   const verim = Number(basliklar[0].verim) > 0 ? Number(basliklar[0].verim) : 1;
+  const pozlar = await pozisyonlariOku(v, firma, receteNo);
+  const depolar = depoSecimi(pozlar, depo, ayarOku().varsayilanDepo);
+  mamul.kalan = await kalanMiktar(v, firma, donem, mamulStokNo, depolar.mamulDeposu);
 
   // Reçetenin bileşenleri = Vega'nın "Üretim Girdileri" sekmesi. FIREORANI
   // yüzde: %5 fire, 100 birimlik reçetede 105 birim tüketim demek. Ekran
@@ -358,7 +390,7 @@ async function isEmri(secim) {
             S.MALINCINSI AS ad, ISNULL(S.STOKKODU,'') AS kod,
             ISNULL(S.MALIYET, 0) AS birimMaliyet,
             ISNULL(B.BIRIMADI,'') AS birim,
-            ISNULL(E.KALAN, 0) AS kalan
+            ISNULL(E.KALAN, 0) AS kalan, ${pasifIfadesi()} AS pasif
      FROM ${kart(v, firma, 'TBLURERECETE')} R
      JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = R.STOKNO
      LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
@@ -371,12 +403,13 @@ async function isEmri(secim) {
      ) E
      WHERE R.EVRAKNO = @receteNo
      ORDER BY R.DETAY`,
-    { receteNo, depo }
+    { receteNo, depo: depolar.mamulDeposu }
   )).map((g) => ({
     stokNo: Number(g.stokNo),
     ad: g.ad,
     kod: g.kod,
     birim: g.birim,
+    pasif: !!g.pasif,
     kalan: Number(g.kalan),
     birimMaliyet: Number(g.birimMaliyet),
     receteMiktari: Number(g.receteMiktari),
@@ -387,6 +420,10 @@ async function isEmri(secim) {
   return {
     mamul,
     receteNo,
+    pozlar,
+    ...depolar,
+    uyarilar: [...girdiler.filter((g) => g.pasif).map((g) => `${g.ad}: pasif kart (girdi)`),
+      ...cikti.satirlar.filter((c) => c.pasif).map((c) => `${c.ad}: pasif kart (çıktı)`)],
     verim,
     girdiler,
     ciktilar: cikti.satirlar,
@@ -423,9 +460,16 @@ async function denemeliYaz(istek) {
 async function sifiraKadarUret(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const v = vt();
-  const depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
+  let depo = Number(secim.depo != null ? secim.depo : ayarOku().varsayilanDepo) || 0;
   const stokNo = Number(secim.stokNo);
   if (!stokNo) throw new Error('Ürün seçilmeli.');
+  const emir = await isEmri({ ...secim, mamulStokNo: stokNo });
+  if (emir.ciktilar.length > 1) {
+    const e = new Error('Bu ürün çok çıktılıdır; İş Emri ekranından üretilmeli.');
+    e.kod = 'IS_EMRI_GEREKLI';
+    throw e;
+  }
+  depo = emir.mamulDeposu;
 
   const kartlar = await sorgu(
     `SELECT IND AS stokNo, MALINCINSI AS ad FROM ${kart(v, firma, 'TBLSTOKLAR')} WHERE IND = @stokNo`,
@@ -458,6 +502,7 @@ async function sifiraKadarUret(secim) {
     depo,
     mamulStokNo: stokNo,
     miktar,
+    aktarimId: secim.aktarimId,
     aciklama: secim.aciklama || 'Stok sıfırlama üretimi',
     kullanici: secim.kullanici,
     userNo: secim.userNo
@@ -511,13 +556,14 @@ async function hepsiniSifirla(secim) {
         donem,
         depo,
         stokNo: Number(aday.stokNo),
+        aktarimId: secim.aktarimId,
         aciklama: 'Stok sıfırlama üretimi',
         kullanici: secim.kullanici,
         userNo: secim.userNo
       });
       sonuclar.push({
         stokNo: Number(aday.stokNo), ad: aday.ad, miktar: s.uretilenMiktar,
-        tamam: true, fisNo: s.fisNo
+        tamam: true, fisNo: s.fisNo, uretimInd: s.uretimInd
       });
     } catch (e) {
       sonuclar.push({
@@ -598,7 +644,13 @@ async function fireliUret(secim) {
   const ciktilar = (Array.isArray(secim.ciktilar) ? secim.ciktilar : [])
     .map((c) => ({ stokNo: Number(c.stokNo), miktar: Number(c.miktar || 0) }))
     .filter((c) => c.stokNo && c.miktar > 0.0001);
-  const cokCiktili = ciktilar.length > 1;
+  const receteCikti = await receteCiktilari(secim);
+  const cokCiktili = receteCikti.satirlar.length > 1 || ciktilar.length > 1;
+  if (cokCiktili && !Array.isArray(secim.ciktilar)) {
+    const e = new Error('Çok çıktılı ürün için İş Emri ekranında çıktı miktarlarını girin.');
+    e.kod = 'IS_EMRI_GEREKLI';
+    throw e;
+  }
 
   if (cokCiktili && !ciktilar.some((c) => c.stokNo === mamulStokNo)) {
     throw new Error('Çıktı satırlarında üretilen ürünün miktarı yazılmamış.');
@@ -654,6 +706,8 @@ async function fireliUret(secim) {
       depo,
       mamulStokNo,
       miktar: uretilenMiktar,
+      aktarimId: secim.aktarimId,
+      zayiBaslikInd: zayiFisi ? zayiFisi.baslikInd : null,
       bilesenler,
       ciktilar: cokCiktili ? ciktilar : null,
       aciklama: secim.aciklama || (cokCiktili ? 'Reçeteli üretim' : 'Fireli üretim'),
@@ -718,6 +772,65 @@ async function fireliUret(secim) {
   }
 }
 
+async function depolar(secim) {
+  const { firma } = await dogrula(secim.firma, secim.donem);
+  if (!(await tabloVarMi(firma, '', 'TBLDEPOLAR'))) return [];
+  return sorgu(`SELECT IND AS no, ISNULL(DEPOADI, DEPOKODU) AS ad, DEPOKODU AS kod
+    FROM ${kart(vt(), firma, 'TBLDEPOLAR')} ORDER BY IND`);
+}
+
+// Günlük rutinde gösterilen öneriler hiçbir üretim yazmaz.
+async function aktarimSonrasi(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const aktarimlar = await sorgu(
+    `SELECT TOP 1 Id AS id, IsGunu AS isGunu, Depo AS depo, GeriAlindi AS geriAlindi,
+            Durum AS durum
+     FROM [${panel.p()}].dbo.SefimAktarim
+     WHERE Firma = @firma AND Donem = @donem
+       AND ((@id > 0 AND Id = @id) OR (@id = 0 AND IsGunu = @tarih))
+     ORDER BY Id DESC`,
+    { firma, donem, id: Number(secim.aktarimId) || 0, tarih: secim.tarih || null }
+  );
+  const aktarim = aktarimlar[0] || null;
+  if (!aktarim) return { aktarim: null, eksikler: [], isEmirleri: [], aliskanliklar: [], uretimler: [] };
+  const adaylar = await sifirAdaylari({ ...secim, depo: aktarim.depo });
+  const coklar = await tabloVarMi(firma, '', 'TBLURERECETECIKTI') ? await sorgu(
+    `SELECT S.IND AS stokNo, S.MALINCINSI AS ad, L.IND AS receteNo, COUNT(*) AS ciktiSayisi
+     FROM ${kart(v, firma, 'TBLURERECETELIST')} L
+     JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = L.STOKNO
+     JOIN ${kart(v, firma, 'TBLURERECETECIKTI')} C ON C.EVRAKNO = L.IND
+     WHERE ISNULL(S.DELETED,0) = 0 AND S.IND >= 100 AND ${stokPasifHaric()}
+       AND L.IND = (SELECT MIN(L2.IND) FROM ${kart(v, firma, 'TBLURERECETELIST')} L2 WHERE L2.STOKNO = S.IND)
+     GROUP BY S.IND, S.MALINCINSI, L.IND HAVING COUNT(*) > 1 ORDER BY S.MALINCINSI`
+  ) : [];
+  const aliskanliklar = await tabloVarMi(firma, donem, 'TBLUREURETIMLIST') ? await sorgu(
+    `SELECT TOP 10 L.STOKNO AS stokNo, S.MALINCINSI AS ad, COUNT(*) AS adet,
+            MAX(L.TARIH) AS son
+     FROM ${tablo(v, firma, donem, 'TBLUREURETIMLIST')} L
+     JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = L.STOKNO
+     WHERE L.TARIH >= DATEADD(day, -30, GETDATE()) AND L.TARIH <= GETDATE()
+       AND ISNULL(S.DELETED,0) = 0 AND S.IND >= 100 AND ${stokPasifHaric()}
+     GROUP BY L.STOKNO, S.MALINCINSI ORDER BY COUNT(*) DESC, MAX(L.TARIH) DESC, L.STOKNO`
+  ) : [];
+  const uretimler = await sorgu(
+    `SELECT U.Id AS id, A.UretimInd AS uretimInd, A.FisNo AS fisNo, A.StokNo AS stokNo,
+            U.MamulAdi AS ad, A.Miktar AS miktar, A.Tarih AS tarih, A.Kullanici AS kullanici
+     FROM [${panel.p()}].dbo.SefimAktarimUretim A
+     JOIN [${panel.p()}].dbo.UretimFisi U ON U.UretimInd = A.UretimInd
+       AND U.Firma = @firma AND U.Donem = @donem AND U.GeriAlindi = 0
+     WHERE A.AktarimId = @id ORDER BY A.Tarih DESC, A.UretimInd DESC`,
+    { firma, donem, id: aktarim.id }
+  );
+  const eksikHarita = new Map(adaylar.map((a) => [Number(a.stokNo), a]));
+  return {
+    aktarim,
+    eksikler: adaylar.filter((a) => !a.isEmriGerekli),
+    isEmirleri: coklar.map((c) => ({ ...c, eksik: Number((eksikHarita.get(Number(c.stokNo)) || {}).eksik) || 0 })),
+    aliskanliklar, uretimler
+  };
+}
+
 async function gecmis(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   return sorgu(
@@ -736,8 +849,8 @@ async function geriAl(secim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const kayitlar = await sorgu(
     `SELECT UretimInd AS uretimInd, Belgeler AS belgeler, GeriAlindi AS geriAlindi
-     FROM [${panel.p()}].dbo.UretimFisi WHERE Id = @id AND Firma = @firma`,
-    { id: Number(secim.id), firma }
+     FROM [${panel.p()}].dbo.UretimFisi WHERE Id = @id AND Firma = @firma AND Donem = @donem`,
+    { id: Number(secim.id), firma, donem }
   );
   if (!kayitlar.length) throw new Error('Üretim kaydı bulunamadı.');
   if (kayitlar[0].geriAlindi) throw new Error('Bu üretim zaten geri alınmış.');
@@ -752,6 +865,8 @@ async function geriAl(secim) {
 }
 
 module.exports = {
+  depolar,
+  aktarimSonrasi,
   sifirAdaylari,
   sifiraKadarUret,
   hepsiniSifirla,

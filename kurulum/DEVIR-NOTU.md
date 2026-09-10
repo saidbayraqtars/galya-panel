@@ -1243,7 +1243,10 @@ tablo tutuyor ve firmalar şöyle:
    `TBLSHAREKET`'te yok. Bunlar "geri alındı" işaretli olsa da satırları
    VEGADB'de duruyor; müşteriye geçmeden temizlenmeli.
 
-1. **Reçete verimleri.** 433 reçetenin 430'unda verim (`TBLURERECETELIST.
+1. **CEVAPLANDI (10.09.2026): panel dokunmaz.** Müşteri isterse verimleri
+   Vega tarafında kendisi değiştirecek; panel Vega'daki verimi okumaya devam
+   ediyor. Eski not:
+   **Reçete verimleri.** 433 reçetenin 430'unda verim (`TBLURERECETELIST.
    MIKTAR`) 1 girilmiş. Bir kazan tiramisu da "1 birim" sayıldığı için
    hesaplanan mamul maliyeti porsiyon değil kazan maliyeti çıkıyor. Bu
    panelin hesabındaki bir hata değil, reçete verisindeki eksiklik; müşteriye
@@ -1307,22 +1310,27 @@ tablo tutuyor ve firmalar şöyle:
    yazıyor (üstüne yazmıyor), yani klasör sürekli büyüyor. Temizlik
    yapılmıyor; bilerek — dosya silmek geri dönüşü olmayan bir iş ve
    sunucudaki bakım planının işi. Müşteriye söylenmeli.
-9. **Müşteriye sorulacak: tam sayımda girilmeyen ürün.** Şu an atlanıyor
-   (stok değişmiyor). Gerçek dönem sonu envanterinde sayılmayan ürünün
-   stoğunun sıfırlanması beklenir. Bu geri dönüşü zor bir davranış
-   olduğu için kullanıcının kararıyla "atla" seçildi; envanter kapanışında
-   yeterli olup olmadığı müşteriyle netleşmeli.
-10. **Kendini tüketen reçetelerin maliyeti.** `Tequila.Olmeca Blanco` gibi
-   kartların reçetesinde mamulün kendisi bileşen (şişeden kadeh). Üretim
-   tarafı 25.08'de bunu hesaba katacak şekilde düzeltildi ama
-   `db/maliyet.js` katmıyor: mamulün maliyeti kendi maliyetini içeriyor.
-   Oran küçükken (%7) fark küçük, ama reçeteler böyle kaldıkça maliyet
-   şişer. Müşteriye bu reçetelerin bilinçli mi kurulduğu sorulmalı.
+9. **CEVAPLANDI (10.09.2026): tam sayımda girilmeyen ürüne dokunulmaz.**
+   Müşteri: tam sayım parça parça yapılıyor — bugün bar biter, yarın mutfak
+   sayılır. Girilmeyen ürünün stoğu sıfıra çekilseydi henüz sayılmamış
+   bölüm silinmiş olurdu. Bugünkü davranış (miktar yazılmayan satır sayıma
+   hiç girmez, stok değişmez) doğru; değiştirilmeyecek.
+10. **CEVAPLANDI (10.09.2026): kendini tüketen reçeteler bilinçli.**
+   Kullanıcılar her reçeteyi kendileri sıfırdan kuruyor; `Tequila.Olmeca
+   Blanco` gibi kartlarda mamulün kendisinin bileşen olması doğru. Maliyet
+   motoru o satırı döngü sayıp atlıyordu; artık denklemle çözüyor
+   (`db/maliyet.js` → `maliyetHesapla`): c = pay × diğerleri / (verim −
+   pay × kendi). Yalnız kendisinden oluşan reçetede alış fiyatı geçerli.
+   Onarım betiği (25.08'in iki fişi) de müşteri kararıyla ÇALIŞTIRILMAYACAK.
 
-11. **Müşteriye sorulacak: sayımcıya stok yetkisi.** `stok` yetkisi verilen
-   kullanıcı stok ekranında envanter miktarını görür — körleme sayım o kişi
-   için anlamını yitirir. Sayım yapan kullanıcılara bu yetki verilmemeli;
-   gerekiyorsa `stok:kontrol` yanıtındaki miktarın da süzülmesi ayrı bir iş.
+11. **CEVAPLANDI (10.09.2026): sayımcıya `stok` yetkisi verilmez.**
+   Akış: sayımcı telefondan (ağ erişimi, §14) girer, föyü Excel doldurur
+   gibi doldurur, Vega'daki miktarı görmez (körleme). Kaydedilen sayım
+   yöneticiye düşer; yönetici inceler, onaylayınca Vega'ya sayım giriş /
+   çıkış fişi (93/94) olarak yazılır. Bu akış kodda zaten vardı (§5b).
+   Telefon için `ui/index.html`'e viewport satırı ve `ui/app.css` sonuna
+   700px altı düzen eklendi — önceden telefon masaüstü sayfasını küçültüp
+   çiziyordu, miktar kutuları parmakla tutulamıyordu.
 
 ---
 
@@ -1474,6 +1482,60 @@ GALYA_PANEL.dbo.SefimAktarim           hangi gün kim aktardı, hangi belgeler
    işaretli ürün belgeye girmiyor; fark kuruş mertebesini aşarsa yazma
    reddediliyor.
 
+### Aktarımdan sonraki üretim (10.09.2026)
+
+Günlük aktarım açıldığında panel artık üretimi üç ayrı listede gösterir:
+
+- **Eksiği kapatılacaklar:** yalnız tek çıktılı reçeteler; tek tek veya toplu
+  sıfıra kadar üretilebilir.
+- **İş emri gerekenler:** çok çıktılı reçeteler; "İş emri aç" mamulü seçer,
+  reçete girdi/çıktılarını doldurur ve eksiği ana mamul miktarı olarak önerir.
+- **Bugün de yapılacak mı?:** son 30 günde en sık yapılan üretimlerdir. Bu
+  liste kendiliğinden fiş yazmaz, yalnız iş emrini hazır açar.
+
+Aktarım ekranından açılan her üretim `SefimAktarimUretim` tablosuyla o günün
+`SefimAktarim` kaydına bağlanır. Bağ ve `UretimFisi` geçmişi, Vega üretim
+zinciriyle aynı SQL transaction'ında yazılır. Üretim geri alındığında bağ da
+silinir. Fireli üretimde doğan zayi fişinin kimliği bağda tutulur ve üretimle
+birlikte geri alınır.
+
+**Geri alma sırası zorunludur:** önce o güne bağlı üretim fişleri, sonra
+Şefim aktarımı. Bağlı üretim varken aktarım geri alma işlemi
+`ONCE_URETIM_GERI_AL` ile reddedilir. Bu kilit ve üretim bağı aynı aktarım
+satırında `UPDLOCK, HOLDLOCK` altında tutulduğu için iki istemcinin araya
+girip bağlantısız fiş bırakması engellenir.
+
+Çok çıktılı reçeteler `sıfıra kadar üret` ve `hepsini sıfırla` yollarından
+çıkarıldı. Çıktı miktarları açıkça gönderilmeden doğrudan üretim yazma yolu da
+`IS_EMRI_GEREKLI` ile durur. Yazma kilidi kapalıysa aktarım ekranındaki bütün
+üretim düğmeleri pasiftir.
+
+#### Codex teslimi denetlendi (10.09.2026) — iki düzeltme
+
+1. **96/97 EVRAKNO ve depo transferi (38) BELGENO'su yeniden `Z` serisinde.**
+   Codex bunları panelin `GP` serisine çevirmiş, raporda da söylememişti.
+   Bu, §6 "Belge serisi A'dan GP'ye" bölümündeki karara aykırıydı: F0102'de
+   154.187 adet 96/97 satırının ve 415 transfer fişinin **hepsi** `Z`. `GP`
+   yalnız üretim fişinin kendi `FISNO`'sunda kalıyor. Sabit
+   `VEGA_OTOMATIK_SERI` (`db/yazma.js`); belge zinciri sınaması artık `Z`
+   bekliyor.
+2. **BAŞLA / BİTİR adımı `KOD` ile bulunuyor, `SIRANO` ile değil.**
+   `db/uretim-depo.js` → `adimBul()`. F0102'de 3 adımlı üç reçete var:
+   4481 KUZU KULAĞI MİX ve 4529 Sushi Tavuk Salata'da BİTİR **3.** sırada,
+   1153 Rakı.Beylerbeyi'nde 3. sırada deposu boş ikinci bir BAŞLA duruyor.
+   `sira === 2` kuralı 4481/4529'da BİTİR deposunu görmüyor, mamulü seçilen
+   depoya yazıyordu. Pozisyon satırının `MALIYET`'i de BİTİR adımına KOD ile
+   yazılıyor; ekran depoları arka ucun seçtiğinden gösteriyor.
+   Sınama: `test-sorgular.js` → "Pozisyon depoları KOD ile seçiliyor".
+
+**Referans fiş notu:** görev notundaki IND 1410 (üretim) ve 1535/1536
+(transfer) **müşterinin makinesindeki** (DESKTOP-OR7N4UE) VEGADB'de. Bu
+makinedeki kopya 25.08.2026'da bitiyor (son üretim IND 1402). Sınamanın
+aynı reçetenin gerçek fişi IND 1384'ü kullanması doğru.
+
+Ayrıca `main.js` 4758791 sürümünde tanımsız `agErisiminiAc()` çağırıyordu
+(fonksiyonun adı `agErisimiAc`); Codex düzeltti.
+
 ---
 
 ## 14. Zorunlu giriş ve ağdan erişim (09.09.2026)
@@ -1522,3 +1584,7 @@ Yetki denetimi tek yerde kaldı.
    oturumu düşüyor.
 
 `ayarlar.json`: `agErisimiAktif`, `agPort` (51234), `agAdresi` (`0.0.0.0`).
+
+> **09.09.2026 — sıradaki iş listesi Codex'e devredildi.** Ayrıntılı yönerge:
+> `kurulum/CODEX-GOREV-09-09-2026.md` (pozisyon/depo-şube denetimi, pasif stoklar,
+> reçeteli görünme, belge zinciri sınaması, aktarım sonrası manuel üretim).

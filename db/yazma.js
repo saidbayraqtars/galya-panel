@@ -28,6 +28,8 @@ const { sorgu, calistir, islem, havuzAl, mssql } = require('./sql');
 const { ayarOku } = require('./ayar');
 const { dogrula, tablo, kart, tabloVarMi } = require('./firma');
 const panel = require('./panel');
+const { stokPasifHaric } = require('./vega');
+const { pozisyonlariOku, depoSecimi, adimBul } = require('./uretim-depo');
 
 function vt() {
   return ayarOku().vegaVeritabani;
@@ -1670,14 +1672,14 @@ async function zayiFisiYaz(kayit) {
 }
 
 // Yazılan zayi fişini beş tablodan da siler; stok fiş öncesine döner.
-async function zayiFisiGeriAl(kayit) {
+async function zayiFisiGeriAl(kayit, ortakIslem) {
   kilitKontrol();
   const { firma, donem } = await dogrula(kayit.firma, kayit.donem);
   const v = vt();
   const baslikInd = Number(kayit.baslikInd);
   if (!baslikInd) throw new Error('Geri alınacak zayi fişinin kimliği eksik.');
 
-  const silinen = await islem(async (t) => {
+  const sil = async (t) => {
     let toplam = 0;
     const say = (r) => {
       toplam += r[0] || 0;
@@ -1717,7 +1719,9 @@ async function zayiFisiGeriAl(kayit) {
       )
     );
     return toplam;
-  });
+  };
+  const silinen = ortakIslem ? await sil(ortakIslem) : await islem(sil);
+  if (ortakIslem) return { tamam: true, silinenSatir: silinen };
 
   await panel.kayit(
     'Zayi',
@@ -2252,6 +2256,8 @@ async function alisFaturasiGeriAl(kayit) {
 const URETIM_CIKTI_TIPI = 96;
 const URETIM_TUKETIM_TIPI = 97;
 const DEPO_TRANSFER_TIPI = 38;
+// Vega'nın otomatik belgelerinin (96/97 EVRAKNO, 38 BELGENO) paylaşılan serisi.
+const VEGA_OTOMATIK_SERI = 'Z';
 
 // 96/97 sayaçları. Kilit işlem sonuna kadar tutulur.
 //
@@ -2264,7 +2270,7 @@ async function uretimSayaclari(t, stokHareketTablosu) {
     SELECT
       ISNULL(MAX(BELGENO), 0) AS belgeNo,
       ISNULL(MAX(LN), 0)      AS ln,
-      ISNULL(MAX(CASE WHEN EVRAKNO LIKE 'Z%'
+      ISNULL(MAX(CASE WHEN EVRAKNO LIKE '${VEGA_OTOMATIK_SERI}%'
                        AND ISNUMERIC(SUBSTRING(EVRAKNO, 2, 20)) = 1
                       THEN CAST(SUBSTRING(EVRAKNO, 2, 20) AS INT) END), 0) AS evrakNo
     FROM ${stokHareketTablosu} WITH (UPDLOCK, HOLDLOCK)
@@ -2278,8 +2284,15 @@ async function uretimSayaclari(t, stokHareketTablosu) {
   };
 }
 
-function zNo(sayi) {
-  return 'Z' + String(sayi).padStart(7, '0');
+// 96/97 EVRAKNO'su ve depo transferi (38) BELGENO'su panelin GP serisine
+// ALINMAZ. Vega bu belgeleri kendi otomatik Z sayacıyla numaralıyor ve panel
+// o sayacın devamını yazıyor (DEVIR-NOTU §6 "Belge serisi A'dan GP'ye"):
+// F0102'deki 154.187 adet 96/97 satırının ve 415 transfer fişinin HEPSİ Z.
+// 10.09.2026'da bu iki yer GP'ye çevrilmişti; belgelenmiş karara ve Vega'nın
+// verisine aykırı olduğu için geri alındı. FISNO (üretim fişinin kendi
+// numarası) GP serisinde kalıyor.
+function uretimBelgeNo(sayi) {
+  return VEGA_OTOMATIK_SERI + String(sayi).padStart(7, '0');
 }
 
 // 96 / 97 belgesinin BİR satırı: TBLSHAREKET + TBLSTOKHAREKETLERI +
@@ -2408,12 +2421,7 @@ async function depoTransferiYaz(t, a) {
   const baslikTablosu = tablo(v, firma, donem, 'TBLDEPOHARBASLIK');
   const toplam = satirlar.reduce((x, s) => x + s.miktar * s.birimMaliyet, 0);
 
-  const sonNo = await t.sorgu(
-    `SELECT MAX(CAST(SUBSTRING(BELGENO, 2, 20) AS INT)) AS sonNo
-     FROM ${baslikTablosu} WITH (UPDLOCK, HOLDLOCK)
-     WHERE BELGENO LIKE 'Z%' AND ISNUMERIC(SUBSTRING(BELGENO, 2, 20)) = 1`
-  );
-  const belgeNo = zNo((sonNo[0] && sonNo[0].sonNo ? Number(sonNo[0].sonNo) : 0) + 1);
+  const belgeNo = await siradakiBelgeNo(t, baslikTablosu, VEGA_OTOMATIK_SERI);
 
   const baslik = await t.sorgu(
     `
@@ -2535,7 +2543,7 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
      FROM ${kart(v, firma, 'TBLSTOKLAR')} S
      LEFT JOIN ${kart(v, firma, 'TBLBIRIMLEREX')} B
             ON B.STOKNO = S.IND AND B.VARSAYILAN = 1
-     WHERE S.IND = @stokNo`,
+     WHERE S.IND = @stokNo AND ISNULL(S.DELETED,0) = 0 AND ${stokPasifHaric()}`,
     { stokNo: Number(mamulStokNo) }
   );
   if (!mamuller.length) throw new Error('Üretilecek mamulün stok kartı bulunamadı.');
@@ -2543,13 +2551,13 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
 
   const elle = Array.isArray(elleBilesenler) && elleBilesenler.length > 0;
 
-  const basliklar = await sorgu(
+  const basliklar = await tabloVarMi(firma, '', 'TBLURERECETELIST') ? await sorgu(
     `SELECT TOP 1 IND AS receteNo, ISNULL(MIKTAR, 1) AS verim, ISNULL(KDV, 0) AS kdv,
             ISNULL(FIYAT, 0) AS fiyat
      FROM ${kart(v, firma, 'TBLURERECETELIST')}
      WHERE STOKNO = @stokNo ORDER BY IND`,
     { stokNo: Number(mamulStokNo) }
-  );
+  ) : [];
   if (!elle && !basliklar.length) {
     throw new Error(`"${mamul.ad}" için reçete tanımlı değil. Üretim fişi reçetesiz yazılamaz.`);
   }
@@ -2565,17 +2573,7 @@ async function uretimHazirligi(v, firma, mamulStokNo, miktar, elleBilesenler) {
   // Üretim yeri ve mamul deposu reçetenin kendi pozisyon tanımından gelir.
   // Reçetesi olmayan mamulde boş kalır; uretimFisiYaz varsayılan BAŞLA/BİTİR
   // adımlarını yazar.
-  const pozlar = receteNo
-    ? await sorgu(
-        `SELECT SIRANO AS sira, KOD AS kod, ISNULL(ACIKLAMA,'') AS aciklama,
-                POZISYONNO AS pozisyonNo, URETIMYERINO AS yerNo,
-                ISNULL(URETIMYERIKODU,'') AS yerKodu,
-                ISNULL(DEPONO, 0) AS depoNo, ISNULL(DEPOKODU,'') AS depoKodu
-         FROM ${kart(v, firma, 'TBLURERECETEPOZ')}
-         WHERE EVRAKNO = @receteNo ORDER BY SIRANO`,
-        { receteNo }
-      )
-    : [];
+  const pozlar = await pozisyonlariOku(v, firma, receteNo);
 
   // Reçetenin ÇIKTI satırları. Bir üretimden birden fazla ürün çıkabiliyor:
   // "DANA ANTRIKOT" reçetesinde ana mamulün yanında DANA KUŞBAŞI, DANA KIYMA
@@ -2734,7 +2732,14 @@ function ciktiSatirlariniCoz(h, miktar, istenen) {
     anaMamul: true
   });
 
-  if (!Array.isArray(istenen) || !istenen.length) return [anaSatir()];
+  if (!Array.isArray(istenen) || !istenen.length) {
+    if (h.receteCiktilari.length > 1) {
+      const e = new Error('Çok çıktılı ürün İş Emri ekranından, çıktı miktarları girilerek üretilmeli.');
+      e.kod = 'IS_EMRI_GEREKLI';
+      throw e;
+    }
+    return [anaSatir()];
+  }
 
   const satirlar = [];
   for (const g of istenen) {
@@ -2770,8 +2775,39 @@ function ciktiSatirlariniCoz(h, miktar, istenen) {
       `Ana mamulün çıktı miktarı (${ana.miktar}) üretim miktarıyla (${miktar}) aynı olmalı.`
     );
   }
-  if (satirlar.length === 1) satirlar[0].oran = 100;
+  if (satirlar.length === 1 && h.receteCiktilari.length <= 1) satirlar[0].oran = 100;
   return satirlar;
+}
+
+// Aktarım geri alma ile üretim yazma aynı satırı kilitler. Kontrol ile yazma
+// arasına ikinci bir istemci girip bağlantısız üretim bırakamaz.
+async function aktarimUretimKilidi(t, firma, donem, aktarimId) {
+  const id = Number(aktarimId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error('Aktarım kimliği geçersiz.');
+  const r = await t.sorgu(
+    `SELECT Id, Durum, GeriAlindi FROM [${panel.p()}].dbo.SefimAktarim WITH (UPDLOCK,HOLDLOCK)
+     WHERE Id = @id AND Firma = @firma AND Donem = @donem`, { id, firma, donem }
+  );
+  if (!r.length || r[0].GeriAlindi || r[0].Durum !== 'tamam') {
+    const e = new Error('Üretim yalnız bu firma ve dönemde tamamlanmış, geri alınmamış aktarıma bağlanabilir.');
+    e.kod = 'AKTARIM_UYGUN_DEGIL';
+    throw e;
+  }
+}
+
+async function uretimSubeKodlari(t, v, firma, donem, depo) {
+  // Galya'da bütün depolar MERKEZ/MERKEZ taşıyor. Yine de başka bir deponun
+  // en son alış faturasını almak yerine aynı deponun belge örneğini ararız.
+  for (const ad of ['TBLDEPOHARBASLIK', 'TBLALFATBASLIK']) {
+    const r = await t.sorgu(
+      `SELECT TOP 1 OZELKOD1 AS k1, ISNULL(OZELKOD2,'') AS k2
+       FROM ${tablo(v, firma, donem, ad)}
+       WHERE HAREKETDEPOSU = @depo AND OZELKOD1 IS NOT NULL
+       ORDER BY IND DESC`, { depo }
+    );
+    if (r.length) return r[0];
+  }
+  return { k1: '', k2: '' };
 }
 
 async function uretimFisiYaz(kayit) {
@@ -2783,13 +2819,10 @@ async function uretimFisiYaz(kayit) {
 
   const h = await uretimHazirligi(v, firma, kayit.mamulStokNo, miktar, kayit.bilesenler);
 
-  // BİTİR adımının deposu mamul deposu, BAŞLA adımınınki üretim yeri deposu.
-  const bitir = h.pozlar.find((p) => Number(p.sira) === 2) || null;
-  const basla = h.pozlar.find((p) => Number(p.sira) === 1) || null;
-  const mamulDeposu = Number(
-    kayit.depo || (bitir && bitir.depoNo) || ayarOku().varsayilanDepo || 1
-  );
-  const uretimDeposu = Number((basla && basla.depoNo) || 0) || mamulDeposu;
+  const { mamulDeposu, uretimDeposu, depoUyarisi } =
+    depoSecimi(h.pozlar, kayit.depo, ayarOku().varsayilanDepo);
+  // Günlük üretim kaydının bağlı tabloyla aynı işlemde yazılması gerekiyor.
+  await panel.kur();
 
   const tarih = kayit.tarih ? new Date(kayit.tarih) : new Date();
   const stokHareketTablosu = tablo(v, firma, donem, 'TBLSTOKHAREKETLERI');
@@ -2812,7 +2845,10 @@ async function uretimFisiYaz(kayit) {
   const anaCikti = ciktilar.find((c) => c.anaMamul);
 
   const sonuc = await islem(async (t) => {
-    const sube = await faturaSubeKodlari(t, tablo(v, firma, donem, 'TBLALFATBASLIK'));
+    if (kayit.aktarimId != null) {
+      await aktarimUretimKilidi(t, firma, donem, kayit.aktarimId);
+    }
+    const sube = await uretimSubeKodlari(t, v, firma, donem, mamulDeposu);
 
     // Üretim fişinin kendi numarası da panelin serisinden geliyor.
     const uOnek = belgeOneki();
@@ -2936,8 +2972,8 @@ async function uretimFisiYaz(kayit) {
     const pozSatirlari = h.pozlar.length
       ? h.pozlar
       : [
-          { sira: 1, kod: 'BAŞLA', aciklama: 'BAŞLA', pozisyonNo: 100, yerNo: uretimDeposu, yerKodu: '', depoNo: uretimDeposu, depoKodu: '' },
-          { sira: 2, kod: 'BİTİR', aciklama: 'BİTİR', pozisyonNo: 101, yerNo: mamulDeposu, yerKodu: '', depoNo: mamulDeposu, depoKodu: '' }
+          { sira: 1, kod: 'BAŞLA', aciklama: 'BAŞLA', pozisyonNo: 100, yerNo: 0, yerKodu: '', depoNo: uretimDeposu, depoKodu: '' },
+          { sira: 2, kod: 'BİTİR', aciklama: 'BİTİR', pozisyonNo: 101, yerNo: 0, yerKodu: '', depoNo: mamulDeposu, depoKodu: '' }
         ];
     for (const poz of pozSatirlari) {
       await t.calistir(
@@ -2962,7 +2998,9 @@ async function uretimFisiYaz(kayit) {
           depoNo: Number(poz.depoNo || 0),
           depoKodu: poz.depoKodu || '',
           miktar,
-          maliyet: Number(poz.sira) === 2 ? toplamMaliyet : 0
+          // Toplam maliyet BİTİR adımına yazılır; BİTİR her reçetede 2.
+          // sırada değil (4481 / 4529'da 3.), o yüzden KOD ile bulunuyor.
+          maliyet: poz === adimBul(pozSatirlari, 'BİTİR', true) ? toplamMaliyet : 0
         }
       );
     }
@@ -3003,8 +3041,8 @@ async function uretimFisiYaz(kayit) {
     const sayac = await uretimSayaclari(t, stokHareketTablosu);
     const tuketimBelgeNo = sayac.belgeNo + 1;
     const ciktiBelgeNo = sayac.belgeNo + 2;
-    const tuketimEvrakNo = zNo(sayac.evrakNo + 1);
-    const ciktiEvrakNo = zNo(sayac.evrakNo + 2);
+    const tuketimEvrakNo = uretimBelgeNo(sayac.evrakNo + 1);
+    const ciktiEvrakNo = uretimBelgeNo(sayac.evrakNo + 2);
     const aciklama = 'Galya Panel üretim ' + fisNo;
     const yazilanSatirlar = { tuketim: [], cikti: [] };
     // TBLSHAREKET yoksa LN'yi eskisi gibi biz veriyoruz.
@@ -3087,6 +3125,29 @@ async function uretimFisiYaz(kayit) {
       );
     }
 
+  await t.calistir(
+    `INSERT INTO [${panel.p()}].dbo.UretimFisi
+       (Firma, Donem, Depo, MamulStokNo, MamulAdi, Miktar, ReceteNo, FisNo,
+        UretimInd, Kullanici, Belgeler)
+     VALUES (@firma, @donem, @depo, @stokNo, @ad, @miktar, @receteNo, @fisNo,
+             @uretimInd, @kullanici, @belgeler)`,
+    {
+      firma, donem, depo: mamulDeposu,
+      stokNo: h.mamul.stokNo, ad: h.mamul.ad, miktar,
+      receteNo: h.receteNo, fisNo: fisNo, uretimInd: uretimInd,
+      kullanici: kayit.kullanici || null,
+      belgeler: JSON.stringify(belgeler)
+    }
+  );
+    if (kayit.aktarimId != null) {
+      await t.calistir(
+        `INSERT INTO [${panel.p()}].dbo.SefimAktarimUretim
+          (AktarimId, UretimInd, FisNo, StokNo, Miktar, Kullanici, ZayiBaslikInd)
+         VALUES (@id, @ind, @fisNo, @stokNo, @miktar, @kullanici, @zayi)`,
+        { id: Number(kayit.aktarimId), ind: uretimInd, fisNo, stokNo: Number(h.mamul.stokNo),
+          miktar, kullanici: kayit.kullanici || null, zayi: Number(kayit.zayiBaslikInd) || null }
+      );
+    }
     return { fisNo, uretimInd, belgeler, tuketimBelgeNo, ciktiBelgeNo, mamulSatiri };
   });
 
@@ -3103,25 +3164,13 @@ async function uretimFisiYaz(kayit) {
 
   await panel.kayit('Üretim', "Üretim fişi Vega'ya yazıldı", kayitDetayi, kayit.kullanici);
 
-  await calistir(
-    `INSERT INTO [${panel.p()}].dbo.UretimFisi
-       (Firma, Donem, Depo, MamulStokNo, MamulAdi, Miktar, ReceteNo, FisNo,
-        UretimInd, Kullanici, Belgeler)
-     VALUES (@firma, @donem, @depo, @stokNo, @ad, @miktar, @receteNo, @fisNo,
-             @uretimInd, @kullanici, @belgeler)`,
-    {
-      firma, donem, depo: mamulDeposu,
-      stokNo: h.mamul.stokNo, ad: h.mamul.ad, miktar,
-      receteNo: h.receteNo, fisNo: sonuc.fisNo, uretimInd: sonuc.uretimInd,
-      kullanici: kayit.kullanici || null,
-      belgeler: JSON.stringify(sonuc.belgeler)
-    }
-  );
+
 
   return {
     tamam: true,
     fisNo: sonuc.fisNo,
     uretimInd: sonuc.uretimInd,
+    depo: mamulDeposu, uretimDeposu, depoUyarisi,
     mamulAdi: h.mamul.ad,
     miktar,
     birimMaliyet: anaCikti.birimMaliyet,
@@ -3146,11 +3195,24 @@ async function uretimFisiGeriAl(kayit) {
   const uretimInd = Number(kayit.uretimInd);
   if (!uretimInd) throw new Error('Geri alınacak üretim fişi kimliği eksik.');
 
-  const belgeler = Array.isArray(kayit.belgeler) ? kayit.belgeler : [];
+  await panel.kur();
   const stokHareketTablosu = tablo(v, firma, donem, 'TBLSTOKHAREKETLERI');
   const shaVar = await tabloVarMi(firma, donem, 'TBLSHAREKET');
 
   const silinen = await islem(async (t) => {
+    // Belge kimlikleri istemciden değil üretimin kendi dizininden okunur.
+    const belgeler = await t.sorgu(
+      `SELECT BELGENO AS belgeNo, IZAHAT AS izahat, EVRAKNO AS evrakNo
+       FROM ${tablo(v, firma, donem, 'TBLUREBELGE')} WITH (UPDLOCK,HOLDLOCK)
+       WHERE EIND = @ind`, { ind: uretimInd }
+    );
+    const baglar = await t.sorgu(
+      `SELECT B.AktarimId AS aktarimId, B.ZayiBaslikInd AS zayi
+       FROM [${panel.p()}].dbo.SefimAktarimUretim B
+       JOIN [${panel.p()}].dbo.SefimAktarim A ON A.Id = B.AktarimId
+       WHERE A.Firma = @firma AND A.Donem = @donem AND B.UretimInd = @ind`,
+      { firma, donem, ind: uretimInd }
+    );
     let toplam = 0;
     const say = (r) => { toplam += (r[0] || 0); };
 
@@ -3222,6 +3284,21 @@ async function uretimFisiGeriAl(kayit) {
       `DELETE FROM ${tablo(v, firma, donem, 'TBLUREURETIMLIST')} WHERE IND = @ind`,
       { ind: uretimInd }
     ));
+    for (const bag of baglar) {
+      if (bag.zayi) {
+        const z = await zayiFisiGeriAl({ firma, donem, baslikInd: bag.zayi }, t);
+        toplam += z.silinenSatir;
+      }
+      await t.calistir(
+        `DELETE FROM [${panel.p()}].dbo.SefimAktarimUretim WHERE AktarimId = @id AND UretimInd = @ind`,
+        { id: bag.aktarimId, ind: uretimInd }
+      );
+    }
+    await t.calistir(
+      `UPDATE [${panel.p()}].dbo.UretimFisi SET GeriAlindi = 1
+       WHERE UretimInd = @ind AND Firma = @firma AND Donem = @donem`,
+      { ind: uretimInd, firma, donem }
+    );
     return toplam;
   });
 
@@ -3232,10 +3309,7 @@ async function uretimFisiGeriAl(kayit) {
     kayit.kullanici
   );
 
-  await calistir(
-    `UPDATE [${panel.p()}].dbo.UretimFisi SET GeriAlindi = 1 WHERE UretimInd = @ind AND Firma = @firma`,
-    { ind: uretimInd, firma }
-  );
+
 
   return { tamam: true, silinenSatir: silinen };
 }
@@ -3734,6 +3808,22 @@ async function sefimAktarimGeriAl(kayit) {
   if (!belgeler.length) throw new Error('Geri alınacak belge listesi boş.');
 
   return islem(async (t) => {
+    if (kayit.aktarimId != null) {
+      await aktarimUretimKilidi(t, firma, donem, kayit.aktarimId);
+      const bagli = await t.sorgu(
+        `SELECT FisNo FROM [${panel.p()}].dbo.SefimAktarimUretim WHERE AktarimId = @id`,
+        { id: Number(kayit.aktarimId) }
+      );
+      if (bagli.length) {
+        const e = new Error('Önce bu aktarıma bağlı üretimleri geri alın: ' + bagli.map((b) => b.FisNo).join(', '));
+        e.kod = 'ONCE_URETIM_GERI_AL';
+        throw e;
+      }
+      await t.calistir(
+        `UPDATE [${panel.p()}].dbo.SefimAktarim SET GeriAlindi = 1 WHERE Id = @id`,
+        { id: Number(kayit.aktarimId) }
+      );
+    }
     let toplam = 0;
     const say = (r) => {
       toplam += (r && r[0]) || 0;

@@ -303,6 +303,21 @@ async function kur() {
       CREATE UNIQUE INDEX UQ_SefimAktarim_Gun
         ON dbo.SefimAktarim (Firma, Donem, IsGunu) WHERE GeriAlindi = 0;
 
+    -- Üretim fişi ve günlük aktarım bağı aynı SQL transaction'ında yazılır.
+    -- Üretim geri alınınca bağ silinir; denetim geçmişi UretimFisi'nde kalır.
+    IF OBJECT_ID('dbo.SefimAktarimUretim') IS NULL
+    CREATE TABLE dbo.SefimAktarimUretim (
+      AktarimId INT NOT NULL REFERENCES dbo.SefimAktarim(Id),
+      UretimInd INT NOT NULL,
+      FisNo NVARCHAR(50) NOT NULL,
+      StokNo INT NOT NULL,
+      Miktar DECIMAL(18,6) NOT NULL,
+      Tarih DATETIME NOT NULL DEFAULT GETDATE(),
+      Kullanici NVARCHAR(100) NULL,
+      ZayiBaslikInd INT NULL,
+      PRIMARY KEY (AktarimId, UretimInd)
+    );
+
     IF OBJECT_ID('dbo.Zayi') IS NULL
     CREATE TABLE dbo.Zayi (
       Id            INT IDENTITY(1,1) PRIMARY KEY,

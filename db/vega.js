@@ -501,6 +501,7 @@ async function receteliMamuller(secim) {
       ISNULL(L.MIKTAR, 1)         AS verim,
       ISNULL(L.BIRIM, '')         AS birim,
       ISNULL(L.ACIKLAMA, '')      AS aciklama,
+      ${pasifIfadesi()}           AS pasif,
       ISNULL(R.satirSayisi, 0)    AS satirSayisi
     FROM ${kart(v, firma, 'TBLURERECETELIST')} L
     LEFT JOIN ${kart(v, firma, 'TBLSTOKLAR')} S ON S.IND = L.STOKNO
@@ -509,6 +510,8 @@ async function receteliMamuller(secim) {
       FROM ${kart(v, firma, 'TBLURERECETE')}
       GROUP BY EVRAKNO
     ) R ON R.EVRAKNO = L.IND
+    WHERE L.IND = (SELECT MIN(L2.IND) FROM ${kart(v, firma, 'TBLURERECETELIST')} L2
+                   WHERE L2.STOKNO = L.STOKNO)
     ORDER BY ISNULL(S.MALINCINSI, L.MALINCINSI)
   `);
 }

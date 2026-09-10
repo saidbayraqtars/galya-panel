@@ -1,5 +1,7 @@
 'use strict';
 
+require('./test-ortam').ayarla();
+
 // Arayüz duman sınaması.
 //
 //   npx electron kurulum/test-arayuz.js
@@ -111,6 +113,19 @@ app.whenReady().then(async () => {
   let hazir = false;
   for (let i = 0; i < 60 && !hazir; i++) {
     await bekle(500);
+    // GALYA_TEST'te kullanıcı tutulmaz. Yeni kurulumdaki gerçek akışı izleyip
+    // "Kullanıcı tanımlamadan devam et" düğmesine bir kez basarak ekran
+    // testlerine geçiyoruz.
+    await pencere.webContents.executeJavaScript(`
+      (() => {
+        if (!(durum && durum.kullaniciYok) || durum.firma) return false;
+        const dugme = [...document.querySelectorAll('#icerik button')]
+          .find((d) => d.textContent.includes('Kullanıcı tanımlamadan devam et'));
+        if (!dugme) return false;
+        dugme.click();
+        return true;
+      })()
+    `).catch(() => false);
     hazir = await pencere.webContents.executeJavaScript(
       `!!(durum && durum.firma) && !document.querySelector('#icerik .yukleniyor')`
     ).catch(() => false);

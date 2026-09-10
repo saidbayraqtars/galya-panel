@@ -1033,10 +1033,10 @@ async function geriAl(secim, kim) {
     billIdler = [];
   }
 
-  const silinen = await yazma.sefimAktarimGeriAl({ firma, donem, belgeler });
+  // Bağlı üretim denetimi ve aktarımın kapatılması yazma transaction'ında
+  // aynı kilit altında yapılır; eşzamanlı üretim araya giremez.
+  const silinen = await yazma.sefimAktarimGeriAl({ firma, donem, belgeler, aktarimId: id });
   await yazma.sefimSatirlariIsaretle(billIdler, 0);
-
-  await sorgu(`UPDATE [${p}].dbo.SefimAktarim SET GeriAlindi = 1 WHERE Id = @id`, { id });
   await panel.kayit(
     'Şefim Aktarımı',
     `${gunMetni(k.isGunu)} aktarımı geri alındı`,

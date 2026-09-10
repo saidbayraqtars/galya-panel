@@ -1,5 +1,7 @@
 'use strict';
 
+require('./test-ortam').ayarla();
+
 // Veritabanı katmanını Electron olmadan sınamak için.
 //   node kurulum/test-sorgular.js
 
@@ -302,6 +304,58 @@ async function dene(ad, isFn) {
   });
 
   console.log('\n== Üretim ==');
+  await dene('Pasif mamul üretim listesinde ve ürün seçicide görünmüyor', async () => {
+    const a = require('../db/ayar').ayarOku();
+    const pasifler = await sql.sorgu(`SELECT S.IND AS stokNo FROM ${firma.kart(a.vegaVeritabani, SECIM.firma, 'TBLSTOKLAR')} S
+      WHERE ${vega.pasifIfadesi()} = 1`);
+    const no = new Set(pasifler.map((s) => Number(s.stokNo)));
+    const aday = await uretim.sifirAdaylari(SECIM);
+    const secici = await uretim.urunAra({ ...SECIM, receteliSadece: true });
+    if ([...aday, ...secici].some((s) => no.has(Number(s.stokNo)))) throw new Error('Pasif mamul sızdı.');
+    return pasifler;
+  });
+  await dene('Pasif bileşenli reçete uyarı veriyor; bileşen korunuyor', async () => {
+    const a = require('../db/ayar').ayarOku();
+    const kk = (ad) => firma.kart(a.vegaVeritabani, SECIM.firma, ad);
+    const r = await sql.sorgu(`SELECT DISTINCT L.STOKNO AS stokNo, R.STOKNO AS bilesen
+      FROM ${kk('TBLURERECETELIST')} L JOIN ${kk('TBLURERECETE')} R ON R.EVRAKNO=L.IND
+      JOIN ${kk('TBLSTOKLAR')} S ON S.IND=R.STOKNO
+      JOIN ${kk('TBLSTOKLAR')} M ON M.IND=L.STOKNO
+      WHERE ${vega.pasifIfadesi()} = 1 AND ${vega.stokPasifHaric('M')} AND ISNULL(M.DELETED,0)=0`);
+    if (!r.length) throw new Error('Pasif bileşen örneği yok; vaka doğrulanamadı.');
+    for (const x of r) {
+      const emir = await uretim.isEmri({ ...SECIM, mamulStokNo: x.stokNo });
+      if (!emir.girdiler.some((g) => g.stokNo === Number(x.bilesen) && g.pasif) ||
+          !emir.uyarilar.some((u) => u.includes('pasif kart'))) throw new Error('Pasif bileşen uyarısı eksik.');
+    }
+    return r;
+  });
+  await dene('Reçeteli ürün kapsamı SQL ile birebir; pasif reçeteler rozetli', async () => {
+    const a = require('../db/ayar').ayarOku();
+    const kk = (ad) => firma.kart(a.vegaVeritabani, SECIM.firma, ad);
+    const ham = await sql.sorgu(`SELECT DISTINCT STOKNO AS stokNo FROM ${kk('TBLURERECETELIST')}`);
+    const liste = await vega.receteliMamuller(SECIM);
+    const numaralar = new Set(liste.map((r) => Number(r.mamulStokNo)));
+    if (liste.length !== ham.length || ham.some((r) => !numaralar.has(Number(r.stokNo)))) throw new Error('Reçete listesi farklı.');
+    const aktif = await sql.sorgu(`SELECT DISTINCT S.IND AS stokNo FROM ${kk('TBLSTOKLAR')} S
+      JOIN ${kk('TBLURERECETELIST')} L ON L.STOKNO=S.IND
+      WHERE S.IND>=100 AND ISNULL(S.DELETED,0)=0 AND S.STOKTIPI NOT IN (3,7,9,11,26) AND ${vega.stokPasifHaric()}`);
+    const secici = await uretim.urunAra({ ...SECIM, receteliSadece: true });
+    const seciciNo = new Set(secici.map((r) => Number(r.stokNo)));
+    if (aktif.length !== secici.length || aktif.some((r) => !seciciNo.has(Number(r.stokNo)))) throw new Error('Üretim seçicisi reçete kapsamı farklı.');
+    const maliyet = await require('../db/maliyet').hesapla(SECIM);
+    const maliyetListe = Array.isArray(maliyet) ? maliyet : maliyet.satirlar;
+    if (!maliyetListe) throw new Error('Maliyet listesi dönmedi.');
+    const maliyetNo = new Set(maliyetListe.filter((r) => r.mamulMu).map((r) => Number(r.stokNo)));
+    if (aktif.length !== maliyetNo.size || aktif.some((r) => !maliyetNo.has(Number(r.stokNo)))) throw new Error('Maliyet motoru reçete kapsamı farklı.');
+    console.log(`       Ham reçeteli ${ham.length}; pasif ${liste.filter((r) => r.pasif).length}; aktif seçici/maliyet ${aktif.length}`);
+    return liste;
+  });
+  await dene('TUBORG kartları reçetesiz', async () => {
+    const liste = await uretim.urunAra({ ...SECIM, arama: 'TUBORG' });
+    if (!liste.length || liste.some((r) => r.receteNo)) throw new Error('TUBORG reçete işareti yanlış veya örnek yok.');
+    return liste;
+  });
   await dene('Ürün arama (reçete şartsız)', () =>
     uretim.urunAra(Object.assign({}, SECIM, { arama: '' }))
   );
@@ -315,6 +369,10 @@ async function dene(ad, isFn) {
       // Kendini tüketmeyen reçetede üretilecek miktar eksinin karşılığı;
       // tüketende eksik / (1 - oran) kadar (şişeden kadeh üretimi böyle).
       const oran = Number(a.kendiOran) || 0;
+      if (a.isEmriGerekli) {
+        if (!a.uretilemez || a.uretilecek != null) throw new Error('çok çıktılı ürün toplu üretime açık');
+        continue;
+      }
       if (oran >= 1) {
         if (!a.uretilemez) throw new Error('oran 1 ustu ama uretilemez isareti yok: ' + a.ad);
         continue;
@@ -385,6 +443,35 @@ async function dene(ad, isFn) {
   // Vega'nın gerçek çok çıktılı fişleri üzerinde doğrulanıyor: bir fişteki
   // ORAN'ı sıfırdan büyük herhangi bir satırdan toplam maliyet geri
   // hesaplanıp bütün satırlar onunla karşılaştırılıyor.
+  // BAŞLA / BİTİR adımı KOD ile bulunmalı, SIRANO ile değil. F0102'de 4481 ve
+  // 4529'da BİTİR 3. sırada; 1153'te 3. sırada deposu boş ikinci bir BAŞLA
+  // var. Ayardaki depo ne olursa olsun mamul reçetenin BİTİR deposuna girer.
+  await dene('Pozisyon depoları KOD ile seçiliyor (3 adımlı reçeteler)', async () => {
+    const v = require(path.join(kok, 'db', 'ayar')).ayarOku().vegaVeritabani;
+    const { pozisyonlariOku, depoSecimi } = require(path.join(kok, 'db', 'uretim-depo'));
+    const beklenen = [
+      { recete: 4516, uretim: 100, mamul: 1 },  // BAŞLA MUTFAK → BİTİR MERKEZ
+      { recete: 4481, uretim: 101, mamul: 1 },  // BİTİR 3. sırada
+      { recete: 4529, mamul: 1 },               // BAŞLA deposu 0, BİTİR 3. sırada
+      { recete: 1153, uretim: 101, mamul: 1 }   // 3. sırada boş ikinci BAŞLA
+    ];
+    for (const b of beklenen) {
+      const pozlar = await pozisyonlariOku(v, 'F0102', b.recete);
+      if (!pozlar.length) continue; // başka kurulumda reçete yok
+      for (const ayarDepo of [1, 100, 102]) {
+        const d = depoSecimi(pozlar, ayarDepo, ayarDepo);
+        if (d.mamulDeposu !== b.mamul) {
+          throw new Error(`Reçete ${b.recete}, ayar ${ayarDepo}: mamul deposu ${d.mamulDeposu}, beklenen ${b.mamul}`);
+        }
+        if (b.uretim && d.uretimDeposu !== b.uretim) {
+          throw new Error(`Reçete ${b.recete}: üretim deposu ${d.uretimDeposu}, beklenen ${b.uretim}`);
+        }
+        if (!d.receteDeposu) throw new Error(`Reçete ${b.recete}: depo seçicisi kilitlenmiyor`);
+      }
+    }
+    return 'tamam';
+  });
+
   await dene('Vega fişlerinde TUTAR = toplam × ORAN / 100', async () => {
     const v = require(path.join(kok, 'db', 'ayar')).ayarOku().vegaVeritabani;
     const on = `[${v}].dbo.${SECIM.firma}${SECIM.donem}`;

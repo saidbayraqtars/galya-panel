@@ -1,6 +1,8 @@
 -- ===========================================================================
 -- Öksüz 96/97 satırları: TBLSHAREKET onarımı
 -- ===========================================================================
+-- MÜŞTERİ ONAYI + YEDEK OLMADAN ÇALIŞTIRILMAZ.
+-- Bu dosya görev kapsamında hazırlanmıştır; Codex tarafından çalıştırılmamıştır.
 --
 -- SORUN
 -- -----

@@ -132,7 +132,17 @@ function maliyetHesapla(stokNo, kartlar, receteler, onbellek, gorulen) {
 
   let toplam = 0;
   let eksikBilesen = 0;
+  // KENDİNİ TÜKETEN REÇETE (şişeden kadeh: Tequila.Olmeca Blanco üretmek için
+  // 0,07 Tequila.Olmeca Blanco). Müşteri 10.09.2026'da bu reçetelerin
+  // bilinçli kurulduğunu söyledi. Kendi satırı döngü sayılıp atlanıyordu;
+  // artık denklemle çözülüyor:
+  //   c × verim = pay × (diğerleri + kendi × c)  →  c = pay × diğerleri / (verim − pay × kendi)
+  let kendiMiktar = 0;
   for (const satir of recete.satirlar) {
+    if (Number(satir.stokNo) === no) {
+      kendiMiktar += Number(satir.miktar) * (1 + Number(satir.fireOrani || 0) / 100);
+      continue;
+    }
     const alt = maliyetHesapla(satir.stokNo, kartlar, receteler, onbellek, gorulen);
     if (alt.deger == null) {
       eksikBilesen++;
@@ -146,9 +156,12 @@ function maliyetHesapla(stokNo, kartlar, receteler, onbellek, gorulen) {
 
   // Maliyetin yalnız ana mamule düşen payı yazılıyor; gerisi yan mamullerin.
   const anaOran = Number(recete.anaOran) > 0 ? Number(recete.anaOran) : 100;
-  const sonuc = toplam > 0
+  const payda = recete.verim - (anaOran / 100) * kendiMiktar;
+  // Payda sıfır ya da eksiyse üretim stoğu artırmıyor (db/uretim.js aynı
+  // kartı "sıfıra çekilemez" diye durduruyor); maliyet alış fiyatına düşer.
+  const sonuc = toplam > 0 && payda > 0
     ? {
-        deger: toplam * anaOran / 100 / recete.verim,
+        deger: toplam * anaOran / 100 / payda,
         kaynak: 'recete',
         eksikBilesen,
         anaOran

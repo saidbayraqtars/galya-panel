@@ -112,6 +112,7 @@ const KANAL_YETKILERI = {
 
   'uretim:sifirAdaylari': 'uretim',
   'uretim:urunAra': 'uretim',
+  'uretim:depolar': 'uretim',
   'uretim:receteCiktilari': 'uretim',
   'uretim:isEmri': 'uretim',
   'uretim:sifiraKadar': 'uretim',

@@ -1,5 +1,7 @@
 'use strict';
 
+require('./test-ortam').ayarla();
+
 // ŞEFİM GÜNLÜK AKTARIMI — MUTABAKAT SINAMASI
 //
 //   node kurulum/test-aktarim.js
@@ -249,19 +251,23 @@ function gunMetni(d) {
 
   console.log('\n== Mutabakat emniyeti ==');
   const engel = (o.uyarilar || []).filter((u) => u.engel);
+  // Karşılaştırma için özellikle Vega'nın daha önce aktardığı bir gün
+  // seçiliyor. VEGADA_BELGE_VAR burada mutabakat hatası değildir; aşağıdaki
+  // çift aktarım bölümünde ayrıca ve zorunlu olarak sınanır.
+  const mutabakatEngeli = engel.filter((u) => u.kod !== 'VEGADA_BELGE_VAR');
   if (bekleneneDusuk) {
     // Asıl sınanan şey bu: belge dışı ürün varken aktarım ENGELLENMELİ.
     // Aksi hâlde panel eksik bir belge kesip stoğu sessizce bozardı.
     ok(
       'Belge dışı ürün varken aktarım engelleniyor',
-      engel.some((u) => u.kod === 'MUTABAKAT'),
-      engel.map((u) => u.kod).join(', ') || 'HİÇ UYARI YOK'
+      mutabakatEngeli.some((u) => u.kod === 'MUTABAKAT'),
+      mutabakatEngeli.map((u) => u.kod).join(', ') || 'HİÇ UYARI YOK'
     );
   } else {
     ok(
-      'Tutan günde engelleyici uyarı yok',
-      engel.length === 0,
-      engel.map((u) => u.kod).join(', ') || 'temiz'
+      'Tutan günde mutabakat engeli yok',
+      mutabakatEngeli.length === 0,
+      mutabakatEngeli.map((u) => u.kod).join(', ') || 'temiz'
     );
   }
   if ((o.eslesmeyen || []).length) {

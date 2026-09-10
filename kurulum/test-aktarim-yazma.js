@@ -12,10 +12,8 @@
 // --------
 // 1. Yazma hedefi GALYA_TEST'tir. Betik açılışta hedefi kontrol eder; hedef
 //    GALYA_TEST değilse hiçbir şey yapmadan durur. Canlı VEGADB'ye yazmaz.
-// 2. Okuma kaynağı GERÇEK `sefim` veritabanıdır — aktarımın girdisi orada.
-//    Aktarım normalde `Bill.Aktarildi` alanını işaretler; bu betik önce o
-//    alanın mevcut değerlerini saklar, sonunda AYNEN geri yazar. Şefim
-//    veritabanı sınamadan etkilenmez.
+// 2. Şefim tabloları önce GALYA_TEST içine kopyalanır. Bill.Aktarildi
+//    değişiklikleri yalnız bu kopyaya yazılır; kaynak Şefim yalnız okunur.
 // 3. Sonunda yazdığı her belgeyi geri alır; hata çıksa bile temizlik çalışır.
 
 const path = require('path');
@@ -35,8 +33,11 @@ fs.writeFileSync(
   JSON.stringify(
     Object.assign({}, gercekAyar, {
       vegaVeritabani: 'GALYA_TEST',
-      varsayilanFirma: 'F0103',
-      varsayilanDonem: 'D0015',
+      belgeOneki: 'GP',
+      panelVeritabani: 'GALYA_TEST',
+      sefimVeritabani: 'GALYA_TEST',
+      varsayilanFirma: 'F0102',
+      varsayilanDonem: 'D0002',
       varsayilanDepo: 1,
       sefimDepo: 1,
       vegayaYazmaAktif: true
@@ -53,8 +54,8 @@ const { ayarOku } = require(path.join(kok, 'db', 'ayar'));
 const aktarim = require(path.join(kok, 'db', 'aktarim'));
 const panel = require(path.join(kok, 'db', 'panel'));
 
-const SECIM = { firma: 'F0103', donem: 'D0015', depo: 1 };
-const PD = '[GALYA_TEST].dbo.F0103D0015';
+const SECIM = { firma: 'F0102', donem: 'D0002', depo: 1 };
+const PD = '[GALYA_TEST].dbo.F0102D0002';
 
 let basarili = 0;
 let hatali = 0;
@@ -117,6 +118,9 @@ async function testTemizle() {
 }
 
 let aktarimId = null;
+const uretim = require('../db/uretim');
+const yazma = require('../db/yazma');
+const uretimIndler = new Set();
 
 // GALYA_TEST'i aktarım için hazırlar.
 //
@@ -127,79 +131,13 @@ let aktarimId = null;
 // Ayrıca aktarımın o gün kullandığı stok kartları ile veresiye müşterilerinin
 // cari kartları GALYA_TEST'e AYNI IND ile taşınıyor; aksi hâlde önizleme
 // "0 kalem" çıkıyor ve yazma yolu gerçekten denenmiş olmuyor.
-async function testVeritabaniniHazirla(kaynakVT, kaynakFirma, kaynakDonem) {
-  const KD = `[${kaynakVT}].dbo.${kaynakFirma}${kaynakDonem}`;
-  const KK = `[${kaynakVT}].dbo.${kaynakFirma}`;
-
-  for (const t of [
-    'TBLCARGIRBASLIK', 'TBLCARGIRHAREKET',
-    'TBLCARCIKBASLIK', 'TBLCARCIKHAREKET',
-    'TBLCARIGENELHAREKET', 'TBLKASA'
-  ]) {
-    const var_ = Number(
-      (await sql.sorgu(
-        `SELECT COUNT(*) a FROM GALYA_TEST.sys.tables WHERE name = @t`,
-        { t: 'F0103D0015' + t }
-      ))[0].a
-    );
-    if (var_) continue;
-    await sql.calistir(`SELECT TOP 0 * INTO ${PD}${t} FROM ${KD}${t}`);
-    console.log(`  (GALYA_TEST'e ${t} tablosu açıldı)`);
-  }
-
-  // Aktarımın kullanacağı stok kartları. Kaynak firmadaki Şefim belgelerinde
-  // geçen kartların hepsi taşınıyor.
-  const eksik = await sql.sorgu(
-    `SELECT DISTINCT H.STOKNO
-     FROM ${KD}TBLSTKCIKHAREKET H
-     JOIN ${KD}TBLSTKCIKBASLIK B ON B.IND = H.EVRAKNO
-     WHERE B.OZELKOD4 = 'SEFIM'
-       AND H.STOKNO NOT IN (SELECT IND FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR)`
-  );
-  if (eksik.length) {
-    const kolonlar = (await sql.sorgu(
-      `SELECT c.name FROM GALYA_TEST.sys.columns c
-       JOIN GALYA_TEST.sys.tables t ON t.object_id = c.object_id
-       WHERE t.name = 'F0103TBLSTOKLAR' AND c.name IN (
-         SELECT c2.name FROM [${kaynakVT}].sys.columns c2
-         JOIN [${kaynakVT}].sys.tables t2 ON t2.object_id = c2.object_id
-         WHERE t2.name = '${kaynakFirma}TBLSTOKLAR')`
-    )).map((x) => '[' + x.name + ']').join(', ');
-    await sql.calistir(
-      `SET IDENTITY_INSERT [GALYA_TEST].dbo.F0103TBLSTOKLAR ON;
-       INSERT INTO [GALYA_TEST].dbo.F0103TBLSTOKLAR (${kolonlar})
-       SELECT ${kolonlar} FROM ${KK}TBLSTOKLAR
-       WHERE IND IN (${eksik.map((x) => Number(x.STOKNO)).join(',')});
-       SET IDENTITY_INSERT [GALYA_TEST].dbo.F0103TBLSTOKLAR OFF;`
-    );
-    console.log(`  (${eksik.length} stok kartı GALYA_TEST'e taşındı)`);
-  }
-
-  // KDV grupları ve birimler de aynı IND'lerle gerekli.
-  for (const [tablo, kosul] of [
-    ['TBLKDVGRUPLARI', 'IND NOT IN (SELECT IND FROM [GALYA_TEST].dbo.F0103TBLKDVGRUPLARI)'],
-    ['TBLBIRIMLEREX', 'IND NOT IN (SELECT IND FROM [GALYA_TEST].dbo.F0103TBLBIRIMLEREX) AND STOKNO IN (SELECT IND FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR)']
-  ]) {
-    const kolonlar = (await sql.sorgu(
-      `SELECT c.name FROM GALYA_TEST.sys.columns c
-       JOIN GALYA_TEST.sys.tables t ON t.object_id = c.object_id
-       WHERE t.name = 'F0103${tablo}' AND c.name IN (
-         SELECT c2.name FROM [${kaynakVT}].sys.columns c2
-         JOIN [${kaynakVT}].sys.tables t2 ON t2.object_id = c2.object_id
-         WHERE t2.name = '${kaynakFirma}${tablo}')`
-    )).map((x) => '[' + x.name + ']').join(', ');
-    await sql.calistir(
-      `SET IDENTITY_INSERT [GALYA_TEST].dbo.F0103${tablo} ON;
-       INSERT INTO [GALYA_TEST].dbo.F0103${tablo} (${kolonlar})
-       SELECT ${kolonlar} FROM ${KK}${tablo} WHERE ${kosul};
-       SET IDENTITY_INSERT [GALYA_TEST].dbo.F0103${tablo} OFF;`
-    ).catch(() => {});
-  }
+async function testVeritabaniniHazirla(kaynakVT) {
+  await require('./uretim-sinama-verisi').hazirla(sql, kaynakVT);
 }
 
 (async () => {
   const hedef = ayarOku().vegaVeritabani;
-  console.log(`Şefim aktarımı YAZMA sınaması — hedef ${hedef} / F0103 / D0015\n`);
+  console.log(`Şefim aktarımı YAZMA sınaması — hedef ${hedef} / F0102 / D0002\n`);
   if (hedef !== 'GALYA_TEST') {
     console.error(`DURDURULDU: yazma hedefi "${hedef}". Bu betik yalnız GALYA_TEST'te çalışır.`);
     process.exit(1);
@@ -207,6 +145,9 @@ async function testVeritabaniniHazirla(kaynakVT, kaynakFirma, kaynakDonem) {
 
   await panel.kur();
   await testTemizle();
+  for (const tablo of ['Bill', 'BillHeader', 'Payment', 'DirectTransaction']) {
+    await require('./test-ortam').kopyala(sql, gercekAyar.sefimVeritabani, tablo, tablo);
+  }
 
   // Kaynak (okuma) tarafı gerçek Vega kurulumudur; şema ve kartlar oradan
   // kopyalanıyor. Yazma yine yalnız GALYA_TEST'e gidiyor.
@@ -344,12 +285,46 @@ async function testVeritabaniniHazirla(kaynakVT, kaynakFirma, kaynakDonem) {
     }
     if (ikinciGecti) ok('İkinci aktarım reddedildi', false, 'İKİNCİ AKTARIM GEÇTİ');
 
+    console.log('\n== Aktarımdan sonraki üretim ==');
+    const gunluk = await uretim.aktarimSonrasi({ ...SECIM, aktarimId });
+    ok('Eksikler tek çıktılı, iş emirleri çok çıktılı', gunluk.eksikler.every((r)=>!r.isEmriGerekli) &&
+      gunluk.isEmirleri.length > 0 && gunluk.isEmirleri.every((r)=>r.ciktiSayisi>1));
+    ok('DANA ANTRIKOT iş emri gerekenler içinde', gunluk.isEmirleri.some((r)=>r.stokNo===371));
+    const emir = await uretim.isEmri({ ...SECIM, mamulStokNo:371 });
+    ok('İş emri 1 girdi 4 çıktı ile doluyor', emir.girdiler.length===1 && emir.ciktilar.length===4);
+    const u = await uretim.fireliUret({ ...SECIM, aktarimId, mamulStokNo:371, uretilenMiktar:18,
+      hammaddeler:[{stokNo:4568,miktar:25,fire:0}],
+      ciktilar:[{stokNo:371,miktar:18},{stokNo:4459,miktar:3},{stokNo:914,miktar:3},{stokNo:4569,miktar:1}],
+      kullanici:'test-aktarim-uretim' });
+    uretimIndler.add(u.uretimInd);
+    const bag = await uretim.aktarimSonrasi({ ...SECIM, aktarimId });
+    ok('Üretim aynı güne bağlandı ve günün kaydında görünüyor',bag.uretimler.some((r)=>r.uretimInd===u.uretimInd && r.fisNo===u.fisNo));
+    ok('Son 30 gün önerisi bu üretimi gösteriyor',bag.aliskanliklar.some((r)=>r.stokNo===371 && r.adet===1));
+    let engel = null;
+    try { await aktarim.geriAl({ ...SECIM, id:aktarimId },{kullanici:'test'}); }
+    catch(e) { engel=e; }
+    ok('Üretim dururken aktarım geri alınamıyor',engel && engel.kod==='ONCE_URETIM_GERI_AL');
+    ok('Reddedilen geri alma satış belgesini koruyor',await say('TBLSTKCIKBASLIK','IND=@i',{i:ind})===1);
+    const uf = bag.uretimler.find((r)=>r.uretimInd===u.uretimInd);
+    await uretim.geriAl({ ...SECIM,id:uf.id,kullanici:'test' });
+    uretimIndler.delete(u.uretimInd);
+    ok('Üretim geri alınınca günlük bağ kalktı',(await uretim.aktarimSonrasi({ ...SECIM,aktarimId })).uretimler.length===0);
+    ok('SHAREKET kalıntısı yok',await say('TBLSHAREKET','1=1')===0);
+    ok('Depo transfer kalıntısı yok',await say('TBLDEPOHARHAREKET','1=1')===0 && await say('TBLDEPOHARBASLIK','1=1')===0);
     console.log('\n== Geri alma ==');
     const geri = await aktarim.geriAl(
       Object.assign({}, SECIM, { id: aktarimId }),
       { kullanici: 'test-aktarim-yazma' }
     );
+    const geriAlinanAktarimId = aktarimId;
     aktarimId = null;
+    let kapaliGun = null;
+    try { await yazma.uretimFisiYaz({ ...SECIM,aktarimId:geriAlinanAktarimId,mamulStokNo:371,miktar:1,
+      bilesenler:[{stokNo:4568,miktar:1}],ciktilar:[{stokNo:371,miktar:1}] }); } catch(e) { kapaliGun=e; }
+    ok('Geri alınmış aktarıma yeni üretim bağlanamıyor',kapaliGun && kapaliGun.kod==='AKTARIM_UYGUN_DEGIL');
+    for (const tablo of require('./uretim-sinama-verisi').BELGELER) {
+      ok('Tam geri alma kalıntı denetimi: '+tablo,await say(tablo,'1=1')===0);
+    }
     ok('Geri alma çalıştı', geri.tamam === true, `${geri.silinenSatir} satır silindi`);
 
     ok('Stok çıkış başlığı silindi',
@@ -382,6 +357,9 @@ async function testVeritabaniniHazirla(kaynakVT, kaynakFirma, kaynakDonem) {
     ok('Gün yeniden aday', !tekrar.zatenAktarildi);
   } finally {
     // Yarım kalmışsa geri al, sonra Şefim işaretlerini eski hâline döndür.
+    for (const uretimInd of uretimIndler) {
+      await yazma.uretimFisiGeriAl({ ...SECIM,uretimInd }).catch((e)=>console.error('Üretim temizliği: '+e.message));
+    }
     if (aktarimId) {
       await aktarim
         .geriAl(Object.assign({}, SECIM, { id: aktarimId }), { kullanici: 'test-temizlik' })
@@ -389,7 +367,7 @@ async function testVeritabaniniHazirla(kaynakVT, kaynakFirma, kaynakDonem) {
     }
     const p = ayarOku().panelVeritabani;
     await sql.calistir(
-      `DELETE FROM [${p}].dbo.SefimAktarim WHERE Firma = 'F0103' AND Donem = 'D0015'`
+      `DELETE FROM [${p}].dbo.SefimAktarim WHERE Firma = 'F0102' AND Donem = 'D0002'`
     ).catch(() => {});
     await testTemizle().catch(() => {});
     await sefimIsaretleriniGeriYaz().catch((e) =>
@@ -406,12 +384,3 @@ async function testVeritabaniniHazirla(kaynakVT, kaynakFirma, kaynakDonem) {
   await sefimIsaretleriniGeriYaz().catch(() => {});
   process.exit(1);
 });
-
-// Şefim işaretleri, aktarım onları değiştirmeden önce saklanmalı. aktar()
-// içinden çağrılan yazma fonksiyonunu sarmalayarak yakalıyoruz.
-const yazma = require(path.join(kok, 'db', 'yazma'));
-const asilIsaretle = yazma.sefimSatirlariIsaretle;
-yazma.sefimSatirlariIsaretle = async function (billIdler, deger) {
-  await sefimIsaretleriniSakla((Array.isArray(billIdler) ? billIdler : []).map(Number).filter(Boolean));
-  return asilIsaretle.call(this, billIdler, deger);
-};

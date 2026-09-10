@@ -27,7 +27,8 @@ fs.writeFileSync(
   JSON.stringify(
     Object.assign({}, gercek, {
       vegaVeritabani: 'GALYA_TEST',
-      panelVeritabani: 'GALYA_PANEL',
+      belgeOneki: 'GP',
+      panelVeritabani: 'GALYA_TEST',
       varsayilanFirma: 'F0103',
       varsayilanDonem: 'D0015',
       varsayilanDepo: 1,

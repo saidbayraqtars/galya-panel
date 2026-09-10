@@ -1467,7 +1467,7 @@ ekranlar.gunlukAktarim = async function (parametre) {
     await aktarimGunuCiz(parametre.tarih);
     // Aktarım biter bitmez "şimdi neyi üretmeliyiz" listesi. Aktarımdan önce
     // gösterilmiyor: stok henüz düşmediği için liste yanıltıcı olurdu.
-    if (parametre.uretimGoster) await uretilecekleriCiz();
+    await uretilecekleriCiz({ tarih: parametre.tarih });
   }
 };
 
@@ -1726,52 +1726,7 @@ async function aktarimGeriAl(kayit) {
 // geçen mamuller üretiliyor. Ayrı bir hesap değil — Üretim ekranındaki
 // "sıfıra çekme adayları" listesinin aynısı; aktarımdan hemen sonra burada
 // görünüyor ki kullanıcı ekran değiştirmek zorunda kalmasın.
-async function uretilecekleriCiz() {
-  if (!yetkiVar('uretim')) return;
-  let liste;
-  try {
-    liste = await cagir('aktarim:uretilecekler');
-  } catch (e) {
-    return; // üretim yetkisi yoksa ya da okunamıyorsa bölüm hiç çizilmiyor
-  }
-  const receteli = liste.filter((x) => Number(x.receteNo));
-
-  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: 'Aktarımdan sonra üretilecekler' }));
-  if (!receteli.length) {
-    icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-      'Reçetesi olup eksiye düşen mamul yok. Üretilecek bir şey görünmüyor.'
-    ]));
-    return;
-  }
-
-  icerik.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
-    `${receteli.length} mamulün stoğu eksiye düştü. Üretim fişi kesilince ` +
-    'reçetedeki hammaddeler düşer, mamul stoğu sıfıra çıkar. Fişi Üretim ' +
-    'ekranından kesin — orada tek tek ya da toplu seçebiliyorsunuz.'
-  ]));
-
-  icerik.appendChild(el('div', { sinif: 'form-satir', style: 'margin:8px 0' }, [
-    el('button', {
-      sinif: 'dugme-ana',
-      metin: 'Üretim ekranını aç',
-      tikla: () => ekranAc('uretim')
-    })
-  ]));
-
-  icerik.appendChild(tabloYap(
-    ['Mamul', 'Sınıf', 'Kalan', 'Üretilecek', 'Birim', 'Reçete satırı'],
-    receteli,
-    (r) => el('tr', null, [
-      hucre(r.ad),
-      hucre(r.sinif),
-      hucre(miktarYaz(r.kalan), 'sag'),
-      hucre(miktarYaz(r.eksik), 'sag'),
-      hucre(r.birim),
-      hucre(sayiYaz(r.receteSatiri), 'sag')
-    ]),
-    50
-  ));
-}
+// Günlük üretim bölümü ui/aktarim-uretim.js içindedir.
 
 ekranlar.aktarim = async function () {
   const [d, liste] = await Promise.all([
@@ -2783,7 +2738,8 @@ ekranlar.recete = async function () {
       ['Mamul', 'Satır', ''],
       kayitlar,
       (m) => el('tr', null, [
-        hucre(m.mamulAdi || ('Reçete ' + m.receteNo)),
+        el('td', null, [el('span', { metin: m.mamulAdi || ('Reçete ' + m.receteNo) }),
+          m.pasif ? el('span', { sinif: 'etiket gri', metin: 'Pasif' }) : null]),
         hucre(sayiYaz(m.satirSayisi), 'sayi'),
         el('td', null, [
           el('button', {
@@ -2803,13 +2759,13 @@ ekranlar.recete = async function () {
       ])
     ));
   }
-  ciz(mamuller.slice(0, 100));
+  ciz(mamuller);
   arama.addEventListener('input', () => {
     const t = arama.value.trim().toLocaleLowerCase('tr');
     const suz = t
       ? mamuller.filter((m) => (m.mamulAdi || '').toLocaleLowerCase('tr').includes(t))
       : mamuller;
-    ciz(suz.slice(0, 100));
+    ciz(suz);
   });
 
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [arama]));
@@ -4424,7 +4380,7 @@ ekranlar.uretim = async function (parametre) {
     serit.appendChild(el('button', {
       sinif: 'suzgec' + (k.anahtar === kip ? ' etkin' : ''),
       title: k.not,
-      tikla: () => ekranAc('uretim', { kip: k.anahtar })
+      tikla: () => ekranAc('uretim', { ...p, kip: k.anahtar })
     }, [el('span', { sinif: 'suzgec-ad', metin: k.ad })]));
   }
   icerik.appendChild(serit);
@@ -4438,7 +4394,7 @@ ekranlar.uretim = async function (parametre) {
   await yedekUyarisiCiz();
 
   if (kip === 'sifirla') await uretimSifirlamaBolumu(p);
-  else await uretimFireliBolumu();
+  else await uretimFireliBolumu(p);
 
   await uretimGecmisiBolumu();
 };
@@ -4587,11 +4543,14 @@ async function uretimSifirlamaBolumu(p) {
         ]),
         hucre(sayiYaz(a.kalan, 2), 'sayi eksi'),
         a.uretilemez
-          ? hucre('Sıfıra çekilemez', 'eksi')
+          ? hucre(a.isEmriGerekli ? 'İş emri gerekli' : 'Sıfıra çekilemez', 'eksi')
           : hucre(miktarYaz(a.uretilecek) + ' ' + (a.birim || ''), 'sayi'),
         hucre(sayiYaz(a.receteSatiri), 'sayi'),
         el('td', null, [
-          a.uretilemez
+          a.isEmriGerekli
+            ? el('button', { sinif: 'dugme-kucuk', metin: 'İş emri aç', disabled: !durum.yazmaAcik,
+                tikla: () => ekranAc('uretim', { ...p, kip: 'fireli', mamulStokNo: a.stokNo, oneriMiktar: a.eksik }) })
+            : a.uretilemez
             ? el('span', { sinif: 'alt-not', metin: 'Reçete kendini tüketiyor, düzeltin' })
             : el('button', {
                 sinif: 'dugme-kucuk',
@@ -4652,6 +4611,7 @@ async function uretimSifirlamaBolumu(p) {
       topluDugme.disabled = true;
       topluDugme.textContent = 'Üretiliyor…';
       const s = await cagir('uretim:hepsiniSifirla', {
+        aktarimId: p.aktarimId,
         stokNolar: secilenler.map((a) => Number(a.stokNo))
       });
       bildir(
@@ -4697,7 +4657,7 @@ async function uretimSifirlamaBolumu(p) {
     });
     if (!onay.veri || !onay.veri.onay) return;
     try {
-      const s = await cagir('uretim:sifiraKadar', { stokNo: aday.stokNo });
+      const s = await cagir('uretim:sifiraKadar', { stokNo: aday.stokNo, aktarimId: p.aktarimId });
       bildir(
         `${miktarYaz(s.uretilenMiktar)} ${aday.birim || ''} ${s.mamulAdi} üretildi (fiş ${s.fisNo}).`,
         'iyi'
@@ -4757,8 +4717,13 @@ async function uretimSifirlamaBolumu(p) {
 // Baştaki sürümde her `input` olayında tablo baştan çiziliyordu: miktar kutusu
 // DOM'dan söküldüğü için ODAK KAYBOLUYOR ve ilk rakamdan sonrasını yazmak
 // mümkün olmuyordu.
-async function uretimFireliBolumu() {
+async function uretimFireliBolumu(p = {}) {
   const cariler = await cagir('zayi:cariler').catch(() => []);
+  const depolar = await cagir('uretim:depolar').catch(() => []);
+  const depoKutu = el('select', { id: 'uretimDeposu' }, depolar.map((d) => el('option', { value: String(d.no), metin: d.ad || d.kod })));
+  depoKutu.value = String(durum.depo || 1);
+  if (!depoKutu.value && depolar.length) depoKutu.value = String(depolar[0].no);
+  const depoUyari = el('div', { sinif: 'aciklama-kutu uyari' });
 
   let mamul = null;        // uretim:isEmri'den gelen mamul kartı
   let isEmriVerisi = null; // { receteNo, girdiler, ciktilar, oranToplami }
@@ -4770,6 +4735,7 @@ async function uretimFireliBolumu() {
   const receteYazi = el('div', { sinif: 'alt-not', metin: '' });
   const girdiKap = el('div');
   const ciktiKap = el('div');
+  const pozKap = el('div');
   const ciktiUyari = el('div', { sinif: 'aciklama-kutu uyari' });
   const ozetYazi = el('div', { sinif: 'aciklama-kutu' });
 
@@ -4966,6 +4932,7 @@ async function uretimFireliBolumu() {
       const hucreler = [
         el('td', null, [
           el('div', { sinif: 'ad-satir', metin: g.urun.ad }),
+          g.urun.pasif ? el('span', { sinif: 'etiket gri', metin: 'Pasif kart' }) : null,
           el('div', { sinif: 'alt-not', metin:
             (g.urun.kod && g.urun.kod !== g.urun.ad ? g.urun.kod + ' · ' : '') +
             'kalan ' + miktarYaz(g.urun.kalan) + ' ' + (g.urun.birim || '') })
@@ -5044,10 +5011,15 @@ async function uretimFireliBolumu() {
           sinif: 'etiket ' + (c.anaMamul ? 'mavi' : 'gri'),
           metin: c.anaMamul ? 'Ana mamul' : 'Yan mamul'
         })]),
+        // Kartın ADI ile KODU çoğu kartta farklı: 371 numaralı kartın adı
+        // "DANA ANTRIKOT KG", kodu "DANA ANTRIKOT". Vega çıktı satırında KODU
+        // gösteriyor, panel ADI; ikisi yan yana durunca "başka bir karta mı
+        // yazıyor?" diye okunuyordu. Alt satır artık kodu olduğunu söylüyor.
         el('td', null, [
           el('div', { sinif: 'ad-satir', metin: c.stok.ad }),
+          c.stok.pasif ? el('span', { sinif: 'etiket gri', metin: 'Pasif kart — çıktı' }) : null,
           el('div', { sinif: 'alt-not', metin:
-            (c.stok.kod && c.stok.kod !== c.stok.ad ? c.stok.kod + ' · ' : '') +
+            (c.stok.kod && c.stok.kod !== c.stok.ad ? 'kod: ' + c.stok.kod + ' · ' : '') +
             (c.stok.birim || '') })
         ]),
         el('td', { sinif: 'sayi' }, [c.miktarKutu]),
@@ -5082,9 +5054,72 @@ async function uretimFireliBolumu() {
     ]));
   }
 
+  // --- 4. Pozisyonlar: üretim nerede başlıyor, nerede bitiyor ----------------
+  //
+  // Vega'nın İş Emri ekranındaki üçüncü sekme. Salt okunur: satırlar reçeteden
+  // (TBLURERECETEPOZ) geliyor, kullanıcı burada bir şey değiştirmiyor —
+  // Vega'da da pozisyon tanımı reçetenin işidir.
+  //
+  // Ekranda durmasının sebebi: FİŞİN DEPO HAREKETLERİNİ BU SATIRLAR BELİRLİYOR.
+  // DANA ANTRIKOT reçetesinde 1. adım BAŞLA / üretim yeri MUTFAK / depo MUTFAK,
+  // 2. adım BİTİR / üretim yeri MERKEZ / depo MERKEZ. Yani hammadde mamul
+  // deposundan üretim deposuna çıkıyor, mamul geri dönüyor ve her adım için
+  // birer depo hareket fişi (Z…) kesiliyor. Müşterinin birden fazla deposu /
+  // şubesi varsa bunu yazmadan ÖNCE görmesi gerekiyor.
+  //
+  // ÜRETİM YERİ ile DEPO aynı numara değildir: 4516'nın BİTİR adımında üretim
+  // yeri 102 (kodu MERKEZ) ama depo 1 (MERKEZ); bu kurulumda depo 102
+  // SHERATON'dur. Tablo ikisini ayrı sütunda gösteriyor.
+  function pozTablosunuKur() {
+    bosalt(pozKap);
+
+    const pozlar = (isEmriVerisi && isEmriVerisi.pozlar) || [];
+    if (!pozlar.length) {
+      pozKap.appendChild(el('div', { sinif: 'aciklama-kutu' }, [
+        mamul
+          ? 'Bu reçetede pozisyon tanımlı değil. Üretim, yukarıda seçilen ' +
+            'depoda başlayıp aynı depoda biter; hammadde için ' +
+            'depolar arası çıkış/giriş fişi yine kesilir.'
+          : 'Üretilecek ürünü seçin.'
+      ]));
+      return;
+    }
+
+    pozKap.appendChild(el('div', { sinif: 'tablo-sarmal' }, [
+      el('table', null, [
+        el('thead', null, [el('tr', null,
+          ['Sıra', 'Pozisyon', 'Üretim yeri', 'Depo'].map((b) => el('th', { metin: b })))]),
+        el('tbody', null, pozlar.map((p) => el('tr', null, [
+          hucre(sayiYaz(p.sira), 'sayi'),
+          hucre(p.kod || p.aciklama || '—'),
+          hucre((p.yerKodu || '—') + (p.yerNo ? ' (' + p.yerNo + ')' : '')),
+          hucre((p.depoKodu || '—') + (p.depoNo ? ' (' + p.depoNo + ')' : ''))
+        ])))
+      ])
+    ]));
+
+    // Depolar arka ucun seçtiği depolardır (db/uretim-depo.js → depoSecimi).
+    // BİTİR her reçetede 2. sırada değil; sıraya bakıp kendimiz bulsaydık
+    // 4481 / 4529'da yanlış depoyu yazardık.
+    const depoAdi = (no) => {
+      const pz = pozlar.find((x) => Number(x.depoNo) === Number(no));
+      const d = depolar.find((x) => Number(x.no) === Number(no));
+      return (pz && pz.depoKodu) || (d && (d.kod || d.ad)) || String(no);
+    };
+    const basla = { depoKodu: depoAdi(isEmriVerisi.uretimDeposu), depoNo: isEmriVerisi.uretimDeposu };
+    const bitir = { depoKodu: depoAdi(isEmriVerisi.mamulDeposu), depoNo: isEmriVerisi.mamulDeposu };
+    pozKap.appendChild(el('div', { sinif: 'alt-not', metin:
+      'Hammadde ' + (bitir.depoKodu || bitir.depoNo) + ' deposundan ' +
+      (basla.depoKodu || basla.depoNo) + ' deposuna çıkacak, mamul ' +
+      (bitir.depoKodu || bitir.depoNo) + ' deposuna girecek. Bunun için iki depo ' +
+      'hareket fişi, bir üretim çıkış (97) ve bir üretim giriş (96) fişi kesilir.'
+    }));
+  }
+
   function tablolariKur() {
     girdiTablosunuKur();
     ciktiTablosunuKur();
+    pozTablosunuKur();
     hesaplariTazele();
   }
 
@@ -5132,16 +5167,21 @@ async function uretimFireliBolumu() {
   // Mamul seçilince reçete okunur: girdi ve çıktı satırları Vega'nın İş Emri
   // ekranındaki gibi kendiliğinden dolar. Reçete yoksa çıktı tablosunda tek
   // satır (mamulün kendisi, %100) kalır ve eski reçetesiz akış sürer.
-  async function mamulSec(u) {
+  async function mamulSec(u, oneriMiktar) {
     katmanKapat();
     let cevap = null;
     try {
-      cevap = await cagir('uretim:isEmri', { mamulStokNo: u.stokNo });
+      cevap = await cagir('uretim:isEmri', { mamulStokNo: u.stokNo, depo: Number(depoKutu.value) });
     } catch (e) {
       hataGoster(e);
     }
 
+    if (!cevap) return;
     isEmriVerisi = cevap;
+    depoKutu.disabled = !!cevap.receteDeposu;
+    depoUyari.textContent = cevap.depoUyarisi || '';
+    depoUyari.style.display = cevap.depoUyarisi ? '' : 'none';
+    if (depoKutu.disabled) depoKutu.value = String(cevap.mamulDeposu);
     mamul = (cevap && cevap.mamul) || u;
     mamulYazi.textContent = mamul.ad + (mamul.birim ? ' (' + mamul.birim + ')' : '');
 
@@ -5170,6 +5210,7 @@ async function uretimFireliBolumu() {
       ciktilar.unshift(ciktiSatiriYap(mamul, 0, ciktilar.length ? 0 : 100, true));
     }
 
+    if (Number(oneriMiktar) > 0) anaCikti().miktarKutu.value = String(oneriMiktar);
     tablolariKur();
   }
 
@@ -5259,7 +5300,7 @@ async function uretimFireliBolumu() {
         if (m < 0) { bildir('"' + c.stok.ad + '" miktarı eksi olamaz.', 'kotu'); return; }
         if (m > 0) dolu.push({ stokNo: c.stok.stokNo, miktar: m });
       }
-      if (dolu.length > 1) gonderilecek = dolu;
+      gonderilecek = dolu;
     }
     const cokYazilacak = !!gonderilecek;
 
@@ -5307,6 +5348,8 @@ async function uretimFireliBolumu() {
       uretDugme.disabled = true;
       const s = await cagir('uretim:fireli', {
         mamulStokNo: mamul.stokNo,
+        aktarimId: p.aktarimId,
+        depo: Number(depoKutu.value),
         uretilenMiktar: cikan,
         hammaddeler,
         ciktilar: gonderilecek,
@@ -5326,7 +5369,8 @@ async function uretimFireliBolumu() {
         '(fiş ' + s.fisNo + ').',
         'iyi'
       );
-      ekranAc('uretim', { kip: 'fireli' });
+      if (p.aktarimId) await ekranAc('gunlukAktarim', { tarih: p.aktarimTarihi, uretimGoster: true });
+      else await ekranAc('uretim', { kip: 'fireli' });
     } catch (e) {
       hataGoster(e);
       uretDugme.disabled = false;
@@ -5341,6 +5385,10 @@ async function uretimFireliBolumu() {
     'seçersiniz ve kalan miktar fire olarak zayi fişine yazılır.'
   ]));
 
+  if (p.aktarimId) icerik.appendChild(el('button', { sinif: 'dugme-sade', metin: tarihYaz(p.aktarimTarihi) + ' aktarımına dön',
+    tikla: () => ekranAc('gunlukAktarim', { tarih: p.aktarimTarihi, uretimGoster: true }) }));
+  icerik.appendChild(el('div', { sinif: 'form-satir' }, [el('label', { metin: 'Mamul deposu' }), depoKutu]));
+  icerik.appendChild(depoUyari);
   icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '1. Ne üretilecek' }));
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [
     el('div', { style: 'flex:1' }, [
@@ -5355,19 +5403,27 @@ async function uretimFireliBolumu() {
     ])
   ]));
 
-  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '2. Neyden üretilecek' }));
+  // Bölüm adları Vega'nın İş Emri ekranındaki sekme adlarının aynısı:
+  // "Üretim Girdileri", "Üretim Çıktıları", "Pozisyonlar". Panel bunlara
+  // kendi adlarını takıyordu ("Neyden üretilecek", "Bu üretimden ne çıktı");
+  // aynı işi Vega'da yapan kullanıcı ekranı tanıyamıyordu.
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '2. Üretim Girdileri' }));
   icerik.appendChild(girdiKap);
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [hammaddeDugme]));
 
-  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '3. Bu üretimden ne çıktı' }));
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '3. Üretim Çıktıları' }));
   icerik.appendChild(ciktiKap);
   icerik.appendChild(ciktiUyari);
+
+  icerik.appendChild(el('div', { sinif: 'bolum-basligi', metin: '4. Pozisyonlar' }));
+  icerik.appendChild(pozKap);
 
   icerik.appendChild(ozetYazi);
   icerik.appendChild(el('div', { sinif: 'form-satir' }, [ayrinti]));
   icerik.appendChild(el('div', { sinif: 'form-satir', style: 'margin-top:16px' }, [uretDugme]));
 
   tablolariKur();
+  if (p.mamulStokNo) await mamulSec({ stokNo: Number(p.mamulStokNo) }, p.oneriMiktar);
 }
 
 // Üretim ekranının ürün seçicisi. Reçete şartı yok, bütün aktif kartlar
@@ -5381,8 +5437,12 @@ function uretimUrunSecPenceresi(baslik, secildi) {
   async function ara() {
     const liste = await cagir('uretim:urunAra', { arama: arama.value.trim() }).catch(() => []);
     bosalt(sonuc);
+    // "Reçete" sütunu: bu liste reçete şartı aramıyor (reçetesiz manuel üretim
+    // de buradan seçiliyor), ama reçetesi olmayan kartın — içkilerin çoğu,
+    // TUBORG GOLD gibi — listede durması "panel bunu reçeteli sanıyor" diye
+    // okunuyordu. Artık her satırda reçetesi olup olmadığı yazıyor.
     sonuc.appendChild(tabloYap(
-      ['Ürün', 'Sınıf', 'Kalan', ''],
+      ['Ürün', 'Sınıf', 'Reçete', 'Kalan', ''],
       liste,
       (u) => el('tr', null, [
         el('td', null, [
@@ -5390,6 +5450,12 @@ function uretimUrunSecPenceresi(baslik, secildi) {
           u.kod ? el('div', { sinif: 'alt-not', metin: u.kod }) : null
         ]),
         hucre(u.sinif || '—'),
+        el('td', null, [el('span', {
+          sinif: 'etiket ' + (u.receteNo ? 'mavi' : 'gri'),
+          metin: u.receteNo
+            ? 'Reçeteli · ' + sayiYaz(u.bilesenSayisi) + ' bileşen'
+            : 'Reçetesiz'
+        })]),
         hucre(sayiYaz(u.kalan, 2), 'sayi ' + (u.kalan < 0 ? 'eksi' : '')),
         el('td', null, [el('button', {
           sinif: 'dugme-kucuk',

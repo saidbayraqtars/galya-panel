@@ -69,7 +69,7 @@ function pencereAc() {
 app.whenReady().then(() => {
   pencereAc();
   guncelleme.baslat(pencere);
-  agErisiminiAc();
+  agErisimiAc();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) pencereAc();
   });
@@ -507,6 +507,7 @@ kayitEt('maliyet:mamul', async (g) => maliyet.mamulMaliyeti(g));
 // 22.08.2026'da kaldırılmıştı, yerine bu sıfıra kadar üretim geldi.
 kayitEt('uretim:sifirAdaylari', async (g) => uretim.sifirAdaylari(g));
 kayitEt('uretim:urunAra', async (g) => uretim.urunAra(g));
+kayitEt('uretim:depolar', async (g) => uretim.depolar(g));
 kayitEt('uretim:receteCiktilari', async (g) => uretim.receteCiktilari(g));
 kayitEt('uretim:isEmri', async (g) => uretim.isEmri(g));
 kayitEt('uretim:sifiraKadar', async (g, k) =>
@@ -677,7 +678,7 @@ kayitEt('aktarim:kilitTemizle', async (g, k) => aktarim.kilitTemizle(g, k));
 // Aktarımdan sonra "şimdi neyi üretmeliyiz" listesi. Üretim ekranındaki
 // sıfıra çekme adaylarının aynısı; aktarım ekranından da görünsün diye ayrı
 // bir kanal değil, aynı iş çağrılıyor.
-kayitEt('aktarim:uretilecekler', async (g) => uretim.sifirAdaylari(g));
+kayitEt('aktarim:uretilecekler', async (g) => uretim.aktarimSonrasi(g));
 
 // Ağ erişimi. Sunucunun kendisi kanal yönlendiricisini kullanıyor; kanal
 // listesi ve yetki süzgeci tek yerde kalsın diye dışarıdan veriliyor.
