@@ -135,15 +135,12 @@ async function tutanakBelgesiKaydet(anaPencere, tutanak, kim) {
 }
 
 // Doğrudan yazıcıya gönderir; kullanıcı yazıcı seçme penceresini görür.
-async function tutanakBelgesiYazdir(tutanak, kim) {
-  if (!tutanak || !tutanak.id) throw new Error('Tutanak bilgisi eksik.');
-
+async function htmlYazdir(html) {
   const gizli = new BrowserWindow({
     show: false,
     webPreferences: { javascript: false }
   });
   try {
-    const html = disaAktar.tutanakBelgeHtml(tutanak);
     await gizli.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     await new Promise((coz, ret) => {
       gizli.webContents.print(
@@ -161,19 +158,45 @@ async function tutanakBelgesiYazdir(tutanak, kim) {
   } finally {
     gizli.destroy();
   }
+}
 
+// Günlük yazılamazsa belge yine de kullanıcıda; işlem bozulmuyor.
+async function belgeGunlugu(kategori, islem, ayrinti, kim) {
   try {
-    await panel.kayit(
-      'Tutanak',
-      'Tutanak belgesi yazdırıldı',
-      { tutanakId: tutanak.id },
-      kim && kim.kullanici,
-      kim && kim.bilgisayar
-    );
+    await panel.kayit(kategori, islem, ayrinti, kim && kim.kullanici, kim && kim.bilgisayar);
   } catch (e) {
     // yoksay
   }
+}
 
+async function tutanakBelgesiYazdir(tutanak, kim) {
+  if (!tutanak || !tutanak.id) throw new Error('Tutanak bilgisi eksik.');
+  await htmlYazdir(disaAktar.tutanakBelgeHtml(tutanak));
+  await belgeGunlugu('Tutanak', 'Tutanak belgesi yazdırıldı', { tutanakId: tutanak.id }, kim);
+  return { tamam: true };
+}
+
+// --- Zayi belgesi ----------------------------------------------------------
+//
+// Zayi eden kişiye imzalatılacak çıktı (12.09.2026, müşteri isteği). Sayfa
+// düzeni db/disaaktar.js → zayiBelgeHtml(); iskelet tutanakla aynı.
+
+async function zayiBelgesiKaydet(anaPencere, zayi, kim) {
+  if (!zayi || !zayi.id) throw new Error('Zayi bilgisi eksik.');
+
+  const baslik = 'Zayi-' + (zayi.vegaBelgeNo || String(zayi.id).padStart(6, '0'));
+  const yol = await kaydetYeriSor(anaPencere, disaAktar.dosyaAdiUret(baslik, 'pdf'), 'pdf', 'PDF dosyası');
+  if (!yol) return { iptal: true };
+
+  await belgeyiPdfeBas(disaAktar.zayiBelgeHtml(zayi), yol);
+  await belgeGunlugu('Zayi', 'Zayi belgesi PDF olarak kaydedildi', { zayiId: zayi.id, dosya: yol }, kim);
+  return { yol, tur: 'PDF' };
+}
+
+async function zayiBelgesiYazdir(zayi, kim) {
+  if (!zayi || !zayi.id) throw new Error('Zayi bilgisi eksik.');
+  await htmlYazdir(disaAktar.zayiBelgeHtml(zayi));
+  await belgeGunlugu('Zayi', 'Zayi belgesi yazdırıldı', { zayiId: zayi.id }, kim);
   return { tamam: true };
 }
 
@@ -201,5 +224,7 @@ module.exports = {
   pdfKaydet,
   tutanakBelgesiKaydet,
   tutanakBelgesiYazdir,
+  zayiBelgesiKaydet,
+  zayiBelgesiYazdir,
   dosyaAc
 };

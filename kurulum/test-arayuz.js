@@ -87,7 +87,10 @@ app.whenReady().then(async () => {
       preload: path.join(kok, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // Görüntü istenirse ekran dışında çiz: gizli pencere kendini yeniden
+      // boyamıyor, görüntüde eski "Yükleniyor…" karesi kalıyordu.
+      offscreen: !!process.env.GALYA_ARAYUZ_GORUNTU
     }
   });
 
@@ -168,6 +171,55 @@ app.whenReady().then(async () => {
     } catch (e) {
       kontrol(etiket, false, e.message);
     }
+  }
+
+  console.log('\n== Günlük aktarım: seçilen gün ==');
+  // "İncele ve aktar"a basınca günün dökümü ve "Vega'ya aktar" düğmesi
+  // sayfanın başında, kaydırmadan görünmeli. 1.9.2'de 60 günlük listenin
+  // altına düşüyordu; kullanıcı düğmenin çalışmadığını sandı (12.09.2026).
+  try {
+    const g = await pencere.webContents.executeJavaScript(`
+      (async () => {
+        window.__hatalar = [];
+        const gunler = await cagir('aktarim:gunler', { gun: 60 });
+        const eksik = gunler.filter((x) => x.durum === 'eksik');
+        if (!eksik.length) return { yok: true };
+        const tarih = gunAnahtari(eksik[eksik.length - 1].isGunu);
+        window.scrollTo(0, 0);
+        await ekranAc('gunlukAktarim', { tarih });
+        const basliklar = [...document.querySelectorAll('#icerik .bolum-basligi')];
+        const gunBasligi = basliklar.find((b) => b.textContent.includes('aktarılacaklar'));
+        const listeBasligi = basliklar.find((b) => b.textContent.trim() === 'Günler');
+        const aktarDugmesi = [...document.querySelectorAll('#icerik button')]
+          .find((d) => d.textContent.trim() === "Vega'ya aktar");
+        const once = (a, b) => !!(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING));
+        return {
+          tarih,
+          ustte: once(gunBasligi, listeBasligi),
+          gorunur: !!gunBasligi && gunBasligi.getBoundingClientRect().top < window.innerHeight,
+          dugmeUstte: once(aktarDugmesi, listeBasligi),
+          secili: document.querySelectorAll('#icerik .aktarim-gun.secili').length,
+          hatalar: window.__hatalar
+        };
+      })()
+    `);
+    if (g.yok) {
+      console.log('  BİLGİ aktarılmamış gün yok, denetim atlandı');
+    } else {
+      kontrol(`Döküm gün listesinin üstünde (${g.tarih})`, g.ustte);
+      kontrol('Döküm kaydırmadan görünüyor', g.gorunur);
+      kontrol("\"Vega'ya aktar\" düğmesi listenin üstünde", g.dugmeUstte);
+      kontrol('Seçilen gün listede işaretli', g.secili === 1, `${g.secili} satır işaretli`);
+      kontrol('Çizimde hata yok', !g.hatalar.length, g.hatalar.join(' | '));
+      // İstenirse ekranın görüntüsü: GALYA_ARAYUZ_GORUNTU=dosya.png
+      if (process.env.GALYA_ARAYUZ_GORUNTU) {
+        await bekle(800);
+        const resim = await pencere.webContents.capturePage();
+        require('fs').writeFileSync(process.env.GALYA_ARAYUZ_GORUNTU, resim.toPNG());
+      }
+    }
+  } catch (e) {
+    kontrol('Günlük aktarım: seçilen gün', false, e.message);
   }
 
   console.log('\n== Pencereler ==');

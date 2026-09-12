@@ -109,7 +109,13 @@ const KANAL_YETKILERI = {
   'zayi:sil': 'zayi',
   'zayi:vegayaYaz': 'zayi',
   'zayi:vegadanGeriAl': 'zayi',
+  'zayi:belgePdf': 'zayi',
+  'zayi:belgeYazdir': 'zayi',
 
+  // Zayiden üretim zayi fişini yalnız okuyor, yeni zayi kesmiyor.
+  'uretim:zayiListesi': 'uretim',
+  'uretim:zayiUretimi': 'uretim',
+  'uretim:zayidan': 'uretim',
   'uretim:sifirAdaylari': 'uretim',
   'uretim:urunAra': 'uretim',
   'uretim:depolar': 'uretim',

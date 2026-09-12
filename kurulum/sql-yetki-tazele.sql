@@ -40,6 +40,15 @@ ALTER ROLE db_datareader ADD MEMBER [galya_panel];
 PRINT 'sefim: okuma yetkisi verildi.';
 GO
 
+/* Otomatik kapanma (AUTO_CLOSE) yedekle birlikte gelir: Galya'nın sefim ve
+   VEGADB yedeklerinde AÇIK. Açıkken veritabanı her sorgudan sonra kapanıp
+   bir sonrakinde yeniden açılıyor; 12.09.2026'da sefim 8 saniyede 12 kez
+   açıldı, aktarım ekranı "Yükleniyor…"da kaldı. Veriye dokunmaz. */
+ALTER DATABASE [VEGADB] SET AUTO_CLOSE OFF;
+ALTER DATABASE [sefim] SET AUTO_CLOSE OFF;
+PRINT 'VEGADB, sefim: otomatik kapanma kapatıldı.';
+GO
+
 /* Panelin kendi veritabanı restore edilmez, ama tamlık olsun diye burada. */
 USE [GALYA_PANEL];
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'galya_panel')

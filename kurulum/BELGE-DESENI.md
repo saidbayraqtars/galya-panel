@@ -86,6 +86,24 @@ faturası (20), sayım (93/94) ve üretim fişinin `FISNO` alanı.
 devamıdır; onlar panelin öneki ile değil, `MAX + 1` ile üretilmeye devam
 eder. Bu belgeleri Vega'nın kendisi de otomatik olarak böyle numaralıyor.
 
+**Ortak sayaç (11.09.2026).** Panelin bütün belgeleri tek diziden numara
+alıyor: sayım, tutanak, zayi, alış faturası, üretim fişi (`FISNO`), cari
+fişi ve Şefim satış fişi. Eskiden sayaç tablo başınaydı (her tablonun
+kendi `MAX + 1`'i): sayım fişi de stok fişi de `GP0000001` alıyor, geri
+alınan belgenin numarası da bir sonrakine yeniden veriliyordu.
+`yazma.panelBelgeNo` şöyle çalışıyor:
+
+- `sp_getapplock` (firma + dönem + önek, işlem bitene kadar): iki panel
+  aynı anda numara alamaz.
+- Sekiz tablodaki (`GP_BELGE_TABLOLARI`) önekli numaraların en büyüğü ile
+  `GALYA_PANEL.dbo.BelgeSayac`'taki son numaranın büyüğü + 1. Önekten
+  sonrası rakam olmayan elle yazılmış değerler (`GPX12`) sayılmaz.
+- Sayaç belgeyle aynı işlemde güncellenir: belge yazılamazsa numara
+  harcanmaz, geri alınan belgenin numarası ise bir daha verilmez.
+
+Canlıda 11.09'dan önce kesilmiş, farklı türlerde aynı numarayı taşıyan
+belgeler duruyor; yeniden numaralamak müşterinin kararı.
+
 Önek kurulumda bir kez seçilir; sonradan değiştirmek numara dizisini kırar
 (yeni önek 1'den başlar). Bu yüzden Ayarlar ekranında değil, yalnız
 `ayarlar.json` içinde.
@@ -632,13 +650,13 @@ TBLSAYIM{GIRIS|CIKIS}BASLIK      IND (IDENTITY)  ← belge kimliği
 
 ### Belge numarası
 
-`Z` öneki + 7 hane. Sayaç **her tabloda ayrı** yürüyor: aynı sayımda giriş
-fişi `Z0000048` iken çıkış fişi `Z0000022` olabiliyor (48 giriş, 22 çıkış
-belgesi kesilmiş). `MAX(...) + 1` okuması `WITH (UPDLOCK, HOLDLOCK)` ile
-yapılıyor; aynı anda iki kullanıcı fiş keserse ikincisi bekler.
+Vega'nın kendi sayımları `Z` öneki + 7 hane alıyor ve sayaç **her tabloda
+ayrı** yürüyor: aynı sayımda giriş fişi `Z0000048` iken çıkış fişi
+`Z0000022` olabiliyor (48 giriş, 22 çıkış belgesi kesilmiş).
 
-Z serisi 103/104 otomatik belgelerinde de kullanılıyor ama onlar başka
-tablolarda durduğu için sayaçlar çakışmıyor.
+Panelin sayımı Z'yi kullanmıyor; panelin ortak dizisinden (`GP`, bkz.
+"Belge numarası: panelin kendi serisi olmalı") numara alıyor. Aynı sayımın
+giriş ve çıkış fişi art arda iki ayrı numara alır.
 
 ### Alan ayrıntıları
 
@@ -976,15 +994,20 @@ KDV      = stok kartının KDV grubundan (TBLKDVGRUPLARI)
 AFIYATI  = kartın MALIYET'i
 ```
 
-Başlıktaki `TUTAR` **günün tahsilatıdır** (nakit + kredi kartı), satır
-toplamı değil; ikisi arasındaki kuruş farkı `YUVARLAMA`'ya yazılır. Vega'nın
-kendi 11.08 belgesinde `ARATOPLAM 142.910,2397 / TUTAR 142.910,21 /
-YUVARLAMA −0,0299`.
+Başlıktaki `TUTAR` **belge tutarıdır: günün tahsilatı + ödenmiş
+adisyonlardaki indirim** (nakit + kart + yemek kartı + online), yani tam
+satır toplamı; indirim düşülmez, ŞEFSATIŞ carisinin borcu da budur. Kalan
+kuruş farkı `YUVARLAMA`'ya yazılır. Vega'nın kendi 11.08 belgesinde
+`ARATOPLAM 142.910,2397 / TUTAR 142.910,21 / YUVARLAMA −0,0299`; indirimli
+07.08'de TUTAR 147.470 = tahsilat 143.850 + indirim 3.620.
 
-> Panel bu farkı bir **emniyet ölçüsü** olarak kullanıyor: fark kuruş
-> mertebesini aşarsa (>1 TL ya da >%0,05) aktarım engelleniyor. Büyük bir
-> "yuvarlama" yuvarlama değildir — eşleşmeyen ya da "yoksay" işaretli bir
-> ürün belgeye girmemiş demektir.
+> Panel farkı bir **emniyet ölçüsü** olarak kullanıyor, ama yalnız belgeye
+> girmeyen satır için: eşleşmeyen ya da "yoksay" işaretli ürünlerin tutarı
+> eşiği (>1 TL ya da >%0,05) aşarsa aktarım engelleniyor. Tahsilat + indirim
+> ile satırlar arasında kalan fark (adisyon bu gün kapanıp başka gün
+> ödenmiş) yalnız uyarıdır: stok satıra göre düşer, tahsilat ödeme gününe
+> yazılır, o gün TUTAR satır toplamıdır. 12.09'a kadar indirim de engel
+> sayılıyordu ve indirimli her gün kilitleniyordu.
 
 ### Ürün → stok kartı eşleşmesi
 

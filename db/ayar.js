@@ -55,6 +55,9 @@ const VARSAYILAN = {
   sefimKasaCarisi: 'ŞEFİMKASA',
   // Aktarımın hangi depodan düşeceği. Boşsa varsayilanDepo kullanılır.
   sefimDepo: 0,
+  // Şefim hangi firmanın kasası? Satış yalnız bu firmaya aktarılır, ana
+  // ekranın aktarım kutusu da yalnız bu firmada çıkar. Boşsa varsayilanFirma.
+  sefimFirmasi: '',
 
   // --- Ağ erişimi (db/sunucu.js) -------------------------------------------
   //
@@ -72,7 +75,8 @@ const VARSAYILAN = {
 };
 
 // Ayar dosyası nerede duruyor?
-//   Kurulu programda : %APPDATA%\Galya Panel\ayarlar.json   (her bilgisayarın kendi ayarı)
+//   Kurulu programda : %APPDATA%\galya-panel\ayarlar.json   (her bilgisayarın kendi ayarı)
+//                      Klasör adı package.json'daki "name"den geliyor, productName'den değil.
 //   Geliştirmede     : proje kökündeki ayarlar.json
 // Kurulu programda dosya yoksa, kurulumla gelen ayarlar.ornek.json'dan kopyalanır.
 let yolOnbellek = null;

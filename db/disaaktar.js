@@ -373,42 +373,9 @@ function belgeMiktar(deger, birim) {
 
 const VARSAYILAN_IMZALAR = ['Düzenleyen', 'Depo Sorumlusu', 'Muhasebe', 'Onaylayan'];
 
-// t: {
-//   id, tarih, firmaAdi, firma, donem, depo, depoAdi, duzenleyen, sebep,
-//   dusenAd, dusenKod, dusenMiktar, dusenBirim, dusenMaliyet,
-//   artanAd, artanKod, artanMiktar, artanBirim, artanMaliyet,
-//   vegayaYazildi, vegaBelgeNo, imzalar
-// }
-function tutanakBelgeHtml(t) {
-  const imzalar = (Array.isArray(t.imzalar) && t.imzalar.length ? t.imzalar : VARSAYILAN_IMZALAR)
-    .slice(0, 4);
-
-  const dusenTutar = Number(t.dusenMiktar || 0) * Number(t.dusenMaliyet || 0);
-  const artanTutar = Number(t.artanMiktar || 0) * Number(t.artanMaliyet || 0);
-
-  const imzaHucreleri = imzalar
-    .map(
-      (ad) => `
-      <td class="imza-hucre">
-        <div class="imza-unvan">${xmlKacir(ad)}</div>
-        <div class="imza-satir">
-          <span class="imza-etiket">Adı Soyadı</span>
-          <span class="imza-cizgi"></span>
-        </div>
-        <div class="imza-satir">
-          <span class="imza-etiket">Tarih</span>
-          <span class="imza-cizgi"></span>
-        </div>
-        <div class="imza-alan"><span class="imza-etiket">İmza</span></div>
-      </td>`
-    )
-    .join('');
-
-  const vegaRozeti = t.vegayaYazildi
-    ? `<span class="rozet rozet-yesil">Vega'ya işlendi${t.vegaBelgeNo ? ' · ' + xmlKacir(t.vegaBelgeNo) : ''}</span>`
-    : '<span class="rozet rozet-gri">Vega\'ya işlenmedi</span>';
-
-  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
+// İmzalı A4 belgelerin (tutanak, zayi) ortak sayfa düzeni: üst başlık,
+// künye tablosu, gerekçe kutusu, beyan ve sayfa dibine yaslanan imzalar.
+const BELGE_TEMEL_CSS = `
     @page { size: A4 portrait; margin: 16mm 15mm; }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -433,6 +400,85 @@ function tutanakBelgeHtml(t) {
     .kunye td { padding: 5px 8px; border: 1px solid #dee2e6; }
     .kunye .etiket { background: #f1f3f5; color: #495057; width: 17%; font-weight: 600; }
 
+    .bolum-baslik {
+      font-size: 9px; font-weight: 700; color: #1c3d5a; letter-spacing: .8px;
+      text-transform: uppercase; margin: 0 0 5px;
+    }
+    .sebep {
+      border: 1px solid #dee2e6; padding: 9px 11px; min-height: 46px;
+      font-size: 11px; line-height: 1.5; margin-bottom: 14px;
+    }
+    .beyan {
+      background: #f8f9fa; border-left: 3px solid #1c3d5a;
+      padding: 9px 12px; font-size: 10px; line-height: 1.6;
+    }
+
+    .alt { margin-top: auto; padding-top: 16px; }
+    .imzalar { width: 100%; border-collapse: separate; border-spacing: 8px 0; }
+    .imza-hucre { width: 25%; border: 1px solid #ced4da; padding: 8px 10px 6px; vertical-align: top; }
+    .imza-unvan {
+      font-size: 10px; font-weight: 700; color: #1c3d5a; text-align: center;
+      padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid #e9ecef;
+    }
+    .imza-satir { display: flex; align-items: flex-end; gap: 5px; margin-bottom: 9px; }
+    .imza-etiket { font-size: 8px; color: #868e96; white-space: nowrap; }
+    .imza-cizgi { flex: 1; border-bottom: 1px dotted #adb5bd; height: 11px; }
+    .imza-alan { height: 42px; border-bottom: 1px solid #adb5bd; position: relative; }
+    .imza-alan .imza-etiket { position: absolute; bottom: 2px; left: 0; }
+
+    .dip {
+      margin-top: 10px; padding-top: 7px; border-top: 1px solid #e9ecef;
+      display: flex; justify-content: space-between; font-size: 8px; color: #adb5bd;
+    }
+    .rozet { display: inline-block; padding: 2px 7px; border-radius: 9px; font-size: 9px; font-weight: 600; }
+    .rozet-yesil { background: #d3f9d8; color: #2b8a3e; }
+    .rozet-gri { background: #f1f3f5; color: #868e96; }
+`;
+
+function imzaHucreleriHtml(imzalar) {
+  return imzalar
+    .map(
+      (ad) => `
+      <td class="imza-hucre">
+        <div class="imza-unvan">${xmlKacir(ad)}</div>
+        <div class="imza-satir">
+          <span class="imza-etiket">Adı Soyadı</span>
+          <span class="imza-cizgi"></span>
+        </div>
+        <div class="imza-satir">
+          <span class="imza-etiket">Tarih</span>
+          <span class="imza-cizgi"></span>
+        </div>
+        <div class="imza-alan"><span class="imza-etiket">İmza</span></div>
+      </td>`
+    )
+    .join('');
+}
+
+function vegaRozetiHtml(yazildi, belgeNo) {
+  return yazildi
+    ? `<span class="rozet rozet-yesil">Vega'ya işlendi${belgeNo ? ' · ' + xmlKacir(belgeNo) : ''}</span>`
+    : '<span class="rozet rozet-gri">Vega\'ya işlenmedi</span>';
+}
+
+// t: {
+//   id, tarih, firmaAdi, firma, donem, depo, depoAdi, duzenleyen, sebep,
+//   dusenAd, dusenKod, dusenMiktar, dusenBirim, dusenMaliyet,
+//   artanAd, artanKod, artanMiktar, artanBirim, artanMaliyet,
+//   vegayaYazildi, vegaBelgeNo, imzalar
+// }
+function tutanakBelgeHtml(t) {
+  const imzalar = (Array.isArray(t.imzalar) && t.imzalar.length ? t.imzalar : VARSAYILAN_IMZALAR)
+    .slice(0, 4);
+
+  const dusenTutar = Number(t.dusenMiktar || 0) * Number(t.dusenMaliyet || 0);
+  const artanTutar = Number(t.artanMiktar || 0) * Number(t.artanMaliyet || 0);
+
+  const imzaHucreleri = imzaHucreleriHtml(imzalar);
+  const vegaRozeti = vegaRozetiHtml(t.vegayaYazildi, t.vegaBelgeNo);
+
+  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
+    ${BELGE_TEMEL_CSS}
     .urunler { display: flex; gap: 10px; margin-bottom: 14px; }
     .urun { flex: 1; border: 1px solid #dee2e6; border-top-width: 3px; padding: 9px 11px; }
     .urun.dusen { border-top-color: #c92a2a; }
@@ -557,6 +603,111 @@ function tutanakBelgeHtml(t) {
   </body></html>`;
 }
 
+// --- Zayi belgesi ----------------------------------------------------------
+//
+// Zayi eden kişiye imzalatılan çıktı (12.09.2026, müşteri isteği). Tutanakla
+// aynı iskelet; ürünler tabloda. Maliyetli zayide birim maliyet ve tutar da
+// basılır (cariye borç yazılan tutar budur).
+
+const ZAYI_IMZALARI = ['Zayi Eden', 'Düzenleyen', 'Onaylayan'];
+
+// z: zayi.belgeVerisi() — Zayi kaydı + satirlar + firmaAdi, depoAdi
+function zayiBelgeHtml(z) {
+  const satirlar = Array.isArray(z.satirlar) ? z.satirlar : [];
+  const maliyetli = !!z.maliyetliMi;
+  const tutar = (s) => Number(s.miktar || 0) * Number(s.birimMaliyet || 0);
+  const toplam = satirlar.reduce((t, s) => t + tutar(s), 0);
+
+  const kalemler = satirlar
+    .map(
+      (s, i) => `
+      <tr>
+        <td class="sira">${i + 1}</td>
+        <td>${xmlKacir(s.stokAdi || '')}<div class="kod">${xmlKacir(s.stokKodu || '')}</div></td>
+        <td class="sayi">${xmlKacir(belgeMiktar(s.miktar, s.birim))}</td>
+        ${maliyetli ? `<td class="sayi">${xmlKacir(sayiBicimle(s.birimMaliyet, 'para'))} TL</td>
+        <td class="sayi">${xmlKacir(sayiBicimle(tutar(s), 'para'))} TL</td>` : ''}
+      </tr>`
+    )
+    .join('');
+
+  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><style>
+    ${BELGE_TEMEL_CSS}
+    .kalemler { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+    .kalemler th {
+      background: #f1f3f5; color: #495057; font-size: 9px; font-weight: 700;
+      letter-spacing: .5px; text-transform: uppercase; text-align: left;
+      padding: 5px 8px; border: 1px solid #dee2e6;
+    }
+    .kalemler td { padding: 5px 8px; border: 1px solid #dee2e6; vertical-align: top; }
+    .kalemler .sira { width: 28px; text-align: center; color: #868e96; }
+    .kalemler .sayi { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .kalemler .kod { font-size: 9px; color: #868e96; }
+    .kalemler tfoot td { font-weight: 700; background: #f8f9fa; }
+  </style></head><body>
+
+    <div class="ust">
+      <div class="ust-satir">
+        <div>
+          <div class="kurum">${xmlKacir(z.firmaAdi || 'GALYA')}</div>
+          <div class="kurum-alt">${xmlKacir([z.firma, z.donem].filter(Boolean).join(' / '))}${z.depoAdi ? ' · ' + xmlKacir(z.depoAdi) : ''}</div>
+        </div>
+        <div class="belge-no">
+          Belge No <b>${xmlKacir(z.vegaBelgeNo || '—')}</b><br>
+          Tarih ${xmlKacir(belgeTarihi(z.tarih))}
+        </div>
+      </div>
+      <h1>Zayi Tutanağı</h1>
+    </div>
+
+    <table class="kunye">
+      <tr>
+        <td class="etiket">Zayi eden</td>
+        <td>${xmlKacir(z.cariAdi || '—')}</td>
+        <td class="etiket">Alt hesap</td>
+        <td>${xmlKacir(z.altHesap || '—')}</td>
+      </tr>
+      <tr>
+        <td class="etiket">Düzenleyen</td>
+        <td>${xmlKacir(z.duzenleyen || '—')}</td>
+        <td class="etiket">Depo</td>
+        <td>${xmlKacir(z.depoAdi || String(z.depo || '—'))}</td>
+      </tr>
+      <tr>
+        <td class="etiket">Stok kaydı</td>
+        <td colspan="3">${vegaRozetiHtml(z.vegayaYazildi, z.vegaBelgeNo)}</td>
+      </tr>
+    </table>
+
+    <table class="kalemler">
+      <thead><tr>
+        <th class="sira">#</th><th>Ürün</th><th class="sayi">Miktar</th>
+        ${maliyetli ? '<th class="sayi">Birim maliyet</th><th class="sayi">Tutar</th>' : ''}
+      </tr></thead>
+      <tbody>${kalemler}</tbody>
+      ${maliyetli ? `<tfoot><tr><td colspan="4">Toplam</td><td class="sayi">${xmlKacir(sayiBicimle(toplam, 'para'))} TL</td></tr></tfoot>` : ''}
+    </table>
+
+    <div class="bolum-baslik">Zayi sebebi</div>
+    <div class="sebep">${xmlKacir(z.sebep || '')}</div>
+
+    <div class="beyan">
+      Yukarıda belirtilen ürünler zayi olmuş, kullanılamaz hâle gelmiştir.
+      Miktarlar yerinde tespit edilmiş olup, bu tutanak zayi eden kişi ve
+      ilgililerce okunarak imza altına alınmıştır.
+    </div>
+
+    <div class="alt">
+      <table class="imzalar"><tr>${imzaHucreleriHtml(ZAYI_IMZALARI)}</tr></table>
+      <div class="dip">
+        <span>Galya Panel · ${xmlKacir(belgeSaatliTarih(new Date()))} tarihinde oluşturuldu</span>
+        <span>Belge kimliği: ZAY-${xmlKacir(String(z.id || '0').padStart(6, '0'))}</span>
+      </div>
+    </div>
+
+  </body></html>`;
+}
+
 // --- Dosya adı -------------------------------------------------------------
 
 function dosyaAdiUret(baslik, uzanti) {
@@ -587,6 +738,7 @@ module.exports = {
   excelDosyayaYaz,
   pdfHtml,
   tutanakBelgeHtml,
+  zayiBelgeHtml,
   dosyaAdiUret,
   xmlKacir
 };

@@ -249,6 +249,9 @@ if (process.argv.includes('--kur')) {
 
 (async () => {
   console.log('\n== Hazırlık ==');
+  // Yeni sürümün panel tabloları (BelgeSayac, ZayiUretim...) GALYA_TEST'te
+  // de kurulsun; program bunu açılışta main.js'te yapıyor.
+  await require(path.join(kok, 'db', 'panel')).kur();
   const stoklar = await sql.sorgu(`
     SELECT TOP 3 IND AS stokNo, MALINCINSI AS ad
     FROM [GALYA_TEST].dbo.F0103TBLSTOKLAR
@@ -461,7 +464,26 @@ if (process.argv.includes('--kur')) {
   );
   kontrol('Belge numarası panelin öneki + 7 hane', onekDeseni.test(ikinci.cikisBelgeNo),
     ikinci.cikisBelgeNo);
+  // Ortak sayaç: çıkış ve giriş fişi ayrı tablolarda ama aynı diziden
+  // numara alıyor. Sayaç eskiden tablo başınaydı; ikisi de aynı numarayı
+  // alıyor, geri alınan fişin numarası da yeniden veriliyordu.
+  const noSayi = (b) => Number(String(b || '').slice(panelOneki.length));
+  kontrol('Tutanağın çıkış ve giriş fişi farklı numara aldı',
+    ikinci.cikisBelgeNo !== ikinci.girisBelgeNo, `${ikinci.cikisBelgeNo} / ${ikinci.girisBelgeNo}`);
   await yazma.tutanakFisiGeriAl(Object.assign({}, SECIM, { fisler: ikinci.fisler, kullanici: 'test' }));
+  const ucuncu = await yazma.tutanakFisiYaz(
+    Object.assign({}, SECIM, {
+      dusenStokNo: stoklar[0].stokNo, dusenMiktar: 1,
+      artanStokNo: stoklar[1].stokNo, artanMiktar: 1,
+      sebep: 'Sınama: geri alınan numara', kullanici: 'test'
+    })
+  );
+  const ikinciEnBuyuk = Math.max(noSayi(ikinci.cikisBelgeNo), noSayi(ikinci.girisBelgeNo));
+  const sonTutanakNo = Math.max(noSayi(ucuncu.cikisBelgeNo), noSayi(ucuncu.girisBelgeNo));
+  kontrol('Geri alınan fişin numarası yeniden verilmedi',
+    Math.min(noSayi(ucuncu.cikisBelgeNo), noSayi(ucuncu.girisBelgeNo)) > ikinciEnBuyuk,
+    `${ikinci.cikisBelgeNo}/${ikinci.girisBelgeNo} → ${ucuncu.cikisBelgeNo}/${ucuncu.girisBelgeNo}`);
+  await yazma.tutanakFisiGeriAl(Object.assign({}, SECIM, { fisler: ucuncu.fisler, kullanici: 'test' }));
 
   // --- Alış faturası ------------------------------------------------------
   console.log('\n== Alış faturası ==');
@@ -484,6 +506,8 @@ if (process.argv.includes('--kur')) {
       aciklama: 'Sınama faturası', kullanici: 'test'
     }));
     console.log(`  Fatura: ${fatura.belgeNo} (IND ${fatura.baslikInd})`);
+    kontrol('Fatura numarası tutanakların dizisinden devam etti',
+      noSayi(fatura.belgeNo) > sonTutanakNo, `${fatura.belgeNo} ≤ ${sonTutanakNo}`);
 
     kontrol('Fatura başlığı yazıldı',
       (await say('F0103D0015TBLALFATBASLIK', 'IND = @i AND BELGETIPI = 20', { i: fatura.baslikInd })) === 1);
@@ -1280,6 +1304,76 @@ if (process.argv.includes('--kur')) {
       }));
     } catch (e) { zHata = e; }
     kontrol('Carisiz zayi reddediliyor', zHata !== null);
+
+    // --- Zayi belgesine göre üretim (12.09.2026) --------------------------
+    // Zayi ekranından yazılan fişin ürünü reçetesinden üretiliyor; bağ
+    // ZayiUretim'de. Üretimi olan zayi fişi geri alınamıyor.
+    console.log('\n== Zayiden üretim ==');
+    const zayiKayit = require(path.join(kok, 'db', 'zayi'));
+    const zTaslak = await zayiKayit.taslakKaydet(Object.assign({}, SECIM, {
+      cariNo: zCari.cariNo, cariAdi: zCari.ad, altHesap: 'ZAYİ',
+      sebep: 'Sınama: düşen porsiyon', duzenleyen: 'test',
+      satirlar: [{ stokNo: mamulStok, miktar: 2 }]
+    }));
+    const zk = await zayiKayit.getir({ id: zTaslak.zayiId });
+    const zkFis = await yazma.zayiFisiYaz({
+      firma: zk.firma, donem: zk.donem, depo: zk.depo, zayiId: zk.id,
+      cariNo: zk.cariNo, cariAdi: zk.cariAdi, altHesap: zk.altHesap, sebep: zk.sebep,
+      tarih: zk.tarih, maliyetliMi: zk.maliyetliMi, satirlar: zk.satirlar, kullanici: 'test'
+    });
+    const zkListe = await uretim.zayiListesi(SECIM);
+    kontrol("Vega'ya yazılan zayi fişi üretim listesinde", zkListe.some((z) => z.id === zk.id));
+    const zkBilgi = await uretim.zayiUretimi(Object.assign({}, SECIM, { zayiId: zk.id }));
+    kontrol('Reçeteli ürün buradan üretilebilir',
+      zkBilgi.satirlar.length === 1 && zkBilgi.satirlar[0].durum === 'uretilebilir',
+      JSON.stringify(zkBilgi.satirlar));
+
+    const zkMamul = await kalan(mamulStok);
+    const zkBilesen = await kalan(bilesenStok);
+    const zkUretim = await uretim.zayidenUret(Object.assign({}, SECIM, { zayiId: zk.id, kullanici: 'test' }));
+    kontrol('Zayiden üretim yazıldı', zkUretim.yazilan === 1 && zkUretim.hatali === 0,
+      JSON.stringify(zkUretim.sonuclar));
+    kontrol('Zayi edilen miktar kadar üretildi (mamul +2)',
+      Math.abs((await kalan(mamulStok)) - zkMamul - 2) < 0.0001);
+    kontrol('Hammadde reçeteden düştü (bileşen −4)',
+      Math.abs(zkBilesen - (await kalan(bilesenStok)) - 4) < 0.0001);
+    const zkBag = await sql.sorgu(
+      `SELECT UretimInd AS ind FROM [GALYA_TEST].dbo.ZayiUretim WHERE ZayiId = @id`, { id: zk.id });
+    kontrol('Zayi–üretim bağı yazıldı', zkBag.length === 1, String(zkBag.length));
+    kontrol('Ürün artık "üretildi" görünüyor',
+      (await uretim.zayiUretimi(Object.assign({}, SECIM, { zayiId: zk.id }))).satirlar[0].durum === 'uretildi');
+
+    let zkHata = null;
+    try {
+      await yazma.uretimFisiYaz(Object.assign({}, SECIM, {
+        mamulStokNo: mamulStok, miktar: 2, zayiId: zk.id, kullanici: 'test'
+      }));
+    } catch (e) { zkHata = e; }
+    kontrol('Aynı zayideki ürün ikinci kez üretilmiyor',
+      zkHata && zkHata.kod === 'ZAYI_ZATEN_URETILDI', zkHata && zkHata.message);
+
+    zkHata = null;
+    try {
+      await yazma.zayiFisiGeriAl(Object.assign({}, SECIM, {
+        baslikInd: zkFis.baslikInd, zayiId: zk.id, kullanici: 'test'
+      }));
+    } catch (e) { zkHata = e; }
+    kontrol('Üretimi olan zayi fişi geri alınmıyor',
+      zkHata && zkHata.kod === 'ONCE_URETIM_GERI_AL', zkHata && zkHata.message);
+
+    const zkUretimKaydi = await sql.sorgu(
+      `SELECT Id AS id FROM [GALYA_TEST].dbo.UretimFisi WHERE UretimInd = @ind AND GeriAlindi = 0`,
+      { ind: zkBag[0] ? zkBag[0].ind : 0 }
+    );
+    await uretim.geriAl(Object.assign({}, SECIM, { id: zkUretimKaydi[0].id, kullanici: 'test' }));
+    kontrol('Üretim geri alınınca bağ silindi',
+      (await say('ZayiUretim', 'ZayiId = @id', { id: zk.id })) === 0);
+    await yazma.zayiFisiGeriAl(Object.assign({}, SECIM, {
+      baslikInd: zkFis.baslikInd, zayiId: zk.id, kullanici: 'test'
+    }));
+    kontrol('Üretim geri alındıktan sonra zayi fişi geri alındı',
+      (await say('F0103D0015TBLSTKCIKBASLIK', 'IND = @i', { i: zkFis.baslikInd })) === 0);
+    await zayiKayit.sil({ id: zk.id, kullanici: 'test' });
   }
 
   // --- Stok kartını pasife alma -------------------------------------------

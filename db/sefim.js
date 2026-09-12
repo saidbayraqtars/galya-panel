@@ -17,31 +17,6 @@ function vt() {
   return ayarOku().vegaVeritabani;
 }
 
-async function aktarimDurumu() {
-  const s = sf();
-  const r = await sorgu(`
-    SELECT
-      SUM(CASE WHEN ISNULL(Aktarildi, 0) = 0 THEN 1 ELSE 0 END) AS aktarilmayan,
-      SUM(CASE WHEN ISNULL(Aktarildi, 0) = 1 THEN 1 ELSE 0 END) AS aktarilan,
-      MIN(Date) AS ilkTarih,
-      MAX(Date) AS sonTarih
-    FROM [${s}].dbo.Bill
-  `);
-  const bekleyen = await sorgu(`
-    SELECT TOP 1 MIN(Date) AS enEskiBekleyen
-    FROM [${s}].dbo.Bill
-    WHERE ISNULL(Aktarildi, 0) = 0
-  `);
-  const c = r[0] || {};
-  return {
-    aktarilmayan: c.aktarilmayan || 0,
-    aktarilan: c.aktarilan || 0,
-    ilkTarih: c.ilkTarih || null,
-    sonTarih: c.sonTarih || null,
-    enEskiBekleyen: bekleyen[0] ? bekleyen[0].enEskiBekleyen : null
-  };
-}
-
 async function satisOzeti(secim) {
   const s = sf();
   const gun = Number(secim && secim.gun ? secim.gun : 1);
@@ -238,7 +213,6 @@ async function satistanTuketim(secim) {
 }
 
 module.exports = {
-  aktarimDurumu,
   satisOzeti,
   eslestirmeDurumu,
   eslestirmeKaydet,

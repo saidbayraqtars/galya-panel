@@ -655,6 +655,12 @@ body.giris-modu #uyariSeridi {
   border-left: 4px solid #2f9e44;
 }
 
+/* Dökümü üstte açık olan gün. */
+.aktarim-gun.secili {
+  outline: 2px solid #1c7ed6;
+  outline-offset: -2px;
+}
+
 .aktarim-gun .gun {
   font-weight: 600;
 }

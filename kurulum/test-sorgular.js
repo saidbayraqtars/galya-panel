@@ -88,7 +88,37 @@ async function dene(ad, isFn) {
   }
 
   console.log('\n== Şefim ==');
-  await dene('Aktarım durumu', () => sefim.aktarimDurumu());
+  const aktarim = require(path.join(kok, 'db', 'aktarim'));
+  const { ayarOku } = require(path.join(kok, 'db', 'ayar'));
+  await dene('Aktarılmamış gün özeti', async () => {
+    const a = ayarOku();
+    const o = await aktarim.eksikOzeti({ firma: a.varsayilanFirma, donem: a.varsayilanDonem });
+    if (o.sefimYok) return 'bu firmada Şefim satış carisi yok';
+    if (!Number.isInteger(o.eksikGun)) throw new Error('eksikGun sayı değil: ' + o.eksikGun);
+    if (o.eksikGun && !/^\d{4}-\d{2}-\d{2}$/.test(o.enEski)) {
+      throw new Error('enEski biçimi bozuk: ' + o.enEski);
+    }
+    return `${o.eksikGun} gün` + (o.enEski ? ', en eskisi ' + o.enEski : '');
+  });
+  // Şefim tek firmanın kasası; ayardaki firma dışında ne kutu çıkıyor ne
+  // gün listesi açılıyor (ayar geçici sınama dosyasında değişiyor).
+  await dene('Şefim başka firmaya aktarılmıyor', async () => {
+    const a = ayarOku();
+    const { ayarYaz } = require(path.join(kok, 'db', 'ayar'));
+    ayarYaz({ sefimFirmasi: 'F9999' });
+    try {
+      const o = await aktarim.eksikOzeti({ firma: a.varsayilanFirma, donem: a.varsayilanDonem });
+      if (!o.sefimYok) throw new Error('başka firmanın Şefim günleri eksik sayıldı');
+      let hata = null;
+      try {
+        await aktarim.gunler({ firma: a.varsayilanFirma, donem: a.varsayilanDonem });
+      } catch (e) { hata = e; }
+      if (!hata || hata.kod !== 'SEFIM_FIRMASI_DEGIL') throw new Error('gün listesi reddedilmedi');
+    } finally {
+      ayarYaz({ sefimFirmasi: '' });
+    }
+    return 'reddedildi';
+  });
   await dene('Günlük satış özeti', () => sefim.satisOzeti({ gun: 7 }));
 
   console.log('\n== Dışa aktarma ==');

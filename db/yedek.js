@@ -189,9 +189,14 @@ async function durum() {
 
 // --- Yedek alma -----------------------------------------------------------
 
-// Seçilen veritabanlarının tam yedeğini alır. Her veritabanı ayrı dosyaya
-// yazılır; WITH INIT yok — eski yedeğin üstüne yazmıyoruz, yeni dosya
-// açıyoruz ki bir öncekine dönme imkânı kalsın.
+// Seçilen veritabanlarının tam yedeğini alır. Her veritabanı zaman damgalı
+// ayrı bir dosyaya yazılır ki bir öncekine dönme imkânı kalsın.
+//
+// > INIT, AYNI ADLI dosya varsa içini siler; ad benzersiz olmak zorunda.
+// > Damga saniyelik. Geri yükleme öncesi güvenlik yedeği önceden önekisizdi
+// > ve geri yüklenecek yedekle aynı saniyeye düşünce ONUN ÜSTÜNE yazıyordu:
+// > seçilen yedek yok oluyor, geri yükleme o anki hâli yüklüyordu
+// > (test-geri-yukleme.js yakaladı). Güvenlik yedeği `onEk` ile ayrı adlanır.
 async function yedekAl(kayit) {
   await panel.kur();
   const a = ayarOku();
@@ -219,7 +224,8 @@ async function yedekAl(kayit) {
     const zaman = new Date();
     for (const ham of istenen) {
       const ad = await adDogrula(havuz, ham);
-      const dosyaAdi = `${ad}-${damga(zaman)}.bak`;
+      const onEk = kayit.onEk ? `${kayit.onEk}-` : '';
+      const dosyaAdi = `${ad}-${onEk}${damga(zaman)}.bak`;
       const yol = path.win32.join(klasor, dosyaAdi);
       if (!yolGuvenliMi(yol)) {
         throw new Error(`Yedek yolu kullanılamaz: ${yol}`);
@@ -811,6 +817,7 @@ async function geriYukle(kayit) {
         const sonuc = await yedekAl({
           veritabanlari: [ad],
           kullanici: kayit.kullanici,
+          onEk: 'guvenlik',
           not: 'Geri yükleme öncesi otomatik güvenlik yedeği'
         });
         guvenlikYedegi = (sonuc.sonuclar.find((s) => s.tamam) || {}).dosya || null;

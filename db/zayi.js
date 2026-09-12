@@ -16,7 +16,7 @@
 
 const { sorgu, calistir, islem } = require('./sql');
 const { ayarOku } = require('./ayar');
-const { dogrula, kart, tablo } = require('./firma');
+const { dogrula, kart, tablo, depolariGetir } = require('./firma');
 const panel = require('./panel');
 const { cariPasifHaric } = require('./vega');
 
@@ -295,4 +295,21 @@ async function sil(secim) {
   return { tamam: true };
 }
 
-module.exports = { cariler, taslakKaydet, liste, satirDokumu, getir, sil };
+// Zayi belgesinin (zayi eden kişiye imzalatılan çıktının) verisi: panel
+// kaydı + firma ve depo adı. Stok kodu ve birim satırlarda zaten var.
+async function belgeVerisi(secim) {
+  const z = await getir({ id: secim.id });
+  let firmaAdi = z.firma;
+  let depoAdi = null;
+  try {
+    const bilgi = await dogrula(z.firma, z.donem);
+    firmaAdi = bilgi.ad || z.firma;
+    const depo = (await depolariGetir()).find((x) => Number(x.no) === Number(z.depo));
+    depoAdi = depo ? depo.ad : null;
+  } catch (e) {
+    // Firma/depo adı okunamazsa kodlarla basılır.
+  }
+  return Object.assign({}, z, { firmaAdi, depoAdi });
+}
+
+module.exports = { cariler, taslakKaydet, liste, satirDokumu, getir, sil, belgeVerisi };

@@ -154,6 +154,7 @@ const YAZAN_KANALLAR = new Set([
   'uretim:sifiraKadar',
   'uretim:hepsiniSifirla',
   'uretim:fireli',
+  'uretim:zayidan',
   'uretim:geriAl',
   'gider:sifirla',
   'gider:geriAl',
@@ -187,6 +188,7 @@ const KANAL_ADLARI = {
   'uretim:sifiraKadar': 'Sıfıra kadar üretim',
   'uretim:hepsiniSifirla': 'Toplu sıfırlama üretimi',
   'uretim:fireli': 'Fireli üretim',
+  'uretim:zayidan': 'Zayiden üretim',
   'uretim:geriAl': 'Üretimi geri alma',
   'gider:sifirla': 'Gider stoğu sıfırlama',
   'gider:geriAl': 'Gider sıfırlamasını geri alma',
@@ -547,6 +549,13 @@ kayitEt('uretim:gecmis', async (g) => uretim.gecmis(g));
 kayitEt('uretim:geriAl', async (g, k) =>
   uretim.geriAl(Object.assign({}, g, { kullanici: k.kullanici }))
 );
+// Zayi belgesine göre üretim (12.09.2026): zayi fişindeki ürünler reçetesinden
+// üretilir. Zayi fişi okunur, yenisi kesilmez; `uretim` yetkisi yeterli.
+kayitEt('uretim:zayiListesi', async (g) => uretim.zayiListesi(g));
+kayitEt('uretim:zayiUretimi', async (g) => uretim.zayiUretimi(g));
+kayitEt('uretim:zayidan', async (g, k) =>
+  uretim.zayidenUret(Object.assign({}, g, { kullanici: k.kullanici }))
+);
 
 // Zayi / personel çıkışı
 //
@@ -658,7 +667,7 @@ kayitEt('alisFatura:vegadanGeriAl', async (g, k) => {
 });
 
 // Şefim / satış aktarımı
-kayitEt('satis:aktarimDurumu', async () => sefim.aktarimDurumu());
+kayitEt('satis:aktarimDurumu', async (g) => aktarim.eksikOzeti(g));
 kayitEt('satis:eslestirmeDurumu', async (g) => sefim.eslestirmeDurumu(g));
 kayitEt('satis:eslestirmeKaydet', async (g, k) =>
   sefim.eslestirmeKaydet(Object.assign({}, g, { kaydeden: k.kullanici }))
@@ -919,6 +928,13 @@ kayitEt('tutanak:belgeYazdir', async (g, k) => {
   const veri = await tutanak.tutanakBelgeVerisi({ id: g.id, imzalar: g.imzalar });
   return rapor.tutanakBelgesiYazdir(veri, k);
 });
+// Zayi belgesi: zayi eden kişiye imzalatılacak A4 çıktı (12.09.2026).
+kayitEt('zayi:belgePdf', async (g, k) =>
+  rapor.zayiBelgesiKaydet(pencere, await zayi.belgeVerisi({ id: g.id }), k)
+);
+kayitEt('zayi:belgeYazdir', async (g, k) =>
+  rapor.zayiBelgesiYazdir(await zayi.belgeVerisi({ id: g.id }), k)
+);
 
 kayitEt('tutanak:iptal', async (g, k) =>
   tutanak.tutanakIptal(Object.assign({}, g, { kullanici: k.kullanici }))

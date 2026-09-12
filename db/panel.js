@@ -359,6 +359,34 @@ async function kur() {
     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ZayiSatir_Zayi')
       CREATE INDEX IX_ZayiSatir_Zayi ON dbo.ZayiSatir (ZayiId);
 
+    -- Panelin ortak belge sayacı (11.09.2026). Bir firma + dönemde panelin
+    -- verdiği en büyük GP numarası; geri alınan belgenin numarası yeniden
+    -- verilmesin diye tutuluyor. Vega da taranıyor: bkz. yazma.panelBelgeNo.
+    IF OBJECT_ID('dbo.BelgeSayac') IS NULL
+    CREATE TABLE dbo.BelgeSayac (
+      Firma  NVARCHAR(10) NOT NULL,
+      Donem  NVARCHAR(10) NOT NULL,
+      Onek   NVARCHAR(10) NOT NULL,
+      SonNo  INT          NOT NULL,
+      Tarih  DATETIME     NOT NULL DEFAULT GETDATE(),
+      PRIMARY KEY (Firma, Donem, Onek)
+    );
+
+    -- Zayi belgesine göre üretim: hangi zayi fişi için hangi üretim fişi
+    -- yazıldı. Üretim fişiyle aynı transaction'da yazılır, üretim geri
+    -- alınınca silinir. Bağlı üretim varken zayi fişi Vega'dan geri alınamaz.
+    IF OBJECT_ID('dbo.ZayiUretim') IS NULL
+    CREATE TABLE dbo.ZayiUretim (
+      ZayiId    INT           NOT NULL,
+      UretimInd INT           NOT NULL,
+      FisNo     NVARCHAR(50)  NOT NULL,
+      StokNo    INT           NOT NULL,
+      Miktar    DECIMAL(18,6) NOT NULL,
+      Tarih     DATETIME      NOT NULL DEFAULT GETDATE(),
+      Kullanici NVARCHAR(100) NULL,
+      PRIMARY KEY (ZayiId, UretimInd)
+    );
+
     -- Kullanıcılar. Giriş yalnızca PIN'ledir: kullanıcı adı seçilmez, girilen
     -- PIN hangi kullanıcıya aitse o kişi olarak giriş yapılır. Bu yüzden PIN
     -- benzersiz olmak zorunda; oturum.js yeni PIN'i kaydetmeden önce

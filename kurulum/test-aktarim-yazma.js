@@ -204,7 +204,7 @@ async function testVeritabaniniHazirla(kaynakVT) {
     ok('SEFIM işareti kondu', baslik && baslik.OZELKOD4 === 'SEFIM');
     ok(
       'Başlık tutarı önizlemeyle aynı',
-      baslik && Math.abs(Number(baslik.TUTAR) - on.toplam.tahsilatToplami) < 0.01,
+      baslik && Math.abs(Number(baslik.TUTAR) - on.toplam.belgeTutari) < 0.01,
       baslik && Number(baslik.TUTAR).toFixed(2)
     );
 

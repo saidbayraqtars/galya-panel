@@ -9,6 +9,7 @@ const sefim = require('./sefim');
 const sayim = require('./sayim');
 const vega = require('./vega');
 const alisFatura = require('./fatura');
+const sefimAktarim = require('./aktarim');
 
 function vt() {
   return ayarOku().vegaVeritabani;
@@ -79,6 +80,19 @@ async function guvenli(isim, isFn) {
   }
 }
 
+// 'YYYY-MM-DD' → '20.01.2026'. Date'e çevrilmiyor; saat dilimi günü kaydırabilir.
+function gunYaz(gun) {
+  const [y, m, d] = String(gun).split('-');
+  return `${d}.${m}.${y}`;
+}
+
+function aktarimAltBaslik(ozet, eslesmeyen) {
+  const parcalar = [];
+  if (ozet && ozet.enEski) parcalar.push('En eskisi ' + gunYaz(ozet.enEski));
+  if (eslesmeyen) parcalar.push(`${eslesmeyen} ürün eşleştirilmemiş`);
+  return parcalar.join(' · ') || "Hepsi Vega'ya aktarılmış";
+}
+
 async function anaEkran(secim) {
   const { firma, donem, ad } = await dogrula(secim.firma, secim.donem);
   const a = ayarOku();
@@ -89,7 +103,7 @@ async function anaEkran(secim) {
   const [stok, aktarim, sayimFark, fatura, maliyet, eslesmeyen, sonTarih, bekleyen] =
     await Promise.all([
       guvenli('stok', () => stokSayilari(firma, donem, depo, ust, aktifGun)),
-      guvenli('aktarim', () => sefim.aktarimDurumu()),
+      guvenli('aktarim', () => sefimAktarim.eksikOzeti({ firma, donem })),
       guvenli('sayim', () => sayim.sonSayimFarki({ firma, donem })),
       guvenli('fatura', () => alisFatura.bekleyenSayisi({ firma, donem })),
       guvenli('maliyet', () => maliyetSayisi(firma)),
@@ -127,18 +141,18 @@ async function anaEkran(secim) {
         parametre: { suzgec: 'azalan' },
         hata: stok.hata
       },
-      {
+      // Şefim satış carisi olmayan firmada (DEMO, eski firmalar) aktarım yok;
+      // kutu hiç çizilmiyor.
+      ...(aktarim.deger && aktarim.deger.sefimYok ? [] : [{
         anahtar: 'aktarim',
-        baslik: "Vega'ya işlenmemiş satış",
-        deger: aktarim.deger ? aktarim.deger.aktarilmayan : null,
-        altBaslik: eslesmeyen.deger != null
-          ? `${eslesmeyen.deger} ürün eşleştirilmemiş`
-          : 'Şefim satırı bekliyor',
+        baslik: "Vega'ya aktarılmamış satış günü",
+        deger: aktarim.deger ? aktarim.deger.eksikGun : null,
+        altBaslik: aktarimAltBaslik(aktarim.deger, eslesmeyen.deger),
         renk: 'kirmizi',
-        ekran: 'aktarim',
-        yetki: 'aktarim',
+        ekran: 'gunlukAktarim',
+        yetki: ['aktarim', 'aktarimOnay'],
         hata: aktarim.hata
-      },
+      }]),
       {
         anahtar: 'sayim',
         baslik: 'Sayım farkı olan ürün',

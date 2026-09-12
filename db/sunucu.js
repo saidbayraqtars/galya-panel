@@ -53,7 +53,13 @@ const SUNUCU_DISI_KANALLAR = new Set([
   'vegaprogram:ac',
   'vegaprogram:durum',
   'guncelleme:kontrol',
-  'guncelleme:durum'
+  'guncelleme:durum',
+  // İmzalı belgeler sunucuda kayıt yeri soruyor ya da sunucunun yazıcısına
+  // basıyor; ağdan çağıran kişi ne dosyayı ne çıktıyı görürdü.
+  'tutanak:belgePdf',
+  'tutanak:belgeYazdir',
+  'zayi:belgePdf',
+  'zayi:belgeYazdir'
 ]);
 
 const TURLER = {

@@ -98,6 +98,24 @@ async function cariler(firma) {
   return { satis, kasa };
 }
 
+// Şefim tek bir firmanın kasası (Galya'da F0102 GALYA YENİ; F0103'ün satış
+// fişleri başka kaynaktan geliyor, günlük tutarları Şefim'le tutmuyor).
+// Başka firmaya aktarılırsa aynı satış iki firmaya düşer. Ayar boşsa
+// varsayılan firma.
+function sefimFirmasi() {
+  const a = ayarOku();
+  return a.sefimFirmasi || a.varsayilanFirma || '';
+}
+
+function sefimFirmasiDenetle(firma) {
+  const f = sefimFirmasi();
+  if (f && firma !== f) {
+    const e = new Error(`Şefim ${f} firmasına ait; ${firma} firmasına satış aktarılmaz.`);
+    e.kod = 'SEFIM_FIRMASI_DEGIL';
+    throw e;
+  }
+}
+
 // --- Gün listesi ve mutabakat ---------------------------------------------
 
 // Şefim'de satışı olan iş günleri ile Vega'daki karşılıklarının yan yana
@@ -106,6 +124,7 @@ async function cariler(firma) {
 async function gunler(secim) {
   await panel.kur();
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  sefimFirmasiDenetle(firma);
   const v = vt();
   const s = sf();
   const p = panel.p();
@@ -164,6 +183,9 @@ async function gunler(secim) {
       P.panelId,
       CASE
         WHEN V.isGunu IS NOT NULL THEN 'aktarildi'
+        -- Süren iş günü: adisyon açılmaya devam ediyor. Şimdi aktarılsaydı
+        -- günün kalanı hiç aktarılamazdı (aynı gün ikinci kez aktarılmıyor).
+        WHEN S.isGunu >= CAST(DATEADD(hour, -@kesim, GETDATE()) AS date) THEN 'suruyor'
         WHEN D.ilkGun IS NOT NULL AND S.isGunu < D.ilkGun THEN 'kapsamDisi'
         ELSE 'eksik'
       END AS durum
@@ -175,6 +197,40 @@ async function gunler(secim) {
   `,
     { kesim: k, gun, satisNo: c.satis.ind, firma, donem }
   );
+}
+
+// Şu an süren iş günü, 'YYYY-MM-DD'. Sunucu saatiyle: gunler() de GETDATE()
+// kullanıyor, panel bilgisayarının saati kaymış olsa bile ikisi aynı günü görür.
+async function suankiIsGunu(k = kesim()) {
+  const r = await sorgu('SELECT CAST(DATEADD(hour, -@kesim, GETDATE()) AS date) AS gun', {
+    kesim: k
+  });
+  return gunMetni(r[0].gun);
+}
+
+// Ana ekranın ve Satış aktarımı ekranının sorusu: Vega'ya aktarılmamış kaç
+// iş günü var, en eskisi hangisi? Cevap gunler()'den çıkıyor. Eski ölçüt
+// (sefim.dbo.Bill.Aktarildi) her satırda 1 olduğu için hep 0 diyordu.
+// Süren gün ve dönem dışı günler sayılmaz.
+//
+// Şefim satış carisi olmayan firmada (DEMO, eski firmalar) aktarım yoktur;
+// `sefimYok` döner ve ana ekran kutuyu hiç çizmez.
+async function eksikOzeti(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  // Şefim başka firmanın kasası: bu firmanın ŞEFSATIŞ carisi olsa da (F0101,
+  // F0103'te var) Şefim günleri bu firmanın eksiği değildir.
+  const f = sefimFirmasi();
+  if (f && firma !== f) return { sefimYok: true, eksikGun: 0, enEski: null };
+  const c = await cariler(firma);
+  if (!c.satis) return { sefimYok: true, eksikGun: 0, enEski: null };
+  const liste = await gunler({ firma, donem, gun: 400 });
+  const eksik = liste.filter((g) => g.durum === 'eksik');
+  return {
+    sefimYok: false,
+    eksikGun: eksik.length,
+    // Liste yeniden eskiye sıralı; en eskisi sonda.
+    enEski: eksik.length ? gunMetni(eksik[eksik.length - 1].isGunu) : null
+  };
 }
 
 // --- Bir iş gününün dökümü -------------------------------------------------
@@ -309,6 +365,10 @@ async function tahsilat(isGunu, k) {
     `
     SELECT ${ODEME_TURLERI.map((o) => `SUM(ISNULL(${o.alan}, 0)) AS ${o.alan}`).join(', ')},
            SUM(ISNULL(Discount, 0)) AS indirim,
+           -- Ödenmiş (veresiye olmayan) adisyonların indirimi: satırlar tam
+           -- fiyatla duruyor, tahsilat indirimli. Veresiye adisyon ne satıra
+           -- ne tahsilata girdiği için onun indirimi ayrı.
+           SUM(CASE WHEN ISNULL(Debit, 0) = 0 THEN ISNULL(Discount, 0) ELSE 0 END) AS odenenIndirim,
            SUM(ISNULL(Debit, 0))    AS veresiye,
            COUNT(*) AS adisyon
     FROM [${s}].dbo.Payment
@@ -327,6 +387,7 @@ async function tahsilat(isGunu, k) {
       tutar: Number(c[o.alan] || 0)
     })).filter((x) => Math.abs(x.tutar) > 0.0001),
     indirim: Number(c.indirim || 0),
+    odenenIndirim: Number(c.odenenIndirim || 0),
     veresiye: Number(c.veresiye || 0),
     adisyon: Number(c.adisyon || 0)
   };
@@ -480,6 +541,7 @@ async function veresiyeAdisyonlar(firma, donem, isGunu, k) {
 async function onizleme(secim) {
   await panel.kur();
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  sefimFirmasiDenetle(firma);
   const isGunu = gunMetni(secim.tarih);
   const k = kesim();
   const v = vt();
@@ -544,6 +606,7 @@ async function onizleme(secim) {
   );
   const ilkGun = donemBasi[0] && donemBasi[0].ilkGun ? gunMetni(donemBasi[0].ilkGun) : null;
   const kapsamDisi = !!(ilkGun && isGunu < ilkGun);
+  const suruyor = isGunu >= (await suankiIsGunu(k));
 
   const p = panel.p();
   const mevcut = await sorgu(
@@ -568,25 +631,55 @@ async function onizleme(secim) {
     { satisNo: c.satis ? c.satis.ind : 0, gun: isGunu }
   );
 
-  // MUTABAKAT. Satır toplamı ile tahsilat birbirini tutmalı; aradaki fark
-  // Vega'da da kuruş mertebesinde (11.08'de −0,0299). Büyük bir fark
-  // "yuvarlama" değil, kaybolan satırdır: eşleşmeyen ya da yoksayılan bir
-  // ürün belgeye girmemiş demektir. Bu durumda yazma engelleniyor —
-  // 4.100 TL'lik bir "yuvarlama" ile Vega'ya belge kesmek, sonradan
-  // bulunması çok zor bir stok hatası bırakır.
-  const yuvarlama = tahsilatToplami - satirToplami;
+  // MUTABAKAT (12.09.2026'da yeniden yazıldı).
+  //
+  // Vega'nın kendi Şefim Entegrasyon belgesinde TUTAR = cari borcu = satır
+  // toplamıdır; ödenmiş adisyonlardaki indirim belgeye girmez (07.08: satır
+  // 147.470,36, tahsilat 143.850,34, indirim 3.620,00 → TUTAR 147.470,47,
+  // YUVARLAMA 0). Belge tutarı bu yüzden tahsilat + indirim; kalan kuruş
+  // YUVARLAMA'ya gider (11.08: TUTAR 142.910,21, YUVARLAMA −0,03).
+  //
+  // Engel yalnız KAYBOLAN SATIR için: eşleşmeyen ya da yoksayılan ürün
+  // belgeye girmez, stoğu düşmezdi. Eskiden tahsilat satır toplamıyla
+  // karşılaştırılıyordu; indirimli her gün engelleniyordu (12.08–11.09
+  // arasındaki 31 günün 18'i — kullanıcıya "Aktar tuşu bir şey yapmıyor"
+  // diye göründü).
+  //
+  // Adisyon bir günde kapanıp başka gün ödenmişse (02.09'da kapanan
+  // 3.550 TL'lik adisyon 04.09'da ödenmiş) tahsilat satırları tutmaz ama satır
+  // kaybolmamıştır; yalnız uyarılır. Stok satırlara göre düşer, tahsilat
+  // ödeme gününe yazılır.
+  const indirim = t.odenenIndirim;
+  const tutarla = (liste) => liste.reduce((a, x) => a + Number(x.miktar) * Number(x.fiyat), 0);
+  const kayip = tutarla(eslesmeyen) + tutarla(yoksayilan);
+  const odemeFarki = tahsilatToplami + indirim - satirToplami - kayip;
+  const belgeTutari = Math.abs(tahsilatToplami + indirim - satirToplami) <= 1
+    ? tahsilatToplami + indirim
+    : Math.round(satirToplami * 100) / 100;
+  const yuvarlama = belgeTutari - satirToplami;
   const esik = Math.max(1, Math.abs(tahsilatToplami) * 0.0005);
   const uyarilar = [];
-  if (Math.abs(yuvarlama) > esik) {
+  if (kayip > esik) {
     uyarilar.push({
       kod: 'MUTABAKAT',
       engel: true,
       mesaj:
-        `Satır toplamı (${satirToplami.toFixed(2)} TL) ile tahsilat ` +
-        `(${tahsilatToplami.toFixed(2)} TL) arasında ${Math.abs(yuvarlama).toFixed(2)} TL ` +
-        'fark var. Bu bir yuvarlama farkı değil; aşağıdaki eşleşmeyen ya da ' +
-        'yoksayılan ürünler belgeye girmiyor. Önce onları bir stok kartına ' +
-        'bağlayın.'
+        `${eslesmeyen.length + yoksayilan.length} ürün (${kayip.toFixed(2)} TL) belgeye ` +
+        'girmiyor: stok kartına bağlı değil ya da "yoksay" işaretli. Böyle ' +
+        'aktarılırsa bu satışların stoğu düşmez. Önce aşağıdaki ürünleri bir ' +
+        'stok kartına bağlayın.'
+    });
+  }
+  if (Math.abs(odemeFarki) > esik) {
+    uyarilar.push({
+      kod: 'ODEME_FARKI',
+      engel: false,
+      mesaj:
+        `Satır toplamı (${(satirToplami + kayip).toFixed(2)} TL) ile tahsilat + indirim ` +
+        `(${(tahsilatToplami + indirim).toFixed(2)} TL) arasında ` +
+        `${Math.abs(odemeFarki).toFixed(2)} TL fark var: bir adisyon bu gün kapanıp ` +
+        'başka gün ödenmiş (ya da tersi) olabilir. Stok satırlara göre düşer, ' +
+        'tahsilat ödeme gününe yazılır.'
     });
   }
   if (eslesmeyen.length) {
@@ -649,11 +742,22 @@ async function onizleme(secim) {
         'döneme ait ve buraya aktarılmamalı.'
     });
   }
+  if (suruyor) {
+    uyarilar.push({
+      kod: 'GUN_SURUYOR',
+      engel: true,
+      mesaj:
+        `Bu iş günü henüz kapanmadı; ertesi gün saat ${String(k).padStart(2, '0')}:00'e ` +
+        'kadar sürüyor. Şimdi aktarılırsa bundan sonra kapanan adisyonlar Vega\'ya ' +
+        'hiç geçmez — aynı gün ikinci kez aktarılamıyor.'
+    });
+  }
 
   return {
     isGunu,
     kesimSaati: k,
     kapsamDisi,
+    suruyor,
     donemIlkGunu: ilkGun,
     satisCarisi: c.satis,
     kasaCarisi: c.kasa,
@@ -672,10 +776,15 @@ async function onizleme(secim) {
       satir: satirlar.length,
       satirToplami,
       tahsilatToplami,
-      // Vega belgesinin TUTAR alanı tahsilat toplamıdır; aradaki kuruş farkı
-      // başlıktaki YUVARLAMA alanına gider. Kuruştan büyükse fark yuvarlama
-      // değildir — aşağıdaki `uyari` bunu yakalıyor.
-      yuvarlama: tahsilatToplami - satirToplami,
+      // Ödenmiş adisyonların indirimi, belge tutarı (tahsilat + indirim ya da
+      // kuruşa yuvarlanmış satır toplamı) ve YUVARLAMA'ya giden kuruş farkı.
+      // Hesap yukarıda, MUTABAKAT notunda.
+      indirim,
+      belgeTutari,
+      yuvarlama,
+      kayip,
+      odemeFarki,
+      esik,
       kasaGiris: kasa.filter((x) => x.tutar > 0).reduce((a, b) => a + b.tutar, 0),
       kasaCikis: kasa.filter((x) => x.tutar < 0).reduce((a, b) => a - b.tutar, 0),
       veresiyeMusteri: veresiye.filter((m) => m.satirlar.length).length,
@@ -692,6 +801,16 @@ async function aktar(secim, kim) {
   const { firma, donem } = await dogrula(secim.firma, secim.donem);
   const isGunu = gunMetni(secim.tarih);
   const on = await onizleme({ firma, donem, tarih: isGunu });
+
+  // Süren gün `zorla` ile de aktarılmaz: günün kalanı sonradan hiç aktarılamaz.
+  if (on.suruyor) {
+    const e = new Error(
+      `${isGunu} iş günü henüz kapanmadı. Gün kapandıktan sonra (ertesi gün saat ` +
+        `${String(on.kesimSaati).padStart(2, '0')}:00) aktarın.`
+    );
+    e.kod = 'GUN_SURUYOR';
+    throw e;
+  }
 
   // AYNI GÜNÜ İKİNCİ KEZ AKTARMA — birinci kapı.
   //
@@ -845,7 +964,7 @@ async function aktar(secim, kim) {
      WHERE Id = @id`,
     {
       id: rezervasyonId,
-      tutar: on.toplam.tahsilatToplami,
+      tutar: on.toplam.belgeTutari,
       satir: on.toplam.satir,
       kgir: on.toplam.kasaGiris,
       kcik: on.toplam.kasaCikis,
@@ -864,7 +983,7 @@ async function aktar(secim, kim) {
       isGunu,
       belgeler: sonuc.belgeler,
       satir: on.toplam.satir,
-      tutar: on.toplam.tahsilatToplami,
+      tutar: on.toplam.belgeTutari,
       isaretlenenBill: billIdler.length
     },
     kim && kim.kullanici,
@@ -877,7 +996,7 @@ async function aktar(secim, kim) {
     isGunu,
     belgeler: sonuc.belgeler,
     satir: on.toplam.satir,
-    tutar: on.toplam.tahsilatToplami,
+    tutar: on.toplam.belgeTutari,
     isaretlenenBill: billIdler.length,
     sefimIsareti: isaret,
     // Ekranın gösterdiği uyarı. Yetki yoksa müşteri bunu görmeli.
@@ -1050,6 +1169,8 @@ async function geriAl(secim, kim) {
 
 module.exports = {
   gunler,
+  suankiIsGunu,
+  eksikOzeti,
   onizleme,
   aktar,
   gecmis,

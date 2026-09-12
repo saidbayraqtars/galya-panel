@@ -125,10 +125,13 @@ function gunMetni(d) {
   }
 
   console.log('== Toplamlar ==');
+  // Belge tutarı tahsilat + ödenmiş adisyonların indirimidir; Vega indirimi
+  // belgeye yansıtmıyor (07.08: tahsilat 143.850, indirim 3.620, TUTAR 147.470).
   ok(
     'Belge tutarı Vega ile aynı',
-    Math.abs(o.toplam.tahsilatToplami - Number(belge.tutar)) <= TOLERANS,
-    `panel ${o.toplam.tahsilatToplami.toFixed(2)} / vega ${Number(belge.tutar).toFixed(2)}`
+    Math.abs(o.toplam.belgeTutari - Number(belge.tutar)) <= TOLERANS,
+    `panel ${o.toplam.belgeTutari.toFixed(2)} / vega ${Number(belge.tutar).toFixed(2)}` +
+      (o.toplam.indirim ? ` · indirim ${o.toplam.indirim.toFixed(2)}` : '')
   );
   if (bekleneneDusuk) {
     ok(
@@ -206,7 +209,7 @@ function gunMetni(d) {
   if (veresiyeli) {
     ok(
       'Veresiye tutarı ŞEFSATIŞ belgesinin dışında',
-      bekleneneDusuk || Math.abs(o.toplam.satirToplami - o.toplam.tahsilatToplami) <= TOLERANS,
+      bekleneneDusuk || Math.abs(o.toplam.satirToplami - o.toplam.belgeTutari) <= TOLERANS,
       `veresiye ${veresiyeli.toFixed(2)} TL`
     );
 
@@ -256,12 +259,17 @@ function gunMetni(d) {
   // çift aktarım bölümünde ayrıca ve zorunlu olarak sınanır.
   const mutabakatEngeli = engel.filter((u) => u.kod !== 'VEGADA_BELGE_VAR');
   if (bekleneneDusuk) {
-    // Asıl sınanan şey bu: belge dışı ürün varken aktarım ENGELLENMELİ.
-    // Aksi hâlde panel eksik bir belge kesip stoğu sessizce bozardı.
+    // Asıl sınanan şey bu: belge dışı ürünlerin tutarı eşiği aşınca aktarım
+    // ENGELLENMELİ; aksi hâlde panel eksik bir belge kesip stoğu sessizce
+    // bozardı. Eşiğin altındaki kuruşluk kalem engellemiyor.
+    const beklenen = o.toplam.kayip > o.toplam.esik;
     ok(
-      'Belge dışı ürün varken aktarım engelleniyor',
-      mutabakatEngeli.some((u) => u.kod === 'MUTABAKAT'),
-      mutabakatEngeli.map((u) => u.kod).join(', ') || 'HİÇ UYARI YOK'
+      beklenen
+        ? 'Belge dışı ürün varken aktarım engelleniyor'
+        : 'Eşik altındaki belge dışı ürün engellemiyor',
+      mutabakatEngeli.some((u) => u.kod === 'MUTABAKAT') === beklenen,
+      `kayıp ${o.toplam.kayip.toFixed(2)} TL, eşik ${o.toplam.esik.toFixed(2)} · ` +
+        (mutabakatEngeli.map((u) => u.kod).join(', ') || 'engel yok')
     );
   } else {
     ok(
@@ -326,6 +334,22 @@ function gunMetni(d) {
     await sql.calistir(`DELETE FROM ${p} WHERE Firma = 'FKILIT'`).catch(() => {});
   }
 
+  console.log('\n== Süren iş günü ==');
+  // Süren gün aktarılırsa günün kalanı bir daha aktarılamaz (aynı gün ikinci
+  // kez aktarılmıyor); `zorla` da bunu geçmemeli. aktar() yazmaya geçmeden
+  // reddettiği için bu sınama hiçbir şey yazmaz.
+  const bugun = await aktarim.suankiIsGunu();
+  let surenKod = null;
+  try {
+    await aktarim.aktar(
+      { firma: FIRMA, donem: DONEM, tarih: bugun, zorla: true },
+      { kullanici: 'test-aktarim' }
+    );
+  } catch (e) {
+    surenKod = e.kod || e.message;
+  }
+  ok('Süren iş günü zorla ile de aktarılmıyor', surenKod === 'GUN_SURUYOR', bugun + ' → ' + surenKod);
+
   console.log('\n== Gün listesi ==');
   const gunler = await aktarim.gunler({ firma: FIRMA, donem: DONEM, gun: 400 });
   ok('Gün listesi okunuyor', Array.isArray(gunler) && gunler.length > 0, gunler.length + ' gün');
@@ -337,6 +361,10 @@ function gunMetni(d) {
     `${disari.length} gün dönem dışı`
   );
   const eksik = gunler.filter((g) => g.durum === 'eksik');
+  ok(
+    'Süren gün "eksik" sayılmıyor',
+    !eksik.some((g) => gunMetni(new Date(g.isGunu)) >= bugun)
+  );
   console.log(
     `  BİLGİ Aktarılmamış gün: ${eksik.length}` +
       (eksik.length ? ' → ' + eksik.slice(0, 8).map((g) => gunMetni(new Date(g.isGunu))).join(', ') : '')

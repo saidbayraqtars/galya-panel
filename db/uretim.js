@@ -707,6 +707,9 @@ async function fireliUret(secim) {
       mamulStokNo,
       miktar: uretilenMiktar,
       aktarimId: secim.aktarimId,
+      // Zayi belgesine göre üretimde İş Emri'nden gelen ürün (reçetesiz ya
+      // da çok çıktılı): üretim o zayi fişine bağlanır.
+      zayiId: secim.zayiId || null,
       zayiBaslikInd: zayiFisi ? zayiFisi.baslikInd : null,
       bilesenler,
       ciktilar: cokCiktili ? ciktilar : null,
@@ -770,6 +773,161 @@ async function fireliUret(secim) {
     hata.kod = e && e.kod ? e.kod : null;
     throw hata;
   }
+}
+
+// ZAYİDEN ÜRETİM (12.09.2026, müşteri isteği).
+//
+// Zayi ekranından yazılan ürün (yere düşen porsiyon, bozulan tatlı) stoktan
+// düşüyor, ama o ürün hiç üretilmediği için hammaddesi hâlâ stokta
+// görünüyor. Burada fişteki her ürün, fişteki miktar kadar reçetesinden
+// üretilir: hammadde tüketilir, üretilen ürün zayinin açtığı eksiği kapatır.
+//
+// Bir zayi fişindeki bir ürün yalnız bir kez üretilir; bağ
+// GALYA_PANEL.dbo.ZayiUretim'de (bkz. yazma.zayiUretimKilidi). Üretimi olan
+// zayi fişi Vega'dan geri alınamaz; önce üretim geri alınır.
+//
+// Reçetesi olmayan ve çok çıktılı ürün burada doğrudan üretilmez. Ekran onu
+// Manuel üretim (İş Emri) kipinde açar; oradan yazılan üretim de zayiId ile
+// aynı fişe bağlanır (fireliUret).
+
+// Vega'ya yazılmış zayi fişleri. Taslaktaki fiş stoktan düşmediği için
+// ondan üretilecek bir şey yok.
+async function zayiListesi(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const p = panel.p();
+  return sorgu(
+    `SELECT TOP 100
+       Z.Id AS id, Z.Tarih AS tarih, Z.CariAdi AS cariAdi, Z.Sebep AS sebep,
+       Z.VegaBelgeNo AS belgeNo, Z.Depo AS depo,
+       (SELECT COUNT(DISTINCT S.StokNo) FROM [${p}].dbo.ZayiSatir S
+         WHERE S.ZayiId = Z.Id) AS urunSayisi,
+       (SELECT COUNT(DISTINCT U.StokNo) FROM [${p}].dbo.ZayiUretim U
+         WHERE U.ZayiId = Z.Id) AS uretilen
+     FROM [${p}].dbo.Zayi Z
+     WHERE Z.Firma = @firma AND Z.Donem = @donem AND Z.Iptal = 0 AND Z.VegayaYazildi = 1
+     ORDER BY Z.Id DESC`,
+    { firma, donem }
+  );
+}
+
+// Bir zayi fişinin ürünleri ve her birinin üretim durumu:
+//   uretildi      bu fişe bağlı üretim fişi var
+//   uretilebilir  tek çıktılı reçetesi var, buradan üretilir
+//   isEmri        reçetesi çok çıktılı; çıktı miktarları İş Emri'nde yazılır
+//   receteYok     reçetesi yok; hammaddeyi kullanıcı İş Emri'nde seçer
+async function zayiUretimi(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const v = vt();
+  const p = panel.p();
+  const basliklar = await sorgu(
+    `SELECT Id AS id, Tarih AS tarih, CariAdi AS cariAdi, Sebep AS sebep, Depo AS depo,
+            VegaBelgeNo AS belgeNo, VegayaYazildi AS yazildi
+     FROM [${p}].dbo.Zayi
+     WHERE Id = @id AND Firma = @firma AND Donem = @donem AND Iptal = 0`,
+    { id: Number(secim.zayiId) || 0, firma, donem }
+  );
+  if (!basliklar.length) throw new Error('Zayi fişi bulunamadı.');
+  const zayi = basliklar[0];
+  if (!zayi.yazildi) {
+    throw new Error("Bu zayi fişi Vega'ya yazılmamış; stoktan düşmeden üretilecek bir şey yok.");
+  }
+
+  const receteVar = await tabloVarMi(firma, '', 'TBLURERECETELIST');
+  const ciktiVar = receteVar && (await tabloVarMi(firma, '', 'TBLURERECETECIKTI'));
+  const satirlar = await sorgu(
+    `WITH S AS (
+       SELECT StokNo, MIN(Sira) AS sira, MAX(StokAdi) AS ad,
+              MAX(ISNULL(Birim, '')) AS birim, SUM(Miktar) AS miktar
+       FROM [${p}].dbo.ZayiSatir WHERE ZayiId = @id GROUP BY StokNo
+     )
+     SELECT S.StokNo AS stokNo, S.ad, S.birim, S.miktar, U.FisNo AS fisNo,
+            ${receteVar ? 'ISNULL(R.receteNo, 0)' : '0'} AS receteNo,
+            ${receteVar ? 'ISNULL(R.bilesen, 0)' : '0'} AS bilesenSayisi,
+            ${ciktiVar ? 'ISNULL(R.cikti, 0)' : '0'} AS ciktiSayisi
+     FROM S
+     OUTER APPLY (
+       SELECT TOP 1 FisNo FROM [${p}].dbo.ZayiUretim
+       WHERE ZayiId = @id AND StokNo = S.StokNo
+     ) U
+     ${receteVar ? `OUTER APPLY (
+       SELECT TOP 1 L.IND AS receteNo,
+              (SELECT COUNT(*) FROM ${kart(v, firma, 'TBLURERECETE')} B
+                WHERE B.EVRAKNO = L.IND) AS bilesen
+              ${ciktiVar ? `, (SELECT COUNT(*) FROM ${kart(v, firma, 'TBLURERECETECIKTI')} C
+                WHERE C.EVRAKNO = L.IND) AS cikti` : ''}
+       FROM ${kart(v, firma, 'TBLURERECETELIST')} L
+       WHERE L.STOKNO = S.StokNo
+       ORDER BY L.IND
+     ) R` : ''}
+     ORDER BY S.sira`,
+    { id: zayi.id }
+  );
+
+  return {
+    zayi: {
+      id: zayi.id, tarih: zayi.tarih, cariAdi: zayi.cariAdi, sebep: zayi.sebep,
+      depo: Number(zayi.depo), belgeNo: zayi.belgeNo
+    },
+    satirlar: satirlar.map((s) => ({
+      stokNo: Number(s.stokNo),
+      ad: s.ad,
+      birim: s.birim,
+      miktar: Number(s.miktar),
+      fisNo: s.fisNo || null,
+      durum: s.fisNo ? 'uretildi'
+        : !Number(s.receteNo) || !Number(s.bilesenSayisi) ? 'receteYok'
+        : Number(s.ciktiSayisi) > 1 ? 'isEmri'
+        : 'uretilebilir'
+    }))
+  };
+}
+
+// Seçilen (verilmezse bütün "uretilebilir") ürünler zayi fişindeki miktar
+// kadar üretilir. Biri hata verirse diğerleri yazılmaya devam eder; sonuç
+// listesinde hangisinin neden yazılamadığı görünür (hepsiniSifirla gibi).
+async function zayidenUret(secim) {
+  const { firma, donem } = await dogrula(secim.firma, secim.donem);
+  const { zayi, satirlar } = await zayiUretimi({ firma, donem, zayiId: secim.zayiId });
+  const istenen = (Array.isArray(secim.stokNolar) ? secim.stokNolar : [])
+    .map(Number)
+    .filter(Boolean);
+  const liste = satirlar.filter(
+    (s) => s.durum === 'uretilebilir' && (!istenen.length || istenen.includes(s.stokNo))
+  );
+  if (!liste.length) throw new Error('Bu zayi fişinde buradan üretilecek ürün kalmamış.');
+
+  const sonuclar = [];
+  for (const s of liste) {
+    try {
+      // Mamul deposu sıfıra kadar üretimdeki gibi reçetenin pozisyonlarından.
+      const emir = await isEmri({ firma, donem, depo: zayi.depo, mamulStokNo: s.stokNo });
+      const fis = await denemeliYaz({
+        firma,
+        donem,
+        depo: emir.mamulDeposu,
+        mamulStokNo: s.stokNo,
+        miktar: s.miktar,
+        zayiId: zayi.id,
+        aciklama: `Zayi ${zayi.belgeNo || '#' + zayi.id} üretimi`,
+        kullanici: secim.kullanici,
+        userNo: secim.userNo
+      });
+      sonuclar.push({ stokNo: s.stokNo, ad: s.ad, miktar: s.miktar, tamam: true, fisNo: fis.fisNo });
+    } catch (e) {
+      sonuclar.push({
+        stokNo: s.stokNo, ad: s.ad, miktar: s.miktar, tamam: false, mesaj: e.message || String(e)
+      });
+    }
+  }
+
+  const yazilan = sonuclar.filter((x) => x.tamam).length;
+  await panel.kayit(
+    'Üretim',
+    'Zayiden üretim',
+    { firma, donem, zayiId: zayi.id, zayiBelgeNo: zayi.belgeNo, yazilan, sonuclar },
+    secim.kullanici
+  );
+  return { tamam: true, yazilan, hatali: sonuclar.length - yazilan, sonuclar };
 }
 
 async function depolar(secim) {
@@ -874,6 +1032,9 @@ module.exports = {
   receteCiktilari,
   isEmri,
   fireliUret,
+  zayiListesi,
+  zayiUretimi,
+  zayidenUret,
   gecmis,
   geriAl
 };

@@ -626,12 +626,9 @@ async function receteSatiriSil(kayit) {
 
 const SAYIM_GIRIS_TIPI = 93;
 const SAYIM_CIKIS_TIPI = 94;
-// Sayım fişi de panelin kendi serisini kullanıyor. Vega kendi sayımlarını
-// `Z` ile numaralıyor ve sayım tabloları yalnız sayım belgesi tutuyor; ama
-// çakışma riski burada da aynı (Vega da MAX+1 hesaplıyor ve panelin kilidini
-// almıyor). Ayrıca panelin kestiği sayım fişinin ayırt edilebilmesi
-// isteniyor. `null` verilirse siradakiBelgeNo ayarlardaki öneki kullanır.
-const SAYIM_ONEKI = null;
+// Sayım fişi de panelin ortak serisinden (panelBelgeNo) numara alıyor. Vega
+// kendi sayımlarını `Z` ile numaralıyor; panelin kestiği sayım fişi GP
+// önekinden ayırt ediliyor.
 
 // Tek yönlü sayım belgesi: verilen satırların tamamı tek fişe yazılır.
 async function sayimBelgesiYaz(t, ayrinti) {
@@ -641,7 +638,7 @@ async function sayimBelgesiYaz(t, ayrinti) {
   const baslikTablosu = tablo(v, firma, donem, cikis ? 'TBLSAYIMCIKISBASLIK' : 'TBLSAYIMGIRISBASLIK');
   const hareketTablosu = tablo(v, firma, donem, cikis ? 'TBLSAYIMCIKISHAREKET' : 'TBLSAYIMGIRISHAREKET');
   const belgeTipi = cikis ? SAYIM_CIKIS_TIPI : SAYIM_GIRIS_TIPI;
-  const belgeNo = await siradakiBelgeNo(t, baslikTablosu, SAYIM_ONEKI);
+  const belgeNo = await panelBelgeNo(t, v, firma, donem);
 
   // Giriş fişinde tutar görünür, çıkış fişinde Vega tutarı sıfır bırakıyor.
   const tutar = cikis
@@ -1048,9 +1045,98 @@ function belgeOneki() {
   return /^[A-Z0-9]{1,4}$/.test(o) ? o : VARSAYILAN_BELGE_ONEKI;
 }
 
-// Panelin kendi belge numarası: <önek> + 7 hane. Sayaç her tabloda ayrı
-// yürüyor (sayım girişinde GP0000048 iken sayım çıkışında GP0000022
-// olabilir — Vega'nın kendi davranışı da böyle).
+// PANELİN ORTAK BELGE SAYACI (11.09.2026).
+//
+// Sayaç önceden her TABLODA ayrı yürüyordu: sayım fişi de stok fişi de
+// fatura da kendi GP0000001'inden başlıyordu (müşteri testte gördü). Numara
+// MAX + 1 olduğu için geri alınan son belgenin numarası bir sonrakine yeniden
+// veriliyordu da — deneme yapıp geri alırken "sıra hiç ilerlemiyor". Panelin
+// belgeleri artık bir firma + dönemde TEK diziden numara alıyor:
+//
+//   sonraki = MAX(panelin sayacı, Vega'daki en büyük GP numarası) + 1
+//
+//   - Sayaç (GALYA_PANEL.dbo.BelgeSayac) verilen en büyük numarayı tutar;
+//     geri alınan belgenin numarası bir daha verilmez. İmzalanıp dosyalanan
+//     zayi tutanağında aynı numara iki belgeyi göstermemeli.
+//   - Vega taraması, panel veritabanı kaybolsa bile (11.09.2026'da oldu)
+//     dizinin kaldığı yerden sürmesini sağlıyor.
+//   - Eşzamanlılık: sp_getapplock işlem sonuna kadar tutulur; iki panel aynı
+//     anda numara isterse ikincisi bekler. Vega GP yazmadığı için Vega'yla
+//     yarış yok ve Vega'nın tabloları kilitlenmiyor.
+//
+// Depo transferi (38) ve üretim 96/97 belgelerinin Z numaraları Vega'nın
+// paylaşılan sayacıdır; onlar aşağıdaki siradakiBelgeNo ile yürüyor.
+const GP_BELGE_TABLOLARI = [
+  ['TBLSTKGIRBASLIK', 'BELGENO'],      // 32 — tutanak girişi
+  ['TBLSTKCIKBASLIK', 'BELGENO'],      // 33 — tutanak çıkışı, zayi, Şefim satışı
+  ['TBLSAYIMGIRISBASLIK', 'BELGENO'],  // 93
+  ['TBLSAYIMCIKISBASLIK', 'BELGENO'],  // 94
+  ['TBLALFATBASLIK', 'BELGENO'],       // 20 — tedarikçi numarası girilmemişse
+  ['TBLCARGIRBASLIK', 'BELGENO'],      // 13 — Şefim tahsilatı / kasa girişi
+  ['TBLCARCIKBASLIK', 'BELGENO'],      // 11 — Şefim kasa çıkışı
+  ['TBLUREURETIMLIST', 'FISNO']        // üretim fişinin kendi numarası
+];
+
+async function panelBelgeNo(t, v, firma, donem) {
+  const o = belgeOneki();
+  const kilit = await t.sorgu(
+    `DECLARE @sonuc INT;
+     EXEC @sonuc = sp_getapplock @Resource = @kaynak, @LockMode = 'Exclusive',
+                                 @LockOwner = 'Transaction', @LockTimeout = 30000;
+     SELECT @sonuc AS sonuc`,
+    { kaynak: `GalyaPanel.BelgeNo.${firma}.${donem}.${o}` }
+  );
+  if (!kilit.length || Number(kilit[0].sonuc) < 0) {
+    const e = new Error(
+      'Belge numarası alınamadı: başka bir bilgisayar uzun süredir belge yazıyor. ' +
+      'Birkaç saniye sonra yeniden deneyin.'
+    );
+    e.kod = 'SAYAC_MESGUL';
+    throw e;
+  }
+
+  // Yalnız rakamdan oluşan kuyruk sayılıyor; "GPX12" gibi elle yazılmış bir
+  // değer diziyi bozmasın. CAST bu süzgeçten sonra güvenli.
+  const parcalar = [];
+  for (const [ad, kolon] of GP_BELGE_TABLOLARI) {
+    if (!(await tabloVarMi(firma, donem, ad))) continue;
+    parcalar.push(
+      `SELECT MAX(CAST(SUBSTRING(${kolon}, @basla, 18) AS BIGINT)) AS n
+       FROM ${tablo(v, firma, donem, ad)}
+       WHERE ${kolon} LIKE @desen AND LEN(${kolon}) > @onekUzunlugu
+         AND SUBSTRING(${kolon}, @basla, 18) NOT LIKE '%[^0-9]%'`
+    );
+  }
+  let vegadaki = 0;
+  if (parcalar.length) {
+    const r = await t.sorgu(
+      `SELECT MAX(n) AS n FROM (${parcalar.join(' UNION ALL ')}) X`,
+      { basla: o.length + 1, desen: o + '%', onekUzunlugu: o.length }
+    );
+    vegadaki = Number((r[0] && r[0].n) || 0);
+  }
+
+  const p = panel.p();
+  const s = await t.sorgu(
+    `SELECT SonNo AS n FROM [${p}].dbo.BelgeSayac
+     WHERE Firma = @firma AND Donem = @donem AND Onek = @onek`,
+    { firma, donem, onek: o }
+  );
+  const sonraki = Math.max(s.length ? Number(s[0].n) : 0, vegadaki) + 1;
+  await t.calistir(
+    s.length
+      ? `UPDATE [${p}].dbo.BelgeSayac SET SonNo = @no, Tarih = GETDATE()
+         WHERE Firma = @firma AND Donem = @donem AND Onek = @onek`
+      : `INSERT INTO [${p}].dbo.BelgeSayac (Firma, Donem, Onek, SonNo)
+         VALUES (@firma, @donem, @onek, @no)`,
+    { firma, donem, onek: o, no: sonraki }
+  );
+  return o + String(sonraki).padStart(7, '0');
+}
+
+// Tabloya özel sayaç: <önek> + 7 hane, o tablodaki MAX + 1. Yalnız Vega'nın
+// paylaşılan Z serisi için (depo transferi 38); panelin GP belgeleri
+// panelBelgeNo'dan geçer.
 //
 // UPDLOCK/HOLDLOCK okuma sırasında konur: iki kullanıcı aynı anda fiş
 // kesmeye kalkarsa ikincisi bekler, aynı numarayı almaz.
@@ -1079,7 +1165,7 @@ async function fisYaz(t, ayrinti) {
   const baslikTablosu = tablo(v, firma, donem, cikis ? 'TBLSTKCIKBASLIK' : 'TBLSTKGIRBASLIK');
   const hareketTablosu = tablo(v, firma, donem, cikis ? 'TBLSTKCIKHAREKET' : 'TBLSTKGIRHAREKET');
   const belgeTipi = cikis ? CIKIS_BELGE_TIPI : GIRIS_BELGE_TIPI;
-  const belgeNo = await siradakiBelgeNo(t, baslikTablosu);
+  const belgeNo = await panelBelgeNo(t, v, firma, donem);
   const tutar = Number(miktar) * Number(maliyet || 0);
 
   const baslik = await t.sorgu(
@@ -1459,7 +1545,7 @@ async function zayiFisiYaz(kayit) {
 
   const sonuc = await islem(async (t) => {
     const sube = await faturaSubeKodlari(t, tablo(v, firma, donem, 'TBLALFATBASLIK'));
-    const belgeNo = await siradakiBelgeNo(t, baslikTablosu);
+    const belgeNo = await panelBelgeNo(t, v, firma, donem);
 
     const baslik = await t.sorgu(
       `
@@ -1685,6 +1771,27 @@ async function zayiFisiGeriAl(kayit, ortakIslem) {
       toplam += r[0] || 0;
     };
 
+    // Zayi belgesine göre üretim yapılmışsa zayi fişi geri alınamaz; o üretim
+    // bu fişe dayanıyor. Zayi satırı üretimle aynı kilitle tutuluyor
+    // (zayiUretimKilidi), geri alma ile üretim arasına girilemez.
+    if (kayit.zayiId && !ortakIslem) {
+      const bagli = await t.sorgu(
+        `SELECT COUNT(U.UretimInd) AS adet
+         FROM [${panel.p()}].dbo.Zayi Z WITH (UPDLOCK, HOLDLOCK)
+         LEFT JOIN [${panel.p()}].dbo.ZayiUretim U ON U.ZayiId = Z.Id
+         WHERE Z.Id = @id`,
+        { id: Number(kayit.zayiId) }
+      );
+      if (bagli.length && Number(bagli[0].adet) > 0) {
+        const e = new Error(
+          `Bu zayi fişine göre ${bagli[0].adet} üretim fişi yazılmış. Önce Üretim → ` +
+          '"Zayi belgesine göre" ekranından o üretimleri geri alın.'
+        );
+        e.kod = 'ONCE_URETIM_GERI_AL';
+        throw e;
+      }
+    }
+
     say(
       await t.calistir(
         `DELETE FROM ${tablo(v, firma, donem, 'TBLCARIHAREKETLERI')}
@@ -1894,7 +2001,7 @@ async function alisFaturasiYaz(kayit) {
     const sube = await faturaSubeKodlari(t, baslikTablosu);
     const belgeNo = kayit.belgeNo && String(kayit.belgeNo).trim()
       ? String(kayit.belgeNo).trim().substring(0, 50)
-      : await siradakiBelgeNo(t, baslikTablosu);
+      : await panelBelgeNo(t, v, firma, donem);
 
     const baslik = await t.sorgu(
       `
@@ -2795,6 +2902,39 @@ async function aktarimUretimKilidi(t, firma, donem, aktarimId) {
   }
 }
 
+// Zayi belgesine göre üretim: üretim yalnız bu firma ve dönemde Vega'ya
+// yazılmış, silinmemiş bir zayi fişine bağlanabilir ve aynı fişteki aynı ürün
+// iki kez üretilemez. Zayi satırı zayiFisiGeriAl ile aynı kilitle tutuluyor;
+// geri alma ile üretim arasına ikinci bir istemci giremez.
+async function zayiUretimKilidi(t, firma, donem, zayiId, stokNo) {
+  const id = Number(zayiId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error('Zayi kaydının kimliği geçersiz.');
+  const p = panel.p();
+  const r = await t.sorgu(
+    `SELECT VegayaYazildi AS yazildi, Iptal AS iptal
+     FROM [${p}].dbo.Zayi WITH (UPDLOCK, HOLDLOCK)
+     WHERE Id = @id AND Firma = @firma AND Donem = @donem`,
+    { id, firma, donem }
+  );
+  if (!r.length || r[0].iptal || !r[0].yazildi) {
+    const e = new Error(
+      "Üretim yalnız bu firma ve dönemde Vega'ya yazılmış bir zayi fişine bağlanabilir."
+    );
+    e.kod = 'ZAYI_UYGUN_DEGIL';
+    throw e;
+  }
+  const onceki = await t.sorgu(
+    `SELECT TOP 1 FisNo AS fisNo FROM [${p}].dbo.ZayiUretim
+     WHERE ZayiId = @id AND StokNo = @stokNo`,
+    { id, stokNo: Number(stokNo) }
+  );
+  if (onceki.length) {
+    const e = new Error(`Bu zayi fişindeki ürün zaten üretildi (fiş ${onceki[0].fisNo}).`);
+    e.kod = 'ZAYI_ZATEN_URETILDI';
+    throw e;
+  }
+}
+
 async function uretimSubeKodlari(t, v, firma, donem, depo) {
   // Galya'da bütün depolar MERKEZ/MERKEZ taşıyor. Yine de başka bir deponun
   // en son alış faturasını almak yerine aynı deponun belge örneğini ararız.
@@ -2848,19 +2988,13 @@ async function uretimFisiYaz(kayit) {
     if (kayit.aktarimId != null) {
       await aktarimUretimKilidi(t, firma, donem, kayit.aktarimId);
     }
+    if (kayit.zayiId != null) {
+      await zayiUretimKilidi(t, firma, donem, kayit.zayiId, h.mamul.stokNo);
+    }
     const sube = await uretimSubeKodlari(t, v, firma, donem, mamulDeposu);
 
-    // Üretim fişinin kendi numarası da panelin serisinden geliyor.
-    const uOnek = belgeOneki();
-    const uBasla = uOnek.length + 1;
-    const sonFis = await t.sorgu(
-      `SELECT MAX(CAST(SUBSTRING(FISNO, ${uBasla}, 20) AS INT)) AS sonNo
-       FROM ${tablo(v, firma, donem, 'TBLUREURETIMLIST')} WITH (UPDLOCK, HOLDLOCK)
-       WHERE FISNO LIKE @desen AND ISNUMERIC(SUBSTRING(FISNO, ${uBasla}, 20)) = 1`,
-      { desen: uOnek + '%' }
-    );
-    const fisNo = uOnek + String((sonFis[0] && sonFis[0].sonNo ? Number(sonFis[0].sonNo) : 0) + 1)
-      .padStart(7, '0');
+    // Üretim fişinin kendi numarası da panelin ortak serisinden geliyor.
+    const fisNo = await panelBelgeNo(t, v, firma, donem);
 
     const baslik = await t.sorgu(
       `
@@ -3148,6 +3282,15 @@ async function uretimFisiYaz(kayit) {
           miktar, kullanici: kayit.kullanici || null, zayi: Number(kayit.zayiBaslikInd) || null }
       );
     }
+    if (kayit.zayiId != null) {
+      await t.calistir(
+        `INSERT INTO [${panel.p()}].dbo.ZayiUretim
+           (ZayiId, UretimInd, FisNo, StokNo, Miktar, Kullanici)
+         VALUES (@id, @ind, @fisNo, @stokNo, @miktar, @kullanici)`,
+        { id: Number(kayit.zayiId), ind: uretimInd, fisNo, stokNo: Number(h.mamul.stokNo),
+          miktar, kullanici: kayit.kullanici || null }
+      );
+    }
     return { fisNo, uretimInd, belgeler, tuketimBelgeNo, ciktiBelgeNo, mamulSatiri };
   });
 
@@ -3295,6 +3438,12 @@ async function uretimFisiGeriAl(kayit) {
       );
     }
     await t.calistir(
+      `DELETE U FROM [${panel.p()}].dbo.ZayiUretim U
+       JOIN [${panel.p()}].dbo.Zayi Z ON Z.Id = U.ZayiId
+       WHERE U.UretimInd = @ind AND Z.Firma = @firma AND Z.Donem = @donem`,
+      { ind: uretimInd, firma, donem }
+    );
+    await t.calistir(
       `UPDATE [${panel.p()}].dbo.UretimFisi SET GeriAlindi = 1
        WHERE UretimInd = @ind AND Firma = @firma AND Donem = @donem`,
       { ind: uretimInd, firma, donem }
@@ -3346,7 +3495,7 @@ async function cariFisiYaz(t, a) {
   const belgeTipi = giris ? CARI_GIRIS_TIPI : CARI_CIKIS_TIPI;
   const baslikTablosu = tablo(v, firma, donem, giris ? 'TBLCARGIRBASLIK' : 'TBLCARCIKBASLIK');
   const hareketTablosu = tablo(v, firma, donem, giris ? 'TBLCARGIRHAREKET' : 'TBLCARCIKHAREKET');
-  const belgeNo = await siradakiBelgeNo(t, baslikTablosu);
+  const belgeNo = await panelBelgeNo(t, v, firma, donem);
   const toplam = satirlar.reduce((x, y) => x + Number(y.tutar), 0);
 
   // OZELKOD5 yalnız cari GİRİŞ başlığında var (tahsilat türü); çıkışta yok.
@@ -3478,11 +3627,13 @@ async function sefimSatisFisiYaz(t, a) {
   const { v, firma, donem, depo, cariNo, tarih, satirlar, toplam, sube, userNo } = a;
   const baslikTablosu = tablo(v, firma, donem, 'TBLSTKCIKBASLIK');
   const hareketTablosu = tablo(v, firma, donem, 'TBLSTKCIKHAREKET');
-  const belgeNo = await siradakiBelgeNo(t, baslikTablosu);
+  const belgeNo = await panelBelgeNo(t, v, firma, donem);
 
-  // Başlıktaki TUTAR günün TAHSİLATIDIR, satır toplamı değil; aradaki kuruş
-  // farkı YUVARLAMA'ya yazılıyor. Vega'nın kendi belgesinde de böyle
-  // (ARATOPLAM 142.910,2397 / TUTAR 142.910,21 / YUVARLAMA -0,0299).
+  // Başlıktaki TUTAR belge tutarıdır: tahsilat + ödenmiş adisyonların
+  // indirimi (aktarim.onizleme → toplam.belgeTutari). Vega'nın kendi
+  // belgesinde de böyle: indirim belgeye girmiyor, kalan kuruş farkı
+  // YUVARLAMA'ya yazılıyor (11.08: ARATOPLAM 142.910,2397 / TUTAR 142.910,21 /
+  // YUVARLAMA -0,0299; 07.08'de 3.620 TL indirim vardı, TUTAR = ARATOPLAM).
   const baslik = await t.sorgu(
     `
     INSERT INTO ${baslikTablosu}
@@ -3519,7 +3670,7 @@ async function sefimSatisFisiYaz(t, a) {
       cariNo,
       depo,
       belgeTipi: SEFIM_SATIS_TIPI,
-      tutar: toplam.tahsilatToplami,
+      tutar: toplam.belgeTutari,
       ara: toplam.satirToplami,
       yuvarlama: toplam.yuvarlama,
       userNo,
@@ -3630,8 +3781,10 @@ async function sefimSatisFisiYaz(t, a) {
     );
   }
 
-  // Satış carisine borç. Tahsilat belgeleri (tip 13) aynı cariye alacak
-  // yazdığı için ŞEFSATIŞ carisi günün sonunda sıfırlanıyor.
+  // Satış carisine borç = belge tutarı (Vega'da da cari borcu TUTAR'ın
+  // aynısı). Tahsilat belgeleri (tip 13) aynı cariye alacak yazıyor;
+  // indirimsiz günde ŞEFSATIŞ carisi gün sonunda sıfırlanıyor, indirimli
+  // günde indirim kadar borç kalıyor — Vega'nın kendi aktarımında da öyle.
   await t.calistir(
     `
     INSERT INTO ${tablo(v, firma, donem, 'TBLCARIHAREKETLERI')}
@@ -3646,7 +3799,7 @@ async function sefimSatisFisiYaz(t, a) {
       tarih,
       izahat: SEFIM_SATIS_TIPI,
       belgeNo,
-      borc: toplam.tahsilatToplami,
+      borc: toplam.belgeTutari,
       baslikInd,
       isaret: SEFIM_ISARETI
     }
@@ -3657,7 +3810,7 @@ async function sefimSatisFisiYaz(t, a) {
     baslikInd,
     belgeTipi: SEFIM_SATIS_TIPI,
     satir: satirlar.length,
-    tutar: toplam.tahsilatToplami
+    tutar: toplam.belgeTutari
   };
 }
 
@@ -3778,6 +3931,7 @@ async function sefimAktarimYaz(kayit) {
       const toplam = {
         // Veresiye fişinde yuvarlama yok: belge tutarı satırların toplamıdır,
         // ödenmiş bir tutara oturtulmuyor.
+        belgeTutari: m.toplam,
         tahsilatToplami: m.toplam,
         satirToplami: m.toplam,
         yuvarlama: 0
@@ -3930,6 +4084,7 @@ module.exports = {
   uretimFisiGeriAl,
   siradakiNumara,
   siradakiBelgeNo,
+  panelBelgeNo,
   alisFaturasiYaz,
   alisFaturasiGeriAl,
   kod11Yaz,

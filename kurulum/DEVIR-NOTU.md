@@ -4,7 +4,7 @@ Bu dosya, projeyi devralan kişinin (veya yeni bir sohbetin) sıfırdan bağlam
 kurmadan devam edebilmesi için yazıldı. Kod okunarak veya git geçmişine
 bakılarak öğrenilemeyecek şeyleri anlatır.
 
-Son güncelleme: 09.09.2026 · Sürüm 1.9.1
+Son güncelleme: 11.09.2026 · Sürüm 1.9.2 (+ 11.09 düzeltmeleri, bkz. §15)
 
 ---
 
@@ -63,7 +63,7 @@ uygulamanın içinden çalışır ve elinde GitHub jetonu yoktur; özel depodaki
 rapor programı (galya)/
   main.js            Electron ana süreç, tüm IPC uçları
   preload.js         contextBridge, kanal beyaz listesi
-  ui/                Arayüz (index.html, app.js, app.css) — çerçeve yok, düz JS
+  ui/                Arayüz (index.html, app.js, aktarim-uretim.js, app.css) — çerçeve yok, düz JS
   db/
     sql.js           Bağlantı havuzu, sorgu, işlem (transaction) yardımcısı
     ayar.js          ayarlar.json okuma/yazma
@@ -81,8 +81,10 @@ rapor programı (galya)/
     sunucu.js        Ağdan erişim için HTTP sunucusu
     maliyet.js       Maliyet hesabı (son alış fiyatı + reçete)
     fatura.js        Alış faturası taslağı (panel veritabanında)
-    uretim.js        Üretim: manuel (fireli) ve sıfıra kadar
-    yedek.js         Yedekleme merkezi (BACKUP / RESTORE)
+    uretim.js        Üretim: manuel (fireli), sıfıra kadar, iş emri, aktarım sonrası
+    uretim-depo.js   Reçete pozisyonları (BAŞLA/BİTİR, KOD ile) ve depo seçimi
+    yetki.js         Kanal → yetki haritası (main.js'teki süzgecin tablosu)
+    yedek.js         Yedekleme merkezi (BACKUP / RESTORE, işlem öncesi diferansiyel)
     rapor.js         Rapor üretimi
     disaaktar.js     Excel / PDF dışa aktarma
     guncelleme.js    electron-updater sarmalayıcı
@@ -91,20 +93,27 @@ rapor programı (galya)/
   kurulum/
     BELGE-DESENI.md          Vega'ya yazma deseni — yazmaya dokunmadan önce okuyun
     DEVIR-NOTU.md            bu dosya
+    URETIM-BULGU-08-09-2026.md, CODEX-*.md  bulgu raporu, Codex görev ve teslim notları
     sql-kullanici-olustur.sql
     sql-yetki-tazele.sql     restore sonrası okuma yetkisini geri verir
     sql-yazma-yetkisi-ver.sql  VEGADB'ye yazma yetkisi (ikinci kilit)
     sql-yedek-yetkisi-ver.sql  yedek alma (ve isteğe bağlı geri yükleme) yetkisi
-    test-sorgular.js        120 okuma sınaması
-    test-yazma.js           150 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
+    test-ortam.js           sınamaların ortak ayarı: panel tabloları daima GALYA_TEST'te
+    test-sorgular.js        127 okuma sınaması
+    test-yazma.js           152 yazma sınaması (--kur ile kurulur, GALYA_TEST üzerinde)
     test-kolon-denetimi.js  panelin doldurduğu kolonları Vega'nınkiyle karşılaştırır
+    test-uretim-belge-zinciri.js  üretimin bütün tablo zinciri + geri alma (GALYA_TEST)
+    uretim-sinama-verisi.js       belge zinciri sınamasının GALYA_TEST hazırlığı
     canli-belge-sinamasi.js lisanslı bir Vega veritabanına örnek belge yazar (--geri-al ile siler)
     test-yetki.js            42 kullanıcı / kapsam / onay sınaması
-    test-arayuz.js           35 arayüz duman sınaması, 28 ekran (Electron ile)
-    test-aktarim.js          Şefim aktarımı mutabakatı (yalnız okur)
+    test-yetki-haritasi.js   her IPC kanalı yetki haritasında sınıflanmış mı
+    test-arayuz.js           35 arayüz duman sınaması (Electron ile)
+    test-aktarim.js          Şefim aktarımı mutabakatı + süren gün kilidi (yalnız okur)
     test-aktarim-kolon-denetimi.js  aktarım kolonları (yalnız okur)
     test-aktarim-yazma.js    uçtan uca aktarım + geri alma (GALYA_TEST)
+    test-geri-yukleme.js     yedekten geri yükleme, tam ve zincirli (yalnız GALYA_TEST)
     test-ag.js               ağ sunucusu ve oturum ayrımı
+    oksuz-shareket-onar.sql  25.08 fişlerinin eksik TBLSHAREKET satırları — müşteri kararıyla ÇALIŞTIRILMIYOR
     izleyici-kur.sql / izleyici-kapat.sql / izleyici-oku.js   (eski, elle sürüm)
 ```
 
@@ -370,7 +379,7 @@ Sayımcıya stok yetkisi vermeyin.
 ### Bunun sınırı (değişmedi)
 
 PIN **ekranı** kilitler, **veritabanını** kilitlemez. `ayarlar.json`
-(`%APPDATA%\Galya Panel\`) içinde SQL şifresi düz metindir. Bilgisayara
+(`%APPDATA%\galya-panel\`) içinde SQL şifresi düz metindir. Bilgisayara
 erişimi olan çalışan o dosyayı Not Defteri'yle açıp SSMS veya Excel'den
 VEGADB'yi okuyabilir. Bu katman kazara görmeyi ve merakı keser, niyetli
 birini durdurmaz.
@@ -409,11 +418,12 @@ başlamayın.
 | Zayiatlı üretim | **Kaldırıldı** (25.08.2026) |
 | Otomatik üretim | **Kaldırıldı** (22.08.2026) |
 | Her ekranda ayrıntılı Excel/PDF | Çalışıyor — 14 ekran, çıktıya ad verilebiliyor |
-| Yedekleme merkezi | Çalışıyor — yedek alma denendi, geri yükleme DENENMEDİ |
+| Yedekleme merkezi | Çalışıyor — yedek alma canlıda denendi; geri yükleme **GALYA_TEST'te sınandı** (11.09.2026), canlıda DENENMEDİ |
 | Kullanıcılar ve yetkiler | Çalışıyor — PIN'le giriş, sınıf kapsamı |
 | Sayım onay akışı | Çalışıyor — onaysız Vega'ya yazılmıyor |
 | Tam sayım | Çalışıyor — kapsamdaki bütün kartlar |
-| Stok kartını pasife alma | Çalışıyor — `KOD8 = PASİF` |
+| Stok kartını pasife alma | Çalışıyor — `STATUS = 2` ve `KOD8 = PASİF` birlikte |
+| Şefim günlük aktarımı | Çalışıyor — GALYA_TEST'te uçtan uca sınandı, canlıda DENENMEDİ (§13) |
 
 Belgedeki maddelerin tamamı bitti. Panelin yazdığı her belge tipi gerçek
 Vega fişlerinden çıkarıldı, `GALYA_TEST` üzerinde sınandı ve canlı firmada
@@ -1101,13 +1111,19 @@ sürümüdür. Kalsın; sunucuda exe çalıştırılamayan durumlarda işe yarar
 ## 8. Sınama
 
 ```
-node kurulum/test-sorgular.js       # 120 okuma sınaması
-node kurulum/test-yazma.js --kur    # test veritabanını hazırla/tamamla
-node kurulum/test-yazma.js          # 150 yazma sınaması
-node kurulum/test-kolon-denetimi.js # kolon doluluk denetimi (Vega ile karşılaştırma)
-node kurulum/test-yetki.js          #  41 kullanıcı / kapsam / onay sınaması
-npx electron kurulum/test-arayuz.js #  35 arayüz duman sınaması
-node izleyici/test-izleyici.js …    #   6 izleyici sınaması
+node kurulum/test-sorgular.js                # 127 okuma sınaması
+node kurulum/test-yazma.js --kur             # test veritabanını hazırla/tamamla
+node kurulum/test-yazma.js                   # 152 yazma sınaması
+node kurulum/test-kolon-denetimi.js          # kolon doluluk denetimi (Vega ile karşılaştırma)
+node kurulum/test-uretim-belge-zinciri.js    # 114 üretim tablo zinciri sınaması
+node kurulum/test-aktarim.js                 #  23 Şefim mutabakatı + süren gün kilidi (yalnız okur)
+node kurulum/test-aktarim-yazma.js           #  62 uçtan uca aktarım + geri alma
+node kurulum/test-aktarim-kolon-denetimi.js  # aktarım kolonları
+node kurulum/test-geri-yukleme.js            #  16 yedekten geri yükleme (yalnız GALYA_TEST, tek başına)
+node kurulum/test-yetki.js                   #  41 kullanıcı / kapsam / onay sınaması
+node kurulum/test-yetki-haritasi.js          # her kanal yetki haritasında mı
+npx electron kurulum/test-arayuz.js          #  35 arayüz duman sınaması
+node izleyici/test-izleyici.js …             #   6 izleyici sınaması
 ```
 
 > **08.09.2026: yazma sınaması 146/146 geçti** (123'ten çıktı; çok çıktılı
@@ -1186,7 +1202,7 @@ cd izleyici && npm run dist             # dist/GalyaIzleyici.exe
 > `Cannot read properties of undefined (reading 'whenReady')` verir.
 > Kabuk ortamınızda varsa temizleyin.
 
-Ayarlar paketli sürümde `%APPDATA%\Galya Panel\ayarlar.json` altında durur,
+Ayarlar paketli sürümde `%APPDATA%\galya-panel\ayarlar.json` altında durur,
 ilk açılışta `ayarlar.ornek.json` kopyalanarak oluşturulur.
 
 > BOM tuzağı: PowerShell'in `Set-Content -Encoding UTF8` komutu dosyanın
@@ -1221,6 +1237,24 @@ tablo tutuyor ve firmalar şöyle:
 > `sqlcmd -S localhost -E -C -i kurulum/sql-yetki-tazele.sql`
 > (yalnızca okuma yetkisi verir). Her restore'dan sonra tekrarlanacak.
 
+> **11.09.2026 — bu makinede iki değişiklik.** VEGADB yeni bir yedekle
+> yeniden yüklendi (16:21, `VEGADB_galya` olarak geri yüklenip VEGADB adını
+> aldı). GALYA_PANEL ise 16:36'da SSMS'ten sa ile **silindi** (SQL'in
+> varsayılan izi); sa ile açılan panel 16:37'de `panel.kur()` ile boşunu
+> kurdu. Eski panel verisinin (kullanıcılar, ürün eşleştirmeleri, sayım /
+> tutanak / zayi kayıtları) bu makinedeki son yedeği
+> `GALYA_PANEL-20260822-123150.bak`, SQL Server'ın varsayılan Backup
+> klasöründe. Kullanıcı kurulu paneli sa ile bağlamaya karar verdi;
+> `galya_panel`'in VEGADB'deki salt okuma kilidi o kurulumda yok.
+>
+> 12.09: kullanıcı GALYA_PANEL'i birine göstermek için silmişti; eski yedek
+> **yüklenmedi**. Yeni kurulan panelde kullanıcının 11.09 denemeleri var
+> (2 zayi, 3 üretim, 1 fatura, 36 işlem kaydı) ve bunlar yeni VEGADB'deki
+> belgelere bakıyor. 22.08 yedeği hem bunları silerdi hem de artık olmayan
+> Vega belgelerine bağlı kayıtlar getirirdi. Aynı sebeple `galya_panel`
+> girişinin yeni GALYA_PANEL'de kullanıcısı yok; `test-ag` bu makinede
+> açılmıyor (kod değil, ortam).
+
 ---
 
 ## 11. Sıradaki işler
@@ -1239,9 +1273,11 @@ tablo tutuyor ve firmalar şöyle:
    - Üretim 96/97 sayacını kullanıyor ve Şefim entegrasyonu aynı sayacı
      günde 250–600 belge hızında ilerletiyor; yoğun saatlerde denemeyin.
 
-   25.08'de canlıda bırakılan iki fişin (`A0000290`, `A0000291`) 10 satırı
-   `TBLSHAREKET`'te yok. Bunlar "geri alındı" işaretli olsa da satırları
-   VEGADB'de duruyor; müşteriye geçmeden temizlenmeli.
+   25.08'de geliştirme kopyasında bırakılan iki fişin (`A0000290`,
+   `A0000291`) 10 satırı `TBLSHAREKET`'te yoktu. **Müşteri kararı (10.09):
+   onarılmayacak** — `oksuz-shareket-onar.sql` hazır ama çalıştırılmıyor
+   (madde 10). 11.09'da VEGADB yeni bir yedekten yeniden yüklendiği için bu
+   not artık eski kopyaya ait.
 
 1. **CEVAPLANDI (10.09.2026): panel dokunmaz.** Müşteri isterse verimleri
    Vega tarafında kendisi değiştirecek; panel Vega'daki verimi okumaya devam
@@ -1292,22 +1328,32 @@ tablo tutuyor ve firmalar şöyle:
    - Fire fişi varsayılan olarak **fiyatsız** (cari borcu 0). Zayi fişinde
      olduğu gibi burada da "maliyetle yaz" kutusu var; hangisinin
      kullanılacağı muhasebeyle netleşmeli.
-6. **Yedekten geri yüklemenin denenmesi.** Yedek ALMA canlı sunucuda
-   denendi ve çalışıyor (GALYA_PANEL, 7 MB). **Geri yükleme hiç
-   denenmedi** — denemek için canlı bir veritabanını yedeğe döndürmek
-   gerekiyordu. Önce `GALYA_TEST` gibi at gözüyle bakılabilecek bir
-   veritabanında denenmeli. Ayrıca geri yükleme yetkisi
-   (`sql-yedek-yetkisi-ver.sql` içindeki `dbcreator` satırı) bilerek yorumda;
-   müşteri geri yüklemeyi panelden mi yapmak istiyor, yoksa gerektiği gün
-   SSMS'ten bir yönetici mi yapsın — bu karar verilmeli.
+6. **Geri yükleme GALYA_TEST'te sınandı (11.09.2026) — bir kusur çıktı,
+   düzeltildi.** `kurulum/test-geri-yukleme.js` panelin kendi koduyla tam
+   yedekten dönüşü, işlem öncesi yedekten (temel + diferansiyel) zincirli
+   dönüşü ve üç kapıyı (uzantı, beyaz liste, başka veritabanının yedeği)
+   sınıyor: 16/16.
+
+   Kusur: geri yükleme öncesi güvenlik yedeği, geri yüklenecek yedekle aynı
+   saniyeye düşerse **aynı dosya adını** alıyordu (damga saniyelik, `INIT`
+   aynı adlı dosyanın üstüne yazar). Güvenlik yedeği seçilen yedeği eziyor,
+   geri yükleme "tamamlandı" deyip o anki hâli yüklüyordu. Güvenlik yedeği
+   artık `…-guvenlik-<damga>.bak` adıyla ayrı dosyaya gidiyor.
+
+   Hâlâ karar bekleyen: geri yükleme yetkisi (`sql-yedek-yetkisi-ver.sql`
+   içindeki `dbcreator` satırı) bilerek yorumda. Müşteri geri yüklemeyi
+   panelden mi yapmak istiyor, yoksa gerektiği gün SSMS'ten bir yönetici mi
+   yapsın? Canlı bir veritabanında geri yükleme hâlâ hiç yapılmadı.
 7. **Yedek klasörü kurulumda ayarlanmalı.** Şu an boş, yani SQL Server'ın
    varsayılan klasörü kullanılıyor (`C:\Program Files\Microsoft SQL
    Server\…\Backup`). Sistem diskinde yedek tutmak ilk disk dolduğunda
    hem yedeği hem veritabanını birden kaybettirir; ayrı bir diske
    (`D:\SQLYedek` gibi) alınmalı. Klasör SUNUCUDA olmalı ve SQL Server
    servis hesabı oraya yazabilmeli.
-8. **Eski yedekleri kim silecek?** Panel her yedeği yeni bir dosyaya
-   yazıyor (üstüne yazmıyor), yani klasör sürekli büyüyor. Temizlik
+8. **Eski yedekleri kim silecek?** İşlem öncesi yedekler döngüsel (iki
+   temel + `yedekIslemSayisi` yuva, üstüne yazılıyor); onlar büyümüyor.
+   Elle alınan yedekler ve geri yükleme öncesi güvenlik yedekleri ise her
+   seferinde yeni dosya — VEGADB'nin tam yedeği ~2,2 GB. Temizlik
    yapılmıyor; bilerek — dosya silmek geri dönüşü olmayan bir iş ve
    sunucudaki bakım planının işi. Müşteriye söylenmeli.
 9. **CEVAPLANDI (10.09.2026): tam sayımda girilmeyen ürüne dokunulmaz.**
@@ -1411,11 +1457,14 @@ Vega tarafı doğruluyor: `F0102/D0002` içinde **184 gün için** ŞEFSATIŞ st
 çıkış belgesi var. Dönem içinde eksik olan yalnız 4 gün:
 `20.01`, `22.04`, `02.06`, `29.07`.
 
-`db/sefim.js` → `aktarimDurumu()` hâlâ `Aktarildi`'ye bakıyor ve bu yüzden
-her zaman "0 bekleyen" diyor — yanlış rakam göstermiyor ama gerçek eksiği de
-göstermiyor. Doğru ölçüt Şefim satış günü ↔ Vega belgesi karşılaştırmasıdır;
-`db/aktarim.js` → `gunler()` bunu yapıyor. Ana ekrandaki kutu bir gün
-`aktarim:gunler`e taşınmalı.
+**11.09.2026: taşındı.** Eski `sefim.aktarimDurumu()` `Aktarildi`'ye
+bakıyordu ve her zaman 0 diyordu; silindi. Ana ekrandaki kutu ("Vega'ya
+aktarılmamış satış günü") ve Satış aktarımı ekranının cümlesi artık
+`db/aktarim.js` → `eksikOzeti()` kullanıyor: `gunler()` ile Şefim satış
+günü ↔ Vega belgesi karşılaştırması; süren gün ve dönem dışı günler
+sayılmaz. Kutu Günlük aktarım ekranını açıyor. Şefim satış carisi olmayan
+firmada kutu hiç çizilmiyor. F0102/D0002'de 4 gün çıkıyor (20.01, 22.04,
+02.06, 29.07). Kanal adı eskisi gibi `satis:aktarimDurumu`.
 
 ### Ürün eşleşmesi
 
@@ -1481,6 +1530,14 @@ GALYA_PANEL.dbo.SefimAktarim           hangi gün kim aktardı, hangi belgeler
 4. **Mutabakat tutmuyorsa aktarım engelleniyor.** Eşleşmeyen ya da "yoksay"
    işaretli ürün belgeye girmiyor; fark kuruş mertebesini aşarsa yazma
    reddediliyor.
+5. **Süren iş günü aktarılamıyor (11.09.2026).** İş günü ertesi gün
+   `sefimGunKesimSaati`'ne (04:00) kadar sürüyor. Önceden bugünün günü de
+   "eksik" görünüp "İncele ve aktar" düğmesi alıyordu; öğlen aktarılsaydı
+   günün kalan satışı bir daha aktarılamazdı (aynı gün iki kez
+   aktarılmıyor). Artık `gunler()` o günü `suruyor` diye işaretliyor,
+   önizleme engelleyici uyarı veriyor, `aktar()` `GUN_SURUYOR` ile
+   reddediyor — `zorla` ile de. Gün sınırı sunucu saatiyle
+   (`suankiIsGunu()`).
 
 ### Aktarımdan sonraki üretim (10.09.2026)
 
@@ -1588,3 +1645,199 @@ Yetki denetimi tek yerde kaldı.
 > **09.09.2026 — sıradaki iş listesi Codex'e devredildi.** Ayrıntılı yönerge:
 > `kurulum/CODEX-GOREV-09-09-2026.md` (pozisyon/depo-şube denetimi, pasif stoklar,
 > reçeteli görünme, belge zinciri sınaması, aktarım sonrası manuel üretim).
+
+---
+
+## 15. 11.09.2026 — yarım kalanların kapatılması
+
+1.9.2'nin üstüne; 1.9.3'e girdi (12.09.2026).
+
+| Ne | Nerede | Ayrıntı |
+|---|---|---|
+| Ana ekran aktarım kutusu gerçek eksiği gösteriyor | `db/aktarim.js` → `eksikOzeti`, `db/ozet.js` | §12 |
+| Süren iş günü aktarılamıyor | `db/aktarim.js` → `gunler`, `onizleme`, `aktar` | §13 madde 5 |
+| Geri yükleme sınandı; güvenlik yedeğinin ad çakışması düzeltildi | `db/yedek.js`, `kurulum/test-geri-yukleme.js` | §11 madde 6 |
+| Ayar dosyasının gerçek yolu yazıldı | `%APPDATA%\galya-panel\ayarlar.json` | aşağıda |
+
+Sınamalar: sorgular 127/0, aktarım 23/0, aktarım yazma 62/0, geri yükleme
+16/0, yetki haritası temiz, arayüz 35/0. Yazma yoluna (`db/yazma.js`)
+dokunulmadı. `test-geri-yukleme.js` GALYA_TEST'e bağlı her bağlantıyı
+düşürür (`SINGLE_USER`); başka bir sınamayla aynı anda çalıştırmayın.
+
+**Ayar dosyası `%APPDATA%\galya-panel\` altında**, bu notun eski hâlinde
+yazdığı gibi "Galya Panel" altında değil: Electron klasör adını
+`package.json`'daki `name`'den alıyor. "Login failed for user
+'galya_panel'" iki ayrı sebepten çıkıyor, SQL günlüğü hangisi olduğunu
+söylüyor:
+
+    sqlcmd -S localhost -E -C -Q "EXEC xp_readerrorlog 0,1,N'Login failed'"
+
+`Password did not match` → ayar dosyasındaki şifre yanlış (11.09'da bu
+oldu). `Failed to open the explicitly specified database` → veritabanında
+öksüz kullanıcı, `sql-yetki-tazele.sql`.
+
+### Canlıda ilk deneme sırası (müşteride — hepsi bekliyor)
+
+Kodu bitmiş ama müşterinin veritabanında hiç çalıştırılmamış işler. Her
+birinde: önce yedek, tek kalem, Vega ekranında gözle kontrol, geri al,
+stoğun döndüğünü doğrula.
+
+1. **Şefim günlük aktarımı** — eski ve küçük bir eksik günle (20.01).
+   Vega: Stok Çıkış Fişi + Cari Ekstre. Önce `sefim` UPDATE yetkisi
+   (`sql-yazma-yetkisi-ver.sql`); yoksa Vega'nın programı aynı günü ikinci
+   kez aktarabilir. (§13)
+2. **Aktarım sonrası üretim** — aktarılan günün "Eksiği kapatılacaklar"
+   listesinden tek ürün. Geri alma sırası: önce üretim, sonra aktarım.
+   (§13)
+3. **Çok çıktılı üretim / İş emri** — DANA ANTRIKOT. Vega: Üretim Giriş
+   Fişi'nde 4 satır, Depo Hareket Fişi'nde iki transfer. Yoğun saatte
+   değil. (§11 madde 0)
+4. **Zayi fişi** — tek kalem. Vega: Stok Çıkış Fişi + ZAYİ carisinin
+   ekstresi. (§11 madde 4)
+5. **Alış faturası** — tek fatura; cari ekstresine düştüğü görülmeli.
+   (§11 madde 3)
+
+### Müşteriye sorulacaklar
+
+- Geri yükleme panelden mi, SSMS'ten mi? (`dbcreator` satırı yorumda)
+- Yedek klasörü sistem diski yerine ayrı bir diskte olmalı (§11 madde 7);
+  eski yedekleri kim silecek (§11 madde 8)?
+- Fire hangi cariye (FİRE / ZAYİ)? Fire fişi fiyatsız mı, maliyetle mi?
+  (§11 madde 5)
+- Müşteri kurulumunda `vegayaYazmaAktif` açık mı başlasın? (§5)
+- Gerçek veritabanı sınırı (ayrı `galya_sayimci` SQL girişi) isteniyor mu?
+  (§5b)
+
+---
+
+## 16. 12.09.2026 — ortak numara, zayi belgesi, zayiden üretim, fatura tutarı
+
+Müşterinin 11.09 isteği; §15'in üstüne, 1.9.3'e girdi (12.09.2026).
+
+| Ne | Nerede |
+|---|---|
+| Panelin bütün belgeleri tek numara dizisi (GP) | `db/yazma.js` → `panelBelgeNo`, `GALYA_PANEL.dbo.BelgeSayac` |
+| Zayi belgesi (imza için PDF / yazdır) | `db/disaaktar.js` → `zayiBelgeHtml`, `db/rapor.js`, `zayi.belgeVerisi` |
+| Üretim → "Zayi belgesine göre" | `db/uretim.js` → `zayiListesi` / `zayiUretimi` / `zayidenUret`, `GALYA_PANEL.dbo.ZayiUretim` |
+| Alış faturasında tutar yazınca birim fiyat | `ui/app.js` → `alisFaturaPenceresi` |
+| Şefim yalnız kendi firmasına | `db/aktarim.js` → `sefimFirmasi`, ayar `sefimFirmasi` |
+
+**Belge numarası.** Ayrıntı BELGE-DESENI → "Belge numarası: panelin kendi
+serisi olmalı". Sayaç tablo başınaydı: sayım fişi de stok fişi de
+`GP0000001` alıyordu, geri alınan belgenin numarası yeniden veriliyordu.
+Z serisi (depo transferi 38, üretim 96/97) Vega'nın ortak sayacı olarak
+`siradakiBelgeNo`'da kaldı.
+
+**Zayiden üretim.** Zayi ekranından Vega'ya yazılmış fişin ürünleri, zayi
+edilen miktar kadar reçetesinden üretilir. Bir fişteki bir ürün bir kez
+üretilir (`ZayiUretim`; kilit `yazma.zayiUretimKilidi`). Üretimi olan zayi
+fişi Vega'dan geri alınmaz (`ONCE_URETIM_GERI_AL`), önce üretim geri
+alınır; üretim geri alınınca bağ silinir. Reçetesiz ya da çok çıktılı ürün
+Manuel üretim (İş Emri) kipinde açılır, oradan yazılan üretim de `zayiId`
+ile aynı fişe bağlanır. Şeritten başka kipe geçince `zayiId` taşınmaz.
+
+**Zayi belgesi.** Tutanakla aynı iskelet (ortak `BELGE_TEMEL_CSS`,
+`imzaHucreleriHtml`, `vegaRozetiHtml`); imzalar Zayi Eden / Düzenleyen /
+Onaylayan. Maliyetli zayide birim maliyet, tutar ve toplam da basılır.
+Tutanak ve zayi belge kanalları ağdan çağrılamaz (`sunucu.js` →
+`SUNUCU_DISI_KANALLAR`): kayıt yeri sunucunun ekranında açılır, çıktı
+sunucunun yazıcısından çıkardı.
+
+**Fatura tutarı.** İskontolu alımda birim fiyat bilinmiyor, toplam
+biliniyor. Satırda ve ekleme formunda Tutar yazılınca miktar (kilo) aynı
+kalır, birim fiyat = tutar ÷ miktar (6 hane; `BirimFiyat DECIMAL(18,6)`).
+Son yazılan tutarsa miktar düzeltilince tutar korunur, fiyat yeniden
+hesaplanır; son yazılan fiyatsa tutar yeniden hesaplanır.
+
+**Şefim firması.** Şefim, Galya'nın F0102'sine (GALYA YENİ) ait: `sefim`
+günlük tutarları F0102'nin ŞEFSATIŞ fişleriyle kuruşu kuruşuna tutuyor,
+F0103'ünkiler (GALYA KEBAP) tutmuyor. F0101 ve F0103'te de ŞEFSATIŞ carisi
+olduğu için ana ekran oralarda da yüzlerce "eksik gün" gösteriyordu. Ayar
+`sefimFirmasi` (yalnız `ayarlar.json`; boşsa `varsayilanFirma`, müşteride
+F0102). Başka firmada gün listesi ve aktarım `SEFIM_FIRMASI_DEGIL` ile
+reddedilir, ana ekran kutusu çıkmaz. Geri alma açık kaldı.
+
+Sınamalar: yazma 166/0 (yeni: ortak numara 4, zayiden üretim 11), sorgular
+128/0, belge zinciri 114/0, aktarım yazma 62/0, aktarım 23/0, yetki 42/0,
+yetki haritası temiz, geri yükleme 16/0, arayüz 35/0, kolon denetimleri
+temiz. `test-yazma` artık başta `panel.kur()` çağırıyor; yeni panel
+tabloları GALYA_TEST'te de kuruluyor. `test-ag` bu makinede açılmıyor
+(§10, ortam).
+
+**Canlı deneme sırasına eklenecekler (§15'in devamı):**
+
+6. **Zayi belgesi** — zayi fişi → Belge → PDF'i açıp imza alanlarına bak.
+7. **Zayiden üretim** — aynı fiş → Üretim → Zayi belgesine göre → tek ürün
+   → Vega Üretim Giriş Fişi → geri al; sonra zayi fişinin geri
+   alınabildiğini gör.
+8. **Fatura tutarı** — satıra toplamı yazıp birim fiyatın hesaplandığını,
+   Vega'daki faturada ve cari ekstresinde tutarın aynen durduğunu gör.
+9. **Belge numarası** — iki farklı belge kes; numaraların art arda
+   geldiğini gör.
+
+**Yeni Şefim denemesi (12.09).** Kullanıcı aktarılmamış Şefim yedeğini
+`sefim` üstüne yükledi (11:35:59, SSMS) ve kurulu 1.9.2 ile denedi. Üç ayrı
+şey çıktı:
+
+- *"Aktar tuşu bir şey yapmıyor."* 1.9.2'nin MUTABAKAT denetimi satır
+  toplamını tahsilatla karşılaştırıp farkı "kayıp satır" sayıyordu; fark
+  çoğunlukla ödenmiş adisyonlardaki indirimdi. 1.9.2 kodu gerçek veride
+  yeniden koşuldu: 32 eksik günün 18'inde "Vega'ya aktar" kapalı. Vega'nın
+  kendi Şefim fişleri (11.08, 07.08) TUTAR'ı tam satır toplamıyla yazıyor,
+  indirimi düşmüyor; ŞEFSATIŞ borcu da o. Düzeltme `aktarim.onizleme`:
+  belge tutarı = tahsilat + ödenmiş indirim (`tahsilat().odenenIndirim`),
+  yuvarlama yalnız kuruş; engel yalnız belgeye girmeyen satır (eşleşmeyen +
+  yoksayılan > eşik); ödeme başka güne kaymışsa `ODEME_FARKI` yalnız uyarı
+  (stok satıra göre düşer, tahsilat ödeme gününe yazılır). Salt okuma SQL
+  tahmini: 30/32 gün açık; 13.08 (YENİÜRÜN.SİGARA 300 TL) ve 11.09
+  (Liqueur.Martini bianco 75cl 3.750 TL, SİGARA 140 TL) ürünler bağlanana
+  kadar kapalı. Ödemesi kayan günler: 16.08, 28.08→29.08, 02.09→04.09
+  (3.550 TL).
+- *Ekranın "Yükleniyor…"da kalması.* Videodaki ekran günlük aktarım değil,
+  1.9.2 ana ekranındaki "Vega'ya işlenmemiş satış" kutusunun açtığı eski
+  Satış aktarımı ekranıydı (kutu 1.9.3'te günlük aktarıma gidiyor).
+  Restore'dan 50 sn sonraydı; `sefim`'de AUTO_CLOSE açık olduğu için 8
+  saniyede 12 kez yeniden açıldı (errorlog "Starting up database 'sefim'").
+  Aynı ekranlar şimdi 0,5 sn altında açılıyor. AUTO_CLOSE yedekle geliyor:
+  yedekler müşteriden geldiğine göre müşterinin `sefim` ve VEGADB'sinde de
+  açık, orada bir kez kapatılmalı. `sql-yetki-tazele.sql` artık onu da
+  kapatıyor.
+- *SefimWebServis.* Vega'nın Şefim web servisi (mobil uygulama, kiosk,
+  online sipariş; `C:\Program Files (x86)\Vega\Sefim\sefimWebApp`)
+  `appsettings.json`'daki eski sa şifresiyle dakikada bir bağlanmaya
+  çalışıyor (`Login failed for user 'sa'. Reason: Password did not match`;
+  servis günlüğü `C:\Windows\System32\Logs\log-*.txt`, en az 01.09'dan beri
+  günde binlerce 18456). Panelle ve aktarımla ilgisi yok. Şifre dosyada
+  elle güncellenip servis yeniden başlatılmalı.
+
+- *"İncele ve aktar bir şey tetiklemiyor."* Tetikliyordu (12:52'de 13
+  önizleme koştu, her biri 0,1 sn altında), ama 1.9.2 günün dökümünü ve
+  "Vega'ya aktar" düğmesini 60 satırlık gün listesinin EN ALTINA
+  ekliyordu; ekran baştan çizilince sayfa başta kalıyor, kullanıcı aynı
+  listeyi görüyordu. Artık döküm listenin üstünde, seçilen gün listede mavi
+  çerçeveli (`ekranlar.gunlukAktarim`, `.aktarim-gun.secili`).
+  `test-arayuz` bunu denetliyor: döküm üstte, kaydırmadan görünüyor, düğme
+  listenin üstünde. 1.9.2'de geçici çözüm: tıkladıktan sonra en alta
+  kaydırmak.
+
+Sınamalar (yeni Şefim, `sql-yetki-tazele.sql` sonrası): aktarım yazma 61/0,
+yazma 166/0, sorgular 128/0, arayüz 40/0. `test-aktarim` 07.08'de (indirimli
+gün, Vega A0000460) belge tutarı Vega ile aynı (147.470,34 / 147.470,47,
+indirim 3.620); tek hata "çağla tarhan" veresiyesinin Vega'da olmaması
+(veri). Varsayılan gün 11.08 bu veride tutmuyor (19/4): 747867 numaralı
+adisyon 11.08 22:23'te açılıp 16.08'de ödenmiş (1.795 TL); Vega'nın 11.08
+fişi onu içeremezdi, 14.08 kopyasında adisyon henüz açıktı. **Açık soru:**
+geç kapanan adisyonun satırları aktarılmış güne düşüyor; 16.08'de yalnız
+ödeme uyarısı çıkar, o mal stoktan düşmez.
+
+**29.07 başka firmaya aktarılmış.** Panel 29.07'yi en eski eksik gün
+gösteriyor. F0102/D0002'de o gün Şefim fişi yok (A0000443 28.07, A0000445
+30.07); aynı gün F0103/D0001'de (GALYA KEBAP) A0000508 + A0000509 =
+143.525,05 TL var, Şefim'in 29.07 toplamı 143.470,09 TL. F0103'ün öteki
+günleri Şefim'le hiç tutmuyor (kebapçının kendi satışı), F0102'ninkiler
+kuruşuna tutuyor: Vega'nın Şefim programı o gün yanlış firmada
+çalıştırılmış. 29.07'yi panelden F0102'ye aktarmak doğru; F0103'teki iki
+fiş Vega'da silinmeli, kebapçının kendi 29.07 satışı F0103'e ayrıca
+aktarılmalı (müşteri kararı). Başka firmada aynı tarihte Şefim fişi olması
+tek başına ölçüt değil (F0103'te her gün var), o yüzden panele denetim
+eklenmedi.
